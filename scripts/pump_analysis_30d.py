@@ -4,6 +4,8 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 import psycopg
 from psycopg.rows import dict_row
+import requests
+import time
 
 # Add config directory to path
 current_dir = Path(__file__).resolve().parent
@@ -20,6 +22,10 @@ SCORE_THRESHOLD = 250
 TARGET_PATTERNS = ['SQUEEZE_IGNITION', 'OI_EXPLOSION']
 LOOKBACK_DAYS = 30
 ANALYSIS_WINDOW_HOURS = 24
+
+# Binance API
+BINANCE_BASE_URL = "https://fapi.binance.com"
+REQUEST_DELAY = 0.15  # Rate limiting
 
 def get_db_connection():
     conn_params = [
@@ -38,6 +44,36 @@ def get_db_connection():
     return psycopg.connect(conn_str)
 
 import argparse
+
+def get_binance_price_at_time(symbol, timestamp_ms):
+    """
+    Get price from Binance at specific timestamp
+    """
+    try:
+        url = f"{BINANCE_BASE_URL}/fapi/v1/klines"
+        params = {
+            'symbol': symbol,
+            'interval': '1m',
+            'startTime': timestamp_ms,
+            'limit': 1
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data and len(data) > 0:
+                # Return open price of that minute
+                open_price = float(data[0][1])
+                return open_price
+            else:
+                return None
+        else:
+            return None
+            
+    except Exception as e:
+        print(f"  Error getting Binance price for {symbol}: {e}")
+        return None
 
 def analyze_pumps(days=30, limit=None):
     print(f"Analyzing pumps for the last {days} days...")
@@ -100,20 +136,27 @@ def analyze_pumps(days=30, limit=None):
                 
                 last_signal_time[symbol] = signal_ts
                 
-                # Entry is 15 minutes after signal
-                entry_time_dt = signal_ts + timedelta(minutes=15)
-                end_time_dt = entry_time_dt + timedelta(hours=ANALYSIS_WINDOW_HOURS)
-                
-                # Convert to milliseconds for candles table
+                # Entry is 17 minutes after signal
+                entry_time_dt = signal_ts + timedelta(minutes=17)
                 entry_time_ms = int(entry_time_dt.timestamp() * 1000)
+                
+                # Get entry price from Binance API at signal + 17 minutes
+                entry_price = get_binance_price_at_time(symbol, entry_time_ms)
+                time.sleep(REQUEST_DELAY)  # Rate limiting
+                
+                if entry_price is None:
+                    print(f"  Warning: Could not get entry price for {symbol}, skipping")
+                    continue
+                
+                # Fetch 5-minute candles for analysis (interval_id = 1 for 5m)
+                end_time_dt = entry_time_dt + timedelta(hours=ANALYSIS_WINDOW_HOURS)
                 end_time_ms = int(end_time_dt.timestamp() * 1000)
                 
-                # Fetch candles (15m interval = 2)
                 query_candles = """
                     SELECT open_time, open_price, high_price, low_price, close_price
                     FROM public.candles
                     WHERE trading_pair_id = %s
-                      AND interval_id = 2
+                      AND interval_id = 1
                       AND open_time >= %s
                       AND open_time <= %s
                     ORDER BY open_time ASC
@@ -125,9 +168,6 @@ def analyze_pumps(days=30, limit=None):
                     
                 if not candles:
                     continue
-                    
-                # Analysis
-                entry_price = float(candles[0]['open_price'])
                 
                 max_price = -1.0
                 max_price_time_ms = None
