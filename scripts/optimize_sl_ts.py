@@ -2,40 +2,22 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-import psycopg
-from psycopg.rows import dict_row
 import argparse
 from itertools import product
 
-# Add config directory to path
+# Add scripts directory to path for library import
 current_dir = Path(__file__).resolve().parent
-parent_dir = current_dir.parent
-config_dir = parent_dir / 'config'
-sys.path.append(str(config_dir))
+sys.path.append(str(current_dir))
 
-import settings
+# Import common library
+from pump_analysis_lib import (
+    get_db_connection,
+    fetch_signals,
+    deduplicate_signals,
+    get_entry_price_and_candles
+)
 
-# --- Configuration ---
-DB_CONFIG = settings.DATABASE
-
-SCORE_THRESHOLD = 250
-TARGET_PATTERNS = ['SQUEEZE_IGNITION', 'OI_EXPLOSION']
 ANALYSIS_WINDOW_HOURS = 24
-
-def get_db_connection():
-    conn_params = [
-        f"host={DB_CONFIG['host']}",
-        f"port={DB_CONFIG['port']}",
-        f"dbname={DB_CONFIG['dbname']}",
-        f"user={DB_CONFIG['user']}",
-        "sslmode=disable"
-    ]
-    
-    if DB_CONFIG.get('password'):
-        conn_params.append(f"password={DB_CONFIG['password']}")
-        
-    conn_str = " ".join(conn_params)
-    return psycopg.connect(conn_str)
 
 def simulate_sl_only(candles, entry_price, sl_pct):
     """Simulate Stop-Loss only strategy"""
@@ -123,33 +105,8 @@ def optimize_parameters(days=30, limit=None):
     
     try:
         with get_db_connection() as conn:
-            # Fetch Signals (same logic as pump_analysis_30d.py)
-            placeholders = ','.join([f"'{p}'" for p in TARGET_PATTERNS])
-            limit_clause = f"LIMIT {limit}" if limit else ""
-            
-            query_signals = f"""
-                SELECT 
-                    sh.trading_pair_id, 
-                    sh.pair_symbol, 
-                    sh.timestamp, 
-                    sh.total_score
-                FROM fas_v2.scoring_history sh
-                JOIN fas_v2.signal_patterns sp ON sh.trading_pair_id = sp.trading_pair_id 
-                    AND sp.timestamp BETWEEN sh.timestamp - INTERVAL '1 hour' AND sh.timestamp + INTERVAL '1 hour'
-                JOIN public.trading_pairs tp ON sh.trading_pair_id = tp.id
-                WHERE sh.total_score > {SCORE_THRESHOLD}
-                  AND sh.timestamp >= NOW() - INTERVAL '{days} days'
-                  AND sp.pattern_type IN ({placeholders})
-                  AND tp.contract_type_id = 1
-                  AND tp.exchange_id = 1
-                  AND tp.is_active = TRUE
-                ORDER BY sh.timestamp ASC
-                {limit_clause}
-            """
-            
-            with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute(query_signals)
-                signals = cur.fetchall()
+            # Fetch signals using common library
+            signals = fetch_signals(conn, days=days, limit=limit)
                 
             if not signals:
                 print("No signals found.")
@@ -157,56 +114,30 @@ def optimize_parameters(days=30, limit=None):
 
             print(f"Found {len(signals)} signals. Fetching candle data...")
             
+            # Deduplicate signals
+            unique_signals = deduplicate_signals(signals, cooldown_hours=24)
+            print(f"After deduplication: {len(unique_signals)} unique signals.")
+            
             # Fetch candle data for all signals
             signal_data = []
-            last_signal_time = {}
-            COOLDOWN_HOURS = 24
             
-            for i, signal in enumerate(signals, 1):
+            for i, signal in enumerate(unique_signals, 1):
                 if i % 10 == 0:
-                    print(f"Fetching {i}/{len(signals)}...", end='\r')
+                    print(f"Fetching {i}/{len(unique_signals)}...", end='\r')
                 
-                pair_id = signal['trading_pair_id']
-                signal_ts = signal['timestamp']
-                symbol = signal['pair_symbol']
+                # Get entry price and candles using common library
+                entry_price, candles, entry_time_dt = get_entry_price_and_candles(
+                    conn, signal,
+                    analysis_hours=ANALYSIS_WINDOW_HOURS,
+                    entry_offset_minutes=17
+                )
                 
-                # Deduplication
-                if symbol in last_signal_time:
-                    last_ts = last_signal_time[symbol]
-                    if (signal_ts - last_ts).total_seconds() < COOLDOWN_HOURS * 3600:
-                        continue
-                
-                last_signal_time[symbol] = signal_ts
-                
-                # Entry time
-                entry_time_dt = signal_ts + timedelta(minutes=15)
-                end_time_dt = entry_time_dt + timedelta(hours=ANALYSIS_WINDOW_HOURS)
-                
-                entry_time_ms = int(entry_time_dt.timestamp() * 1000)
-                end_time_ms = int(end_time_dt.timestamp() * 1000)
-                
-                # Fetch candles
-                query_candles = """
-                    SELECT open_time, open_price, high_price, low_price, close_price
-                    FROM public.candles
-                    WHERE trading_pair_id = %s
-                      AND interval_id = 2
-                      AND open_time >= %s
-                      AND open_time <= %s
-                    ORDER BY open_time ASC
-                """
-                
-                with conn.cursor(row_factory=dict_row) as cur:
-                    cur.execute(query_candles, (pair_id, entry_time_ms, end_time_ms))
-                    candles = cur.fetchall()
-                    
-                if not candles:
+                if entry_price is None or not candles:
                     continue
                 
-                entry_price = float(candles[0]['open_price'])
                 signal_data.append({
-                    'symbol': symbol,
-                    'timestamp': signal_ts,
+                    'symbol': signal['pair_symbol'],
+                    'timestamp': signal['timestamp'],
                     'entry_price': entry_price,
                     'candles': candles
                 })

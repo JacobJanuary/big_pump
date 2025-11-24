@@ -2,113 +2,30 @@ import sys
 import os
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-import psycopg
-from psycopg.rows import dict_row
-import requests
-import time
 
-# Add config directory to path
+# Add scripts directory to path for library import
 current_dir = Path(__file__).resolve().parent
-parent_dir = current_dir.parent
-config_dir = parent_dir / 'config'
-sys.path.append(str(config_dir))
+sys.path.append(str(current_dir))
 
-import settings
-
-# --- Configuration ---
-DB_CONFIG = settings.DATABASE
-
-SCORE_THRESHOLD = 250
-TARGET_PATTERNS = ['SQUEEZE_IGNITION', 'OI_EXPLOSION']
-LOOKBACK_DAYS = 30
-ANALYSIS_WINDOW_HOURS = 24
-
-# Binance API
-BINANCE_BASE_URL = "https://fapi.binance.com"
-REQUEST_DELAY = 0.15  # Rate limiting
-
-def get_db_connection():
-    conn_params = [
-        f"host={DB_CONFIG['host']}",
-        f"port={DB_CONFIG['port']}",
-        f"dbname={DB_CONFIG['dbname']}",
-        f"user={DB_CONFIG['user']}",
-        "sslmode=disable"
-    ]
-    
-    # Only add password if it exists and is not empty
-    if DB_CONFIG.get('password'):
-        conn_params.append(f"password={DB_CONFIG['password']}")
-        
-    conn_str = " ".join(conn_params)
-    return psycopg.connect(conn_str)
+# Import common library
+from pump_analysis_lib import (
+    get_db_connection,
+    fetch_signals,
+    deduplicate_signals,
+    get_entry_price_and_candles
+)
 
 import argparse
 
-def get_binance_price_at_time(symbol, timestamp_ms):
-    """
-    Get price from Binance at specific timestamp
-    """
-    try:
-        url = f"{BINANCE_BASE_URL}/fapi/v1/klines"
-        params = {
-            'symbol': symbol,
-            'interval': '1m',
-            'startTime': timestamp_ms,
-            'limit': 1
-        }
-        
-        response = requests.get(url, params=params, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data and len(data) > 0:
-                # Return open price of that minute
-                open_price = float(data[0][1])
-                return open_price
-            else:
-                return None
-        else:
-            return None
-            
-    except Exception as e:
-        print(f"  Error getting Binance price for {symbol}: {e}")
-        return None
+ANALYSIS_WINDOW_HOURS = 24
 
 def analyze_pumps(days=30, limit=None):
     print(f"Analyzing pumps for the last {days} days...")
     
     try:
         with get_db_connection() as conn:
-            # 1. Fetch Signals
-            placeholders = ','.join([f"'{p}'" for p in TARGET_PATTERNS])
-            limit_clause = f"LIMIT {limit}" if limit else ""
-            
-            # Sort ASC to find the first signal of a pump
-            query_signals = f"""
-                SELECT 
-                    sh.trading_pair_id, 
-                    sh.pair_symbol, 
-                    sh.timestamp, 
-                    sh.total_score,
-                    sp.pattern_type
-                FROM fas_v2.scoring_history sh
-                JOIN fas_v2.signal_patterns sp ON sh.trading_pair_id = sp.trading_pair_id 
-                    AND sp.timestamp BETWEEN sh.timestamp - INTERVAL '1 hour' AND sh.timestamp + INTERVAL '1 hour'
-                JOIN public.trading_pairs tp ON sh.trading_pair_id = tp.id
-                WHERE sh.total_score > {SCORE_THRESHOLD}
-                  AND sh.timestamp >= NOW() - INTERVAL '{days} days'
-                  AND sp.pattern_type IN ({placeholders})
-                  AND tp.contract_type_id = 1  -- Futures
-                  AND tp.exchange_id = 1       -- Binance
-                  AND tp.is_active = TRUE
-                ORDER BY sh.timestamp ASC
-                {limit_clause}
-            """
-            
-            with conn.cursor(row_factory=dict_row) as cur:
-                cur.execute(query_signals)
-                signals = cur.fetchall()
+            # Fetch Signals
+            signals = fetch_signals(conn, days=days, limit=limit)
                 
             if not signals:
                 print("No signals found.")
@@ -116,59 +33,30 @@ def analyze_pumps(days=30, limit=None):
 
             print(f"Found {len(signals)} signals. Fetching price data...")
             
-            results = []
-            last_signal_time = {} # symbol -> datetime
-            COOLDOWN_HOURS = 24
+            # Deduplicate signals
+            unique_signals = deduplicate_signals(signals, cooldown_hours=24)
+            print(f"After deduplication: {len(unique_signals)} unique signals.")
             
-            for i, signal in enumerate(signals, 1):
+            results = []
+            
+            for i, signal in enumerate(unique_signals, 1):
                 if i % 10 == 0:
-                    print(f"Processing {i}/{len(signals)}...", end='\r')
+                    print(f"Processing {i}/{len(unique_signals)}...", end='\r')
                     
-                pair_id = signal['trading_pair_id']
-                signal_ts = signal['timestamp'] # datetime with timezone
                 symbol = signal['pair_symbol']
+                signal_ts = signal['timestamp']
                 
-                # Deduplication Logic
-                if symbol in last_signal_time:
-                    last_ts = last_signal_time[symbol]
-                    if (signal_ts - last_ts).total_seconds() < COOLDOWN_HOURS * 3600:
-                        continue
+                # Get entry price and candles
+                entry_price, candles, entry_time_dt = get_entry_price_and_candles(
+                    conn, signal, 
+                    analysis_hours=ANALYSIS_WINDOW_HOURS,
+                    entry_offset_minutes=17
+                )
                 
-                last_signal_time[symbol] = signal_ts
-                
-                # Entry is 17 minutes after signal
-                entry_time_dt = signal_ts + timedelta(minutes=17)
-                entry_time_ms = int(entry_time_dt.timestamp() * 1000)
-                
-                # Get entry price from Binance API at signal + 17 minutes
-                entry_price = get_binance_price_at_time(symbol, entry_time_ms)
-                time.sleep(REQUEST_DELAY)  # Rate limiting
-                
-                if entry_price is None:
-                    print(f"  Warning: Could not get entry price for {symbol}, skipping")
+                if entry_price is None or not candles:
                     continue
                 
-                # Fetch 5-minute candles for analysis (interval_id = 1 for 5m)
-                end_time_dt = entry_time_dt + timedelta(hours=ANALYSIS_WINDOW_HOURS)
-                end_time_ms = int(end_time_dt.timestamp() * 1000)
-                
-                query_candles = """
-                    SELECT open_time, open_price, high_price, low_price, close_price
-                    FROM public.candles
-                    WHERE trading_pair_id = %s
-                      AND interval_id = 1
-                      AND open_time >= %s
-                      AND open_time <= %s
-                    ORDER BY open_time ASC
-                """
-                
-                with conn.cursor(row_factory=dict_row) as cur:
-                    cur.execute(query_candles, (pair_id, entry_time_ms, end_time_ms))
-                    candles = cur.fetchall()
-                    
-                if not candles:
-                    continue
-                
+                # Calculate max price and time
                 max_price = -1.0
                 max_price_time_ms = None
                 
@@ -180,7 +68,7 @@ def analyze_pumps(days=30, limit=None):
                         max_price = high
                         max_price_time_ms = ts
                 
-                # Re-scan to find lowest low before max_price_time
+                # Find lowest low before max_price_time
                 lowest_low = entry_price
                 for candle in candles:
                     if candle['open_time'] > max_price_time_ms:
@@ -208,7 +96,6 @@ def analyze_pumps(days=30, limit=None):
             
             print("\n" + "="*80)
             # Print Table
-            # Header
             print(f"{'Date':<12} {'Time':<8} {'Symbol':<12} {'Score':<6} {'Drawdown %':<12} {'Growth %':<10} {'Time to Peak':<15}")
             print("-" * 80)
             
@@ -217,6 +104,8 @@ def analyze_pumps(days=30, limit=None):
 
     except Exception as e:
         print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Analyze pump signals.')
