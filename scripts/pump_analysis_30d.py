@@ -48,6 +48,7 @@ def analyze_pumps(days=30, limit=None):
             placeholders = ','.join([f"'{p}'" for p in TARGET_PATTERNS])
             limit_clause = f"LIMIT {limit}" if limit else ""
             
+            # Sort ASC to find the first signal of a pump
             query_signals = f"""
                 SELECT 
                     sh.trading_pair_id, 
@@ -65,7 +66,7 @@ def analyze_pumps(days=30, limit=None):
                   AND tp.contract_type_id = 1  -- Futures
                   AND tp.exchange_id = 1       -- Binance
                   AND tp.is_active = TRUE
-                ORDER BY sh.timestamp DESC
+                ORDER BY sh.timestamp ASC
                 {limit_clause}
             """
             
@@ -80,6 +81,8 @@ def analyze_pumps(days=30, limit=None):
             print(f"Found {len(signals)} signals. Fetching price data...")
             
             results = []
+            last_signal_time = {} # symbol -> datetime
+            COOLDOWN_HOURS = 24
             
             for i, signal in enumerate(signals, 1):
                 if i % 10 == 0:
@@ -88,6 +91,14 @@ def analyze_pumps(days=30, limit=None):
                 pair_id = signal['trading_pair_id']
                 signal_ts = signal['timestamp'] # datetime with timezone
                 symbol = signal['pair_symbol']
+                
+                # Deduplication Logic
+                if symbol in last_signal_time:
+                    last_ts = last_signal_time[symbol]
+                    if (signal_ts - last_ts).total_seconds() < COOLDOWN_HOURS * 3600:
+                        continue
+                
+                last_signal_time[symbol] = signal_ts
                 
                 # Entry is 15 minutes after signal
                 entry_time_dt = signal_ts + timedelta(minutes=15)
