@@ -39,8 +39,10 @@ def load_signals_from_db():
         # Convert rows to dict format
         signals_data = []
         for row in rows:
-            candles_json = row[13]  # candles_data
-            candles = json.loads(candles_json) if candles_json else []
+            candles_json = row[13]  # candles_data (already a Python list from JSONB)
+            
+            # JSONB is already deserialized by psycopg
+            candles = candles_json if candles_json else []
             
             # Convert back to expected format
             candles_formatted = [{
