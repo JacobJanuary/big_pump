@@ -1,11 +1,10 @@
 """
-Advanced optimization with extended parameter ranges and timeout logic
-Uses preprocessed data from web.signal_analysis table
+Advanced optimization with 1-minute candles for precision
+Uses preprocessed data from web.signal_analysis and web.minute_candles
 """
 import sys
 import os
 from pathlib import Path
-import json
 from itertools import product
 
 # Add scripts directory to path
@@ -18,68 +17,79 @@ from optimization_lib import (
     calculate_peak_time_stats
 )
 
-def load_signals_from_db():
-    """Load preprocessed signals from web.signal_analysis"""
+def load_signals_with_minute_candles():
+    """Load signals with 1-minute candles from database"""
     with get_db_connection() as conn:
         query = """
             SELECT 
-                id, signal_timestamp, pair_symbol, trading_pair_id,
-                total_score, entry_time, entry_price,
-                max_price, max_price_time, min_price,
-                max_growth_pct, max_drawdown_pct,
-                time_to_peak_seconds, candles_data
-            FROM web.signal_analysis
-            ORDER BY signal_timestamp ASC
+                sa.id, sa.signal_timestamp, sa.pair_symbol, sa.entry_price
+            FROM web.signal_analysis sa
+            WHERE EXISTS (
+                SELECT 1 FROM web.minute_candles mc
+                WHERE mc.signal_analysis_id = sa.id
+            )
+            ORDER BY sa.signal_timestamp ASC
         """
         
         with conn.cursor() as cur:
             cur.execute(query)
-            rows = cur.fetchall()
+            signals = cur.fetchall()
         
-        # Convert rows to dict format
         signals_data = []
-        for row in rows:
-            candles_json = row[13]  # candles_data (already a Python list from JSONB)
+        
+        for signal in signals:
+            signal_id = signal[0]
             
-            # JSONB is already deserialized by psycopg
-            candles = candles_json if candles_json else []
+            # Fetch minute candles for this signal
+            candles_query = """
+                SELECT open_time, open_price, high_price, low_price, close_price, volume
+                FROM web.minute_candles
+                WHERE signal_analysis_id = %s
+                ORDER BY open_time ASC
+            """
             
-            # Convert back to expected format
-            candles_formatted = [{
-                'open_time': c['time'],
-                'open_price': c['o'],
-                'high_price': c['h'],
-                'low_price': c['l'],
-                'close_price': c['c']
-            } for c in candles]
+            with conn.cursor() as cur:
+                cur.execute(candles_query, (signal_id,))
+                candles_rows = cur.fetchall()
             
-            signals_data.append({
-                'symbol': row[2],  # pair_symbol
-                'timestamp': row[1],  # signal_timestamp
-                'entry_price': float(row[6]),  # entry_price
-                'candles': candles_formatted
-            })
+            candles = [{
+                'open_time': int(row[0]),
+                'open_price': float(row[1]),
+                'high_price': float(row[2]),
+                'low_price': float(row[3]),
+                'close_price': float(row[4])
+            } for row in candles_rows]
+            
+            if candles:
+                signals_data.append({
+                    'symbol': signal[2],
+                    'timestamp': signal[1],
+                    'entry_price': float(signal[3]),
+                    'candles': candles
+                })
         
         return signals_data
 
 def optimize_advanced():
     """
-    Run advanced optimization with extended parameter ranges
+    Run advanced optimization with 1-minute precision
     """
     print("="*120)
-    print("ADVANCED STRATEGY OPTIMIZATION")
+    print("ADVANCED STRATEGY OPTIMIZATION (1-minute precision)")
     print("="*120)
     
     # Load preprocessed data
-    print("\nLoading preprocessed signals from database...")
-    signals_data = load_signals_from_db()
+    print("\nLoading signals with 1-minute candles from database...")
+    signals_data = load_signals_with_minute_candles()
     
     if not signals_data:
-        print("No signals found in web.signal_analysis table.")
-        print("Please run: python3 scripts/populate_signal_analysis.py")
+        print("No signals with minute candles found.")
+        print("Please run:")
+        print("  1. python3 scripts/populate_signal_analysis.py")
+        print("  2. python3 scripts/fetch_minute_candles.py")
         return
     
-    print(f"Loaded {len(signals_data)} signals from database.")
+    print(f"Loaded {len(signals_data)} signals with minute candles.")
     
     # Calculate time-to-peak statistics
     print("\nCalculating time-to-peak statistics...")
@@ -98,15 +108,15 @@ def optimize_advanced():
     print(f"\nRecommended timeout: {optimal_timeout} hours (90th percentile + buffer)")
     
     # Parameter ranges
-    sl_levels = list(range(-10, -1 + 1))  # -10% to -1%, step 1%
-    activation_levels = list(range(3, 50 + 1))  # 3% to 50%, step 1%
-    callback_rates = [1, 2, 3, 5, 8]  # Keep these granular
+    sl_levels = list(range(-10, 0))  # -10% to -1%, step 1%
+    activation_levels = list(range(3, 51))  # 3% to 50%, step 1%
+    callback_rates = list(range(1, 11))  # 1% to 10%, step 1%
     timeout_options = [optimal_timeout]  # Use calculated optimal timeout
     
     print(f"\nParameter Search Space:")
     print(f"  SL: {len(sl_levels)} values ({min(sl_levels)}% to {max(sl_levels)}%)")
     print(f"  TS Activation: {len(activation_levels)} values ({min(activation_levels)}% to {max(activation_levels)}%)")
-    print(f"  TS Callback: {len(callback_rates)} values")
+    print(f"  TS Callback: {len(callback_rates)} values ({min(callback_rates)}% to {max(callback_rates)}%)")
     print(f"  Timeout: {timeout_options} hours")
     print(f"  Total combinations: {len(sl_levels) * len(activation_levels) * len(callback_rates) * len(timeout_options)}")
     
@@ -117,8 +127,8 @@ def optimize_advanced():
     
     for sl, activation, callback, timeout in product(sl_levels, activation_levels, callback_rates, timeout_options):
         current += 1
-        if current % 100 == 0:
-            print(f"Progress: {current}/{total_combos} ({current/total_combos*100:.1f}%)...", end='\r')
+        if current % 500 == 0:
+            print(f"Progress: {current}/{total_combos} ({current/total_combos*100:.1f}%)...")
         
         profits = []
         for sig in signals_data:
@@ -136,9 +146,6 @@ def optimize_advanced():
         avg_profit = sum(profits) / len(profits) if profits else 0
         total_profit = sum(profits)
         
-        # Calculate real profit (average profit per trade, not sum of percentages)
-        real_avg_profit_pct = avg_profit
-        
         results.append({
             'sl': sl,
             'activation': activation,
@@ -147,7 +154,6 @@ def optimize_advanced():
             'win_rate': win_rate,
             'avg_profit': avg_profit,
             'total_profit': total_profit,
-            'real_profit_pct': real_avg_profit_pct,
             'trades': len(profits)
         })
     
