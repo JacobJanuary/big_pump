@@ -14,14 +14,7 @@ sys.path.append(str(config_dir))
 import settings
 
 # --- Configuration ---
-# Use credentials provided by user
-DB_CONFIG = {
-    'dbname': 'fox_crypto_new',
-    'user': 'elcrypto_readonly',
-    'password': 'LohNeMamont@)11',
-    'host': 'localhost',
-    'port': '5433'
-}
+DB_CONFIG = settings.DATABASE
 
 SCORE_THRESHOLD = 250
 TARGET_PATTERNS = ['SQUEEZE_IGNITION', 'OI_EXPLOSION']
@@ -34,9 +27,13 @@ def get_db_connection():
         f"port={DB_CONFIG['port']}",
         f"dbname={DB_CONFIG['dbname']}",
         f"user={DB_CONFIG['user']}",
-        f"password={DB_CONFIG['password']}",
         "sslmode=disable"
     ]
+    
+    # Only add password if it exists and is not empty
+    if DB_CONFIG.get('password'):
+        conn_params.append(f"password={DB_CONFIG['password']}")
+        
     conn_str = " ".join(conn_params)
     return psycopg.connect(conn_str)
 
