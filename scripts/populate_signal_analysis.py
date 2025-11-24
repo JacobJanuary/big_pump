@@ -17,19 +17,27 @@ from pump_analysis_lib import (
     get_entry_price_and_candles
 )
 
-def populate_signal_analysis(days=30, limit=None):
+def populate_signal_analysis(days=30, limit=None, force_refresh=False):
     """
     Fetch signals, preprocess them, and store in web.signal_analysis table
+    
+    Args:
+        days: Number of days to look back
+        limit: Limit number of signals
+        force_refresh: If True, TRUNCATE and repopulate. If False, only add new signals.
     """
     print(f"Populating signal analysis table for the last {days} days...")
     
     try:
         with get_db_connection() as conn:
-            # Clear existing data
-            print("Clearing existing data from web.signal_analysis...")
-            with conn.cursor() as cur:
-                cur.execute("TRUNCATE TABLE web.signal_analysis")
-            conn.commit()
+            if force_refresh:
+                # Clear existing data
+                print("Force refresh: Clearing existing data from web.signal_analysis...")
+                with conn.cursor() as cur:
+                    cur.execute("TRUNCATE TABLE web.signal_analysis CASCADE")
+                conn.commit()
+            else:
+                print("Incremental mode: Only adding new signals...")
             
             # Fetch signals
             signals = fetch_signals(conn, days=days, limit=limit)
@@ -38,17 +46,36 @@ def populate_signal_analysis(days=30, limit=None):
                 print("No signals found.")
                 return
             
-            print(f"Found {len(signals)} signals.")
+            print(f"Found {len(signals)} signals from database.")
             
             # Deduplicate
             unique_signals = deduplicate_signals(signals, cooldown_hours=24)
             print(f"After deduplication: {len(unique_signals)} unique signals.")
             
+            # Get existing signal timestamps to skip
+            if not force_refresh:
+                existing_query = """
+                    SELECT signal_timestamp, pair_symbol
+                    FROM web.signal_analysis
+                """
+                with conn.cursor() as cur:
+                    cur.execute(existing_query)
+                    existing = set((row[0], row[1]) for row in cur.fetchall())
+                print(f"Found {len(existing)} existing signals in database.")
+            else:
+                existing = set()
+            
             # Process each signal
             inserted = 0
+            skipped = 0
             for i, signal in enumerate(unique_signals, 1):
                 if i % 10 == 0:
-                    print(f"Processing {i}/{len(unique_signals)}...", end='\r')
+                    print(f"Processing {i}/{len(unique_signals)}... (inserted: {inserted}, skipped: {skipped})", end='\r')
+                
+                # Skip if already exists (incremental mode)
+                if (signal['timestamp'], signal['pair_symbol']) in existing:
+                    skipped += 1
+                    continue
                 
                 # Get entry price and candles
                 entry_price, candles, entry_time_dt = get_entry_price_and_candles(
@@ -131,7 +158,9 @@ def populate_signal_analysis(days=30, limit=None):
             # Final commit
             conn.commit()
             
-            print(f"\n\nSuccessfully populated {inserted} signals into web.signal_analysis")
+            print(f"\n\nSuccessfully populated {inserted} new signals into web.signal_analysis")
+            if skipped > 0:
+                print(f"Skipped {skipped} existing signals")
             
     except Exception as e:
         print(f"\nError: {e}")
@@ -143,6 +172,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Populate signal analysis table.')
     parser.add_argument('--days', type=int, default=30, help='Number of days to look back')
     parser.add_argument('--limit', type=int, default=None, help='Limit number of signals')
+    parser.add_argument('--force-refresh', action='store_true', help='Force full refresh (TRUNCATE and repopulate)')
     args = parser.parse_args()
     
-    populate_signal_analysis(days=args.days, limit=args.limit)
+    populate_signal_analysis(days=args.days, limit=args.limit, force_refresh=args.force_refresh)
