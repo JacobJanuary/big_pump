@@ -85,15 +85,14 @@ def simulate_trade(candles, entry_price, sl_pct, activation_pct, callback_pct):
     pnl_pct = ((final_price - entry_price) / entry_price) * 100
     return final_price, final_time, pnl_pct
 
-def backtest_portfolio(days=30, limit=None, sl_pct=-5, activation_pct=15, callback_pct=3, initial_balance=10000):
+def backtest_portfolio(days=30, limit=None, sl_pct=-8, activation_pct=20, callback_pct=1):
     """
-    Backtest portfolio with given SL/TS parameters
+    Backtest portfolio with event-based simulation and dynamic capital management
     """
-    print(f"Starting portfolio backtest for the last {days} days...")
+    print(f"Starting event-based portfolio backtest for the last {days} days...")
     print(f"Parameters: SL={sl_pct}%, TS Activation={activation_pct}%, TS Callback={callback_pct}%")
     print(f"Position Size: ${POSITION_SIZE}, Leverage: {LEVERAGE}x, Margin per position: ${MARGIN_PER_POSITION}")
-    print(f"Initial Balance: ${initial_balance:,.2f}")
-    print("="*120)
+    print("="*140)
     
     try:
         with get_db_connection() as conn:
@@ -129,12 +128,13 @@ def backtest_portfolio(days=30, limit=None, sl_pct=-5, activation_pct=15, callba
                 print("No signals found.")
                 return
 
-            print(f"Found {len(signals)} signals. Simulating trades...")
+            print(f"Found {len(signals)} signals. Simulating trades and building event timeline...")
             
-            # Simulate all trades
-            trades = []
+            # Simulate all trades and collect events
+            events = []
             last_signal_time = {}
             COOLDOWN_HOURS = 24
+            trade_id = 0
             
             for i, signal in enumerate(signals, 1):
                 if i % 10 == 0:
@@ -187,107 +187,141 @@ def backtest_portfolio(days=30, limit=None, sl_pct=-5, activation_pct=15, callba
                 # Calculate PnL in dollars (with leverage)
                 pnl_dollars = (pnl_pct / 100) * POSITION_SIZE
                 
-                # Convert timestamps to dates
-                entry_date = entry_time_dt.date()
-                exit_date = datetime.fromtimestamp(exit_time_ms / 1000, tz=timezone.utc).date()
+                exit_time_dt = datetime.fromtimestamp(exit_time_ms / 1000, tz=timezone.utc)
                 
-                trades.append({
+                # Create events
+                events.append({
+                    'type': 'OPEN',
+                    'time': entry_time_dt,
+                    'trade_id': trade_id,
                     'symbol': symbol,
-                    'entry_time': entry_time_dt,
-                    'entry_date': entry_date,
-                    'exit_date': exit_date,
-                    'entry_price': entry_price,
-                    'exit_price': exit_price,
-                    'pnl_pct': pnl_pct,
-                    'pnl_dollars': pnl_dollars,
                     'margin': MARGIN_PER_POSITION
                 })
+                
+                events.append({
+                    'type': 'CLOSE',
+                    'time': exit_time_dt,
+                    'trade_id': trade_id,
+                    'symbol': symbol,
+                    'pnl': pnl_dollars,
+                    'pnl_pct': pnl_pct
+                })
+                
+                trade_id += 1
             
-            print(f"\nSimulated {len(trades)} unique trades.")
+            print(f"\nSimulated {trade_id} unique trades. Processing event timeline...")
             
-            # Group by day and calculate daily metrics
+            # Sort events chronologically
+            events.sort(key=lambda x: x['time'])
+            
+            # Process events sequentially
+            balance = 0
+            locked_margin = 0
+            active_positions = 0
+            capital_added = 0
+            max_active_positions = 0
+            
             daily_stats = defaultdict(lambda: {
                 'opened': 0,
                 'closed': 0,
                 'pnl': 0,
-                'balance': initial_balance,
-                'max_drawdown': 0
+                'balance_eod': 0,
+                'locked_eod': 0,
+                'free_eod': 0,
+                'capital_added': 0
             })
             
-            # Track cumulative balance
-            balance = initial_balance
-            max_balance = initial_balance
+            for event in events:
+                event_date = event['time'].date()
+                
+                if event['type'] == 'OPEN':
+                    # Check if we need more capital
+                    free_balance = balance - locked_margin
+                    if free_balance < MARGIN_PER_POSITION:
+                        needed = MARGIN_PER_POSITION - free_balance
+                        balance += needed
+                        capital_added += needed
+                        daily_stats[event_date]['capital_added'] += needed
+                    
+                    # Lock margin
+                    locked_margin += MARGIN_PER_POSITION
+                    active_positions += 1
+                    daily_stats[event_date]['opened'] += 1
+                    
+                    if active_positions > max_active_positions:
+                        max_active_positions = active_positions
+                
+                elif event['type'] == 'CLOSE':
+                    # Realize PnL
+                    balance += event['pnl']
+                    locked_margin -= MARGIN_PER_POSITION
+                    active_positions -= 1
+                    daily_stats[event_date]['closed'] += 1
+                    daily_stats[event_date]['pnl'] += event['pnl']
             
-            # Get all dates in range
-            if trades:
-                start_date = min(t['entry_date'] for t in trades)
-                end_date = max(t['exit_date'] for t in trades)
-                
-                current_date = start_date
-                while current_date <= end_date:
-                    daily_stats[current_date]  # Initialize
-                    current_date += timedelta(days=1)
+            # Calculate end-of-day values
+            balance_running = 0
+            locked_running = 0
             
-            # Process trades
-            for trade in trades:
-                # Mark as opened on entry date
-                daily_stats[trade['entry_date']]['opened'] += 1
+            for event in events:
+                event_date = event['time'].date()
                 
-                # Mark as closed on exit date
-                daily_stats[trade['exit_date']]['closed'] += 1
-                daily_stats[trade['exit_date']]['pnl'] += trade['pnl_dollars']
-            
-            # Calculate cumulative balance for each day
-            for date in sorted(daily_stats.keys()):
-                balance += daily_stats[date]['pnl']
-                daily_stats[date]['balance'] = balance
+                if event['type'] == 'OPEN':
+                    free = balance_running - locked_running
+                    if free < MARGIN_PER_POSITION:
+                        balance_running += (MARGIN_PER_POSITION - free)
+                    locked_running += MARGIN_PER_POSITION
                 
-                if balance > max_balance:
-                    max_balance = balance
+                elif event['type'] == 'CLOSE':
+                    balance_running += event['pnl']
+                    locked_running -= MARGIN_PER_POSITION
                 
-                drawdown = balance - max_balance
-                daily_stats[date]['max_drawdown'] = drawdown
+                # Update end-of-day values
+                daily_stats[event_date]['balance_eod'] = balance_running
+                daily_stats[event_date]['locked_eod'] = locked_running
+                daily_stats[event_date]['free_eod'] = balance_running - locked_running
             
             # Print daily report
-            print("\n" + "="*120)
+            print("\n" + "="*140)
             print("DAILY BALANCE REPORT:")
-            print("="*120)
-            print(f"{'Date':<12} {'Opened':<8} {'Closed':<8} {'Daily PnL':<12} {'Balance':<14} {'Drawdown':<12} {'Need to Add':<12}")
-            print("-"*120)
+            print("="*140)
+            print(f"{'Date':<12} {'Opened':<8} {'Closed':<8} {'Daily PnL':<13} {'Balance':<14} {'Locked':<12} {'Free':<14} {'Added Today':<13}")
+            print("-"*140)
             
             for date in sorted(daily_stats.keys()):
                 stats = daily_stats[date]
-                need_to_add = max(0, -stats['max_drawdown']) if stats['max_drawdown'] < 0 else 0
-                
                 print(f"{date.strftime('%Y-%m-%d'):<12} "
                       f"{stats['opened']:<8} "
                       f"{stats['closed']:<8} "
-                      f"${stats['pnl']:>10,.2f} "
-                      f"${stats['balance']:>12,.2f} "
-                      f"${stats['max_drawdown']:>10,.2f} "
-                      f"${need_to_add:>10,.2f}")
+                      f"${stats['pnl']:>11,.2f} "
+                      f"${stats['balance_eod']:>12,.2f} "
+                      f"${stats['locked_eod']:>10,.2f} "
+                      f"${stats['free_eod']:>12,.2f} "
+                      f"${stats['capital_added']:>11,.2f}")
             
             # Summary
             final_balance = balance
-            total_profit = final_balance - initial_balance
-            total_profit_pct = (total_profit / initial_balance) * 100
-            max_drawdown = min(stats['max_drawdown'] for stats in daily_stats.values()) if daily_stats else 0
+            final_locked = locked_margin
+            net_profit = final_balance - capital_added
             
-            winning_trades = len([t for t in trades if t['pnl_dollars'] > 0])
-            losing_trades = len([t for t in trades if t['pnl_dollars'] <= 0])
-            win_rate = (winning_trades / len(trades) * 100) if trades else 0
+            total_trades = trade_id
+            winning_trades = len([e for e in events if e['type'] == 'CLOSE' and e['pnl'] > 0])
+            losing_trades = len([e for e in events if e['type'] == 'CLOSE' and e['pnl'] <= 0])
+            win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
             
-            print("\n" + "="*120)
+            print("\n" + "="*140)
             print("SUMMARY:")
-            print("="*120)
-            print(f"Initial Balance: ${initial_balance:,.2f}")
+            print("="*140)
+            print(f"Initial Balance: $0.00")
+            print(f"Capital Added: ${capital_added:,.2f}")
             print(f"Final Balance: ${final_balance:,.2f}")
-            print(f"Total Profit: ${total_profit:,.2f} ({total_profit_pct:+.2f}%)")
-            print(f"Max Drawdown: ${max_drawdown:,.2f}")
-            print(f"Total Trades: {len(trades)}")
+            print(f"Final Locked Margin: ${final_locked:,.2f}")
+            print(f"Net Profit: ${net_profit:,.2f} ({(net_profit/capital_added*100):+.2f}% ROI)" if capital_added > 0 else "Net Profit: $0.00")
+            print(f"Max Active Positions: {max_active_positions}")
+            print(f"Total Trades: {total_trades}")
             print(f"Winning Trades: {winning_trades} ({win_rate:.2f}%)")
             print(f"Losing Trades: {losing_trades}")
-            print("="*120)
+            print("="*140)
 
     except Exception as e:
         print(f"Error: {e}")
@@ -295,13 +329,12 @@ def backtest_portfolio(days=30, limit=None, sl_pct=-5, activation_pct=15, callba
         traceback.print_exc()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Backtest portfolio with optimal SL/TS parameters.')
+    parser = argparse.ArgumentParser(description='Backtest portfolio with event-based simulation.')
     parser.add_argument('--days', type=int, default=30, help='Number of days to look back')
     parser.add_argument('--limit', type=int, default=None, help='Limit number of signals to process')
-    parser.add_argument('--sl', type=float, default=-5, help='Stop-Loss percentage (negative)')
-    parser.add_argument('--activation', type=float, default=15, help='TS Activation percentage (positive)')
-    parser.add_argument('--callback', type=float, default=3, help='TS Callback percentage (positive)')
-    parser.add_argument('--balance', type=float, default=10000, help='Initial balance in USD')
+    parser.add_argument('--sl', type=float, default=-8, help='Stop-Loss percentage (negative)')
+    parser.add_argument('--activation', type=float, default=20, help='TS Activation percentage (positive)')
+    parser.add_argument('--callback', type=float, default=1, help='TS Callback percentage (positive)')
     args = parser.parse_args()
     
     backtest_portfolio(
@@ -309,6 +342,5 @@ if __name__ == "__main__":
         limit=args.limit,
         sl_pct=args.sl,
         activation_pct=args.activation,
-        callback_pct=args.callback,
-        initial_balance=args.balance
+        callback_pct=args.callback
     )
