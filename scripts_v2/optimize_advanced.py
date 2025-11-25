@@ -11,7 +11,7 @@ from itertools import product
 current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir))
 
-from pump_analysis_lib import get_db_connection
+from pump_analysis_lib import get_db_connection, EXCHANGE_FILTER, EXCHANGE_IDS
 from optimization_lib import (
     simulate_combined,
     calculate_peak_time_stats
@@ -24,12 +24,22 @@ def load_signals_with_minute_candles():
             SELECT 
                 sa.id, sa.signal_timestamp, sa.pair_symbol, sa.entry_price
             FROM web.signal_analysis sa
+            JOIN public.trading_pairs tp ON sa.trading_pair_id = tp.id
             WHERE EXISTS (
                 SELECT 1 FROM web.minute_candles mc
                 WHERE mc.signal_analysis_id = sa.id
             )
+            AND (
+                '{filter}' = 'ALL' 
+                OR ('{filter}' = 'BINANCE' AND tp.exchange_id = {binance_id})
+                OR ('{filter}' = 'BYBIT' AND tp.exchange_id = {bybit_id})
+            )
             ORDER BY sa.signal_timestamp ASC
-        """
+        """.format(
+            filter=EXCHANGE_FILTER,
+            binance_id=EXCHANGE_IDS['BINANCE'],
+            bybit_id=EXCHANGE_IDS['BYBIT']
+        )
         
         with conn.cursor() as cur:
             cur.execute(query)

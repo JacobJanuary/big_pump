@@ -13,7 +13,7 @@ from datetime import datetime, timezone, timedelta
 current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir))
 
-from pump_analysis_lib import get_db_connection
+from pump_analysis_lib import get_db_connection, EXCHANGE_FILTER, EXCHANGE_IDS
 
 def format_time_diff(start_dt, end_dt):
     """Format time difference as HH:MM"""
@@ -81,14 +81,20 @@ def generate_detailed_report(days=30):
             # Fetch signals with candles data
             query = f"""
                 SELECT 
-                    pair_symbol,
-                    signal_timestamp,
-                    total_score,
-                    entry_price,
-                    candles_data
-                FROM web.signal_analysis
-                WHERE signal_timestamp >= NOW() - INTERVAL '{days} days'
-                ORDER BY signal_timestamp DESC
+                    sa.pair_symbol,
+                    sa.signal_timestamp,
+                    sa.total_score,
+                    sa.entry_price,
+                    sa.candles_data
+                FROM web.signal_analysis sa
+                JOIN public.trading_pairs tp ON sa.trading_pair_id = tp.id
+                WHERE sa.signal_timestamp >= NOW() - INTERVAL '{days} days'
+                AND (
+                    '{EXCHANGE_FILTER}' = 'ALL' 
+                    OR ('{EXCHANGE_FILTER}' = 'BINANCE' AND tp.exchange_id = {EXCHANGE_IDS['BINANCE']})
+                    OR ('{EXCHANGE_FILTER}' = 'BYBIT' AND tp.exchange_id = {EXCHANGE_IDS['BYBIT']})
+                )
+                ORDER BY sa.signal_timestamp DESC
             """
             cur.execute(query)
             rows = cur.fetchall()

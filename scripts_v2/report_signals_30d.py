@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir))
 
-from pump_analysis_lib import get_db_connection
+from pump_analysis_lib import get_db_connection, EXCHANGE_FILTER, EXCHANGE_IDS
 
 def generate_report(days=30):
     print("="*100)
@@ -21,18 +21,28 @@ def generate_report(days=30):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             # Fetch stats
-            query = f"""
-                SELECT 
-                    pair_symbol,
-                    signal_timestamp,
-                    total_score,
-                    max_growth_pct,
-                    max_drawdown_pct,
-                    time_to_peak_seconds
-                FROM web.signal_analysis
-                WHERE signal_timestamp >= NOW() - INTERVAL '{days} days'
-                ORDER BY signal_timestamp DESC
-            """
+            SELECT 
+                    sa.pair_symbol,
+                    sa.signal_timestamp,
+                    sa.total_score,
+                    sa.max_growth_pct,
+                    sa.max_drawdown_pct,
+                    sa.time_to_peak_seconds
+                FROM web.signal_analysis sa
+                JOIN public.trading_pairs tp ON sa.trading_pair_id = tp.id
+                WHERE sa.signal_timestamp >= NOW() - INTERVAL '{days} days'
+                AND (
+                    '{filter}' = 'ALL' 
+                    OR ('{filter}' = 'BINANCE' AND tp.exchange_id = {binance_id})
+                    OR ('{filter}' = 'BYBIT' AND tp.exchange_id = {bybit_id})
+                )
+                ORDER BY sa.signal_timestamp DESC
+            """.format(
+                days=days,
+                filter=EXCHANGE_FILTER,
+                binance_id=EXCHANGE_IDS['BINANCE'],
+                bybit_id=EXCHANGE_IDS['BYBIT']
+            )
             cur.execute(query)
             rows = cur.fetchall()
             
