@@ -1,6 +1,6 @@
 """
 Optimization library for strategy parameter testing
-FIXED VERSION: Correct intracandle order processing
+UPDATED: Hybrid timeout exit strategy for loss minimization
 """
 from datetime import datetime, timedelta, timezone
 
@@ -18,7 +18,12 @@ def get_candle_direction(candle):
 
 def simulate_combined(candles, entry_price, sl_pct, activation_pct, callback_pct, timeout_hours=None):
     """
-    Simulate combined SL + TS strategy with correct intracandle order
+    Simulate combined SL + TS strategy with HYBRID timeout exit
+    
+    Hybrid Timeout Strategy:
+    - If profit when timeout → close immediately
+    - If small loss (-2% or less) → grace period 2h to reach breakeven
+    - If big loss (> -2%) → close immediately
     
     Args:
         candles: List of candle dicts with OHLC
@@ -37,12 +42,20 @@ def simulate_combined(candles, entry_price, sl_pct, activation_pct, callback_pct
     entry_time_ms = candles[0]['open_time']
     timeout_ms = entry_time_ms + (timeout_hours * 3600 * 1000) if timeout_hours else None
     
+    # Hybrid timeout parameters
+    grace_period_hours = 2
+    grace_period_ms = grace_period_hours * 3600 * 1000
+    grace_period_active = False
+    best_price_in_grace = 0
+    small_loss_threshold = -2.0  # If loss <= -2%, activate grace period
+    
     for candle in candles:
         high = float(candle['high_price'])
         low = float(candle['low_price'])
         close = float(candle['close_price'])
         candle_time = candle['open_time']
         candle_dir = get_candle_direction(candle)
+        current_pnl = ((close - entry_price) / entry_price) * 100
         
         # Process events in correct order based on candle direction
         if candle_dir == 'bullish':
@@ -66,16 +79,16 @@ def simulate_combined(candles, entry_price, sl_pct, activation_pct, callback_pct
             # Bearish candle: open → high → low → close
             # Price goes up first (to high), then down (to low)
             
-            # 1. Check TS activation first (high happens before low)
+            # 1. Check TS activation OR update peak first (high happens before low)
             if not ts_activated and high >= activation_price:
                 ts_activated = True
                 peak_price = high
+            elif ts_activated:
+                # Update peak if already activated
+                if high > peak_price:
+                    peak_price = high
             
-            # 2. Update peak if already activated (before checking SL)
-            elif ts_activated and high > peak_price:
-                peak_price = high
-            
-            # 3. Check SL only if TS not activated (low happens after high)
+            # 2. Check SL only if TS not activated (low happens after high)
             if not ts_activated and low <= sl_price:
                 return sl_pct
         
@@ -86,9 +99,38 @@ def simulate_combined(candles, entry_price, sl_pct, activation_pct, callback_pct
                 # Calculate exact exit PnL
                 return ((ts_exit_price - entry_price) / entry_price) * 100
         
-        # Check timeout (if TS not activated)
-        if not ts_activated and timeout_ms and candle_time >= timeout_ms:
-            return ((close - entry_price) / entry_price) * 100
+        # HYBRID TIMEOUT LOGIC
+        if not ts_activated and timeout_ms:
+            # Main timeout reached
+            if candle_time >= timeout_ms and not grace_period_active:
+                if current_pnl >= 0:
+                    # PROFIT or BREAKEVEN → close immediately
+                    return current_pnl
+                
+                elif current_pnl >= small_loss_threshold:
+                    # SMALL LOSS → activate grace period
+                    grace_period_active = True
+                    best_price_in_grace = close
+                    continue
+                
+                else:
+                    # BIG LOSS → cut it immediately
+                    return current_pnl
+            
+            # Grace period active (additional 2h for recovery)
+            if grace_period_active:
+                # Track best price in grace period
+                if close > best_price_in_grace:
+                    best_price_in_grace = close
+                
+                # Exit if recovered to near-breakeven
+                if current_pnl >= -0.5:  # Almost breakeven
+                    return current_pnl
+                
+                # Grace period expired
+                if candle_time >= timeout_ms + grace_period_ms:
+                    # Exit at current price (grace period didn't help enough)
+                    return current_pnl
     
     # Position still open at end
     final_price = float(candles[-1]['close_price'])
