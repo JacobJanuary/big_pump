@@ -1,7 +1,98 @@
 """
 Optimization library for strategy parameter testing
+FIXED VERSION: Correct intracandle order processing
 """
 from datetime import datetime, timedelta, timezone
+
+def get_candle_direction(candle):
+    """
+    Determine candle direction to understand intracandle event order
+    
+    Returns:
+        'bullish' if close >= open (low happens first, then high)
+        'bearish' if close < open (high happens first, then low)
+    """
+    open_price = float(candle['open_price'])
+    close_price = float(candle['close_price'])
+    return 'bullish' if close_price >= open_price else 'bearish'
+
+def simulate_combined(candles, entry_price, sl_pct, activation_pct, callback_pct, timeout_hours=None):
+    """
+    Simulate combined SL + TS strategy with correct intracandle order
+    
+    Args:
+        candles: List of candle dicts with OHLC
+        entry_price: Entry price
+        sl_pct: Stop-loss percentage (negative, e.g. -5)
+        activation_pct: TS activation percentage (positive, e.g. 10)
+        callback_pct: TS callback percentage (positive, e.g. 2)
+        timeout_hours: Hours to hold if TS not activated
+    
+    Returns: PnL percentage
+    """
+    sl_price = entry_price * (1 + sl_pct / 100)
+    activation_price = entry_price * (1 + activation_pct / 100)
+    ts_activated = False
+    peak_price = entry_price
+    entry_time_ms = candles[0]['open_time']
+    timeout_ms = entry_time_ms + (timeout_hours * 3600 * 1000) if timeout_hours else None
+    
+    for candle in candles:
+        high = float(candle['high_price'])
+        low = float(candle['low_price'])
+        close = float(candle['close_price'])
+        candle_time = candle['open_time']
+        candle_dir = get_candle_direction(candle)
+        
+        # Process events in correct order based on candle direction
+        if candle_dir == 'bullish':
+            # Bullish candle: open → low → high → close
+            # Price goes down first (to low), then up (to high)
+            
+            # 1. Check SL first (low happens before high)
+            if not ts_activated and low <= sl_price:
+                return sl_pct
+            
+            # 2. Check TS activation (high happens after low)
+            if not ts_activated and high >= activation_price:
+                ts_activated = True
+                peak_price = high
+            elif ts_activated:
+                # Update peak if we're already tracking
+                if high > peak_price:
+                    peak_price = high
+        
+        else:  # bearish
+            # Bearish candle: open → high → low → close
+            # Price goes up first (to high), then down (to low)
+            
+            # 1. Check TS activation first (high happens before low)
+            if not ts_activated and high >= activation_price:
+                ts_activated = True
+                peak_price = high
+            
+            # 2. Update peak if already activated (before checking SL)
+            elif ts_activated and high > peak_price:
+                peak_price = high
+            
+            # 3. Check SL only if TS not activated (low happens after high)
+            if not ts_activated and low <= sl_price:
+                return sl_pct
+        
+        # Check TS callback (after processing high/low in correct order)
+        if ts_activated:
+            ts_exit_price = peak_price * (1 - callback_pct / 100)
+            if low <= ts_exit_price:
+                # Calculate exact exit PnL
+                return ((ts_exit_price - entry_price) / entry_price) * 100
+        
+        # Check timeout (if TS not activated)
+        if not ts_activated and timeout_ms and candle_time >= timeout_ms:
+            return ((close - entry_price) / entry_price) * 100
+    
+    # Position still open at end
+    final_price = float(candles[-1]['close_price'])
+    return ((final_price - entry_price) / entry_price) * 100
 
 def simulate_sl_with_timeout(candles, entry_price, sl_pct, timeout_hours=None):
     """
@@ -11,7 +102,7 @@ def simulate_sl_with_timeout(candles, entry_price, sl_pct, timeout_hours=None):
         candles: List of candle dicts
         entry_price: Entry price
         sl_pct: Stop-loss percentage (negative)
-        timeout_hours: Hours to hold if no SL hit (None = hold till end)
+        timeout_hours: Hours to hold if no SL hit
     
     Returns: PnL percentage
     """
@@ -21,15 +112,15 @@ def simulate_sl_with_timeout(candles, entry_price, sl_pct, timeout_hours=None):
     
     for candle in candles:
         low = float(candle['low_price'])
+        close = float(candle['close_price'])
         candle_time = candle['open_time']
         
-        # Check SL
+        # Check SL (always checks low regardless of candle direction)
         if low <= sl_price:
             return sl_pct
         
         # Check timeout
         if timeout_ms and candle_time >= timeout_ms:
-            close = float(candle['close_price'])
             return ((close - entry_price) / entry_price) * 100
     
     # Position still open at end
@@ -38,7 +129,7 @@ def simulate_sl_with_timeout(candles, entry_price, sl_pct, timeout_hours=None):
 
 def simulate_trailing_stop(candles, entry_price, activation_pct, callback_pct, timeout_hours=None):
     """
-    Simulate Trailing Stop with optional timeout if not activated
+    Simulate Trailing Stop with correct intracandle order
     
     Args:
         candles: List of candle dicts
@@ -58,81 +149,27 @@ def simulate_trailing_stop(candles, entry_price, activation_pct, callback_pct, t
     for candle in candles:
         high = float(candle['high_price'])
         low = float(candle['low_price'])
+        close = float(candle['close_price'])
         candle_time = candle['open_time']
         
-        # Check if TS should activate
+        # Check activation (high is always the activation point)
         if not ts_activated and high >= activation_price:
             ts_activated = True
             peak_price = high
-        
-        if ts_activated:
+        elif ts_activated:
             # Update peak
             if high > peak_price:
                 peak_price = high
-            
-            # Check callback from peak
-            ts_exit_price = peak_price * (1 - callback_pct / 100)
-            if low <= ts_exit_price:
-                return ((ts_exit_price - entry_price) / entry_price) * 100
-        else:
-            # TS not activated, check timeout
-            if timeout_ms and candle_time >= timeout_ms:
-                close = float(candle['close_price'])
-                return ((close - entry_price) / entry_price) * 100
-    
-    # Position still open at end
-    final_price = float(candles[-1]['close_price'])
-    return ((final_price - entry_price) / entry_price) * 100
-
-def simulate_combined(candles, entry_price, sl_pct, activation_pct, callback_pct, timeout_hours=None):
-    """
-    Simulate combined SL + TS strategy with timeout
-    
-    Args:
-        candles: List of candle dicts
-        entry_price: Entry price
-        sl_pct: Stop-loss percentage (negative)
-        activation_pct: TS activation percentage (positive)
-        callback_pct: TS callback percentage (positive)
-        timeout_hours: Hours to hold if TS not activated
-    
-    Returns: PnL percentage
-    """
-    sl_price = entry_price * (1 + sl_pct / 100)
-    activation_price = entry_price * (1 + activation_pct / 100)
-    ts_activated = False
-    peak_price = entry_price
-    entry_time_ms = candles[0]['open_time']
-    timeout_ms = entry_time_ms + (timeout_hours * 3600 * 1000) if timeout_hours else None
-    
-    for candle in candles:
-        high = float(candle['high_price'])
-        low = float(candle['low_price'])
-        candle_time = candle['open_time']
         
-        # Check SL (only before TS activation)
-        if not ts_activated and low <= sl_price:
-            return sl_pct
-        
-        # Check if TS should activate
-        if not ts_activated and high >= activation_price:
-            ts_activated = True
-            peak_price = high
-        
+        # Check callback
         if ts_activated:
-            # Update peak
-            if high > peak_price:
-                peak_price = high
-            
-            # Check callback from peak
             ts_exit_price = peak_price * (1 - callback_pct / 100)
             if low <= ts_exit_price:
                 return ((ts_exit_price - entry_price) / entry_price) * 100
-        else:
-            # TS not activated, check timeout
-            if timeout_ms and candle_time >= timeout_ms:
-                close = float(candle['close_price'])
-                return ((close - entry_price) / entry_price) * 100
+        
+        # Check timeout if not activated
+        if not ts_activated and timeout_ms and candle_time >= timeout_ms:
+            return ((close - entry_price) / entry_price) * 100
     
     # Position still open at end
     final_price = float(candles[-1]['close_price'])
