@@ -69,8 +69,6 @@ def scan_for_signals():
     
     try:
         with get_db_connection() as conn:
-    try:
-        with get_db_connection() as conn:
             # Single robust query matching pump_analysis_lib.py logic
             placeholders = ','.join([f"'{p}'" for p in TARGET_PATTERNS])
             
