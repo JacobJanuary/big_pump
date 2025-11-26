@@ -582,6 +582,10 @@ ORDER BY
             # We fetch all. We dedup.
             # We broadcast the new unique list.
             
+            if not unique_signals:
+                logger.debug("No new unique signals to broadcast")
+                return []
+
             self.last_signals = unique_signals
             await self.broadcast_signals(unique_signals)
 
@@ -594,10 +598,13 @@ ORDER BY
                     for pattern in sig.get('patterns', []):
                         pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
                 logger.info(f"   Pattern distribution: {pattern_counts}")
+            
+            return unique_signals
                 
         except Exception as e:
             logger.error(f"Error in full query and broadcast: {e}")
             self.stats['errors'] += 1
+            return []
 
     async def broadcast_signals(self, signals: List[dict]):
         """Отправка сигналов всем аутентифицированным клиентам"""
