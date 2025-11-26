@@ -19,6 +19,22 @@ import settings
 
 # ... (class definition)
 
+class HighScoreSignalWebSocketServer:
+    """
+    WebSocket сервер для стриминга высококачественных торговых сигналов
+    Поддерживает гибридный режим работы:
+    - PostgreSQL LISTEN/NOTIFY (event-driven, <10ms latency)
+    - Lightweight polling (fallback, 1 sec interval)
+    
+    Фильтры:
+    - total_score > SCORE_THRESHOLD (250)
+    - Паттерны: TARGET_PATTERNS
+    - Timeframes: 15m, 1h, 4h
+    - contract_type_id = 1
+    - exchange_id: Respects EXCHANGE_FILTER
+    - Время жизни сигнала: 32 минуты (настраиваемое)
+    """
+
     def __init__(self, config: dict):
         # Настройки сервера
         self.host = config.get('WS_SERVER_HOST', '0.0.0.0')
