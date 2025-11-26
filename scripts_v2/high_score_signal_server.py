@@ -34,6 +34,17 @@ from pump_analysis_lib import (
     TARGET_PATTERNS
 )
 
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('high_score_signal_ws_server.log')
+    ]
+)
+logger = logging.getLogger('HighScoreSignalWSServer')
+
 # ... (class definition)
 
 class HighScoreSignalWebSocketServer:
