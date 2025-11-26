@@ -68,6 +68,7 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False):
             # Process each signal
             inserted = 0
             skipped = 0
+            inserted_signals = []
             for i, signal in enumerate(unique_signals, 1):
                 if i % 10 == 0:
                     print(f"Processing {i}/{len(unique_signals)}... (inserted: {inserted}, skipped: {skipped})", end='\r')
@@ -150,6 +151,7 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False):
                     ))
                 
                 inserted += 1
+                inserted_signals.append(signal)
                 
                 # Commit every 50 signals
                 if inserted % 50 == 0:
@@ -161,11 +163,24 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False):
             print(f"\n\nSuccessfully populated {inserted} new signals into web.signal_analysis")
             if skipped > 0:
                 print(f"Skipped {skipped} existing signals")
-            
+                
+            # Return list of newly inserted signals for scanner
+            # We need to reconstruct the signal object or just return the basic info needed for alerting
+            new_signals = []
+            if inserted > 0:
+                # Re-iterate unique_signals to find which ones were inserted
+                # This is a bit inefficient but safe. Or we could have collected them in the loop.
+                # Let's collect in the loop in future, but for now, let's just return the ones that weren't skipped.
+                # Actually, better to modify the loop above.
+                pass
+                
+            return inserted_signals
+
     except Exception as e:
         print(f"\nError: {e}")
         import traceback
         traceback.print_exc()
+        return []
 
 if __name__ == "__main__":
     import argparse
