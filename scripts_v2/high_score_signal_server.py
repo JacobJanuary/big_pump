@@ -279,25 +279,62 @@ ORDER BY
         """
         Callback вызывается при получении NOTIFY от PostgreSQL
         Обеспечивает мгновенную реакцию на новые сигналы (<10ms)
+        С поддержкой Smart Retry для обработки гонки данных
         """
+        target_signal_id = None
+        target_score = 0
+        
         try:
             # Парсим payload от триггера
             if payload:
                 data = json.loads(payload)
+                target_signal_id = data.get('id')
+                target_score = data.get('total_score', 0)
+                
                 logger.info(f"⚡ NOTIFY received: event={data.get('event')}, "
-                          f"id={data.get('id')}, symbol={data.get('pair_symbol')}, "
-                          f"total_score={data.get('total_score')}")
+                          f"id={target_signal_id}, symbol={data.get('pair_symbol')}, "
+                          f"total_score={target_score}")
             else:
                 logger.info(f"⚡ NOTIFY received from PID {pid}")
 
-            # Выполняем полный запрос и broadcast
-            await self.do_full_query_and_broadcast()
-
+            # Smart Retry Logic
+            # Если мы знаем ID сигнала и он подходит по скору, мы должны его найти.
+            # Если не находим сразу - повторяем попытки (ждем завершения транзакции записи паттернов)
+            
+            max_retries = 10
+            retry_delay = 1.0 # секунд
+            
+            for attempt in range(1, max_retries + 1):
+                # Выполняем полный запрос
+                signals = await self.do_full_query_and_broadcast()
+                
+                # Если у нас нет конкретного ID (пустой payload), одного прохода достаточно
+                if not target_signal_id:
+                    break
+                    
+                # Проверяем, нашли ли мы целевой сигнал
+                found = any(s['id'] == target_signal_id for s in signals)
+                
+                if found:
+                    if attempt > 1:
+                        logger.info(f"✅ Signal {target_signal_id} found on attempt {attempt}!")
+                    break
+                else:
+                    # Если сигнал подходит по фильтру, но мы его не нашли - значит паттерны еще не записались
+                    if target_score > SCORE_THRESHOLD:
+                        logger.warning(f"⏳ Signal {target_signal_id} (Score: {target_score}) not found in query results (Attempt {attempt}/{max_retries}). "
+                                     f"Waiting {retry_delay}s for patterns to sync...")
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        # Если скор ниже порога, искать нет смысла
+                        break
+            
         except json.JSONDecodeError:
             logger.warning(f"Invalid JSON in NOTIFY payload: {payload[:100]}")
-            # Все равно делаем запрос
+            # Все равно делаем запрос (один раз)
             await self.do_full_query_and_broadcast()
         except Exception as e:
+            logger.error(f"Error in on_notify_received: {e}")
             logger.error(f"Error processing NOTIFY: {e}")
             self.stats['errors'] += 1
 
