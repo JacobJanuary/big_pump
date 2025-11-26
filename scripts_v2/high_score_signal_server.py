@@ -136,6 +136,12 @@ class HighScoreSignalWebSocketServer:
         logger.info(f"High-Score Signal WebSocket Server initialized on {self.host}:{self.port}")
         logger.info(f"Hybrid mode: NOTIFY={'enabled' if self.use_notify else 'disabled'}, "
                    f"Lightweight check interval={self.lightweight_check_interval}s")
+        
+        # Check auth status
+        default_hash = hashlib.sha256(b'change_me_please').hexdigest()
+        is_default = self.auth_token == default_hash
+        logger.info(f"Auth Status: {'⚠️ USING DEFAULT PASSWORD' if is_default else '✅ Custom password loaded'}")
+        
         logger.info(f"Filters: total_score > {SCORE_THRESHOLD}, patterns={TARGET_PATTERNS}, "
                    f"Exchange Filter: {EXCHANGE_FILTER}")
 
@@ -859,13 +865,17 @@ def main():
     # Загрузка конфигурации
     load_dotenv()
 
+    ws_password = os.getenv('WS_AUTH_PASSWORD')
+    if not ws_password:
+        logger.critical("❌ SECURITY ERROR: WS_AUTH_PASSWORD not set in environment!")
+        logger.critical("Please set WS_AUTH_PASSWORD in .env file.")
+        sys.exit(1)
+
     config = {
         # WebSocket сервер - специальный порт для high-score сигналов
         'WS_SERVER_HOST': os.getenv('HIGH_SCORE_WS_SERVER_HOST', '0.0.0.0'),
         'WS_SERVER_PORT': os.getenv('HIGH_SCORE_WS_SERVER_PORT', '25370'),
-        'WS_AUTH_TOKEN': hashlib.sha256(
-            os.getenv('WS_AUTH_PASSWORD', 'change_me_please').encode()
-        ).hexdigest(),
+        'WS_AUTH_TOKEN': hashlib.sha256(ws_password.encode()).hexdigest(),
 
         # База данных
         'DB_HOST': os.getenv('DB_HOST', 'localhost'),
