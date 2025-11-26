@@ -13,9 +13,26 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Set, Dict, Optional, List
 import signal
+import sys
+import os
+from pathlib import Path
+
+# Add config directory to path
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent
+config_dir = project_root / 'config'
+sys.path.append(str(config_dir))
+
 import settings
 
-# ... (imports)
+# Import unified constants
+# Since we are in scripts_v2, this import works naturally
+from pump_analysis_lib import (
+    EXCHANGE_FILTER, 
+    EXCHANGE_IDS, 
+    SCORE_THRESHOLD, 
+    TARGET_PATTERNS
+)
 
 # ... (class definition)
 
