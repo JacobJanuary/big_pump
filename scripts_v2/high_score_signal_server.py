@@ -354,7 +354,13 @@ ORDER BY
             
         if symbol in self.seen_signals:
             last_ts = self.seen_signals[symbol]
-            # Check cooldown
+            
+            # Если это тот же самый сигнал (тот же timestamp), мы его оставляем
+            # Это важно для поддержания списка активных сигналов при поллинге
+            if signal_ts == last_ts:
+                return False
+                
+            # Check cooldown for NEW signals
             if (signal_ts - last_ts).total_seconds() < self.dedup_cooldown_hours * 3600:
                 return True
         
