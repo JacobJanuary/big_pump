@@ -821,6 +821,33 @@ ORDER BY
                 self.stats['errors'] += 1
                 await asyncio.sleep(5)  # Короткая пауза при ошибке
 
+    async def load_seen_signals(self):
+        """
+        Загрузка истории сигналов за последние 24 часа для корректной дедупликации после перезапуска
+        """
+        try:
+            logger.info(f"Loading signal history for the last {self.dedup_cooldown_hours} hours...")
+            async with self.db_pool.acquire() as conn:
+                query = f"""
+                    SELECT tp.pair_symbol, MAX(sh.timestamp) as last_ts
+                    FROM fas_v2.scoring_history sh
+                    JOIN public.trading_pairs tp ON sh.trading_pair_id = tp.id
+                    WHERE sh.timestamp >= NOW() - INTERVAL '{self.dedup_cooldown_hours} hours'
+                      AND sh.total_score > {SCORE_THRESHOLD}
+                    GROUP BY tp.pair_symbol
+                """
+                rows = await conn.fetch(query)
+                
+                count = 0
+                for row in rows:
+                    self.seen_signals[row['pair_symbol']] = row['last_ts']
+                    count += 1
+                
+                logger.info(f"Loaded {count} historical signals into deduplication cache.")
+                
+        except Exception as e:
+            logger.error(f"Failed to load seen signals: {e}")
+
     async def start(self):
         """Запуск сервера с гибридным режимом"""
         logger.info("=" * 70)
@@ -829,6 +856,9 @@ ORDER BY
 
         # Инициализация БД
         await self.init_db()
+        
+        # Load seen signals from DB to persist deduplication across restarts
+        await self.load_seen_signals()
 
         # Попытка инициализации NOTIFY
         await self.init_notify_listener()
