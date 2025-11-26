@@ -85,7 +85,8 @@ def generate_detailed_report(days=30):
                     sa.signal_timestamp,
                     sa.total_score,
                     sa.entry_price,
-                    sa.candles_data
+                    sa.candles_data,
+                    sa.entry_time
                 FROM web.signal_analysis sa
                 JOIN public.trading_pairs tp ON sa.trading_pair_id = tp.id
                 WHERE sa.signal_timestamp >= NOW() - INTERVAL '{days} days'
@@ -109,6 +110,7 @@ def generate_detailed_report(days=30):
                 score = row[2]
                 entry_price = float(row[3])
                 candles_data = row[4]
+                entry_time_dt = row[5]
                 
                 if not candles_data:
                     continue
@@ -118,10 +120,6 @@ def generate_detailed_report(days=30):
                     candles = json.loads(candles_data)
                 else:
                     candles = candles_data
-                
-                # Entry time (approximate from signal timestamp + 15m or take first candle)
-                # Better to use signal_ts + 15m as per logic
-                entry_time_dt = signal_ts + timedelta(minutes=15)
                 
                 # Analyze
                 dd_pct, dd_time, pump_pct, pump_time = analyze_signal_candles(candles, entry_price, entry_time_dt)
