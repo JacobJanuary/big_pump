@@ -71,9 +71,12 @@ class HighScoreSignalWebSocketServer:
             'host': config.get('DB_HOST', 'localhost'),
             'port': int(config.get('DB_PORT', 5432)),
             'database': config.get('DB_NAME'),
-            'user': config.get('DB_USER'),
-            'password': config.get('DB_PASSWORD')
+            'user': config.get('DB_USER')
         }
+        
+        # Only add password if explicitly provided (supports .pgpass)
+        if config.get('DB_PASSWORD'):
+            self.db_config['password'] = config.get('DB_PASSWORD')
 
         # Настройки запроса
         self.query_interval = int(config.get('QUERY_INTERVAL_SECONDS', 3))
