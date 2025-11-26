@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import requests
 import time
+from datetime import datetime, timezone
 
 # Add scripts directory to path
 current_dir = Path(__file__).resolve().parent
@@ -154,9 +155,22 @@ def populate_minute_candles():
                     cur.execute(check_query, (signal_id,))
                     count = cur.fetchone()[0]
                 
-                if count > 0:
+                # Logic for re-fetching incomplete signals
+                is_mature = (datetime.now(timezone.utc) - entry_time).total_seconds() > 24 * 3600
+                
+                if count >= 1430:
                     print(f"Skip (already has {count} candles)")
                     continue
+                elif count > 0 and not is_mature:
+                    print(f"Skip (has {count} candles, signal too young for full 24h)")
+                    continue
+                elif count > 0 and is_mature:
+                    print(f"Refetching (has {count} candles, but signal is mature >24h). Deleting old...")
+                    delete_query = "DELETE FROM web.minute_candles WHERE signal_analysis_id = %s"
+                    with conn.cursor() as cur:
+                        cur.execute(delete_query, (signal_id,))
+                        conn.commit()
+                # If count == 0, proceed to fetch
                 
                 # Fetch based on exchange
                 candles = None
