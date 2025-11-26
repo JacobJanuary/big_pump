@@ -24,6 +24,8 @@ config_dir = project_root / 'config'
 sys.path.append(str(config_dir))
 
 import settings
+import asyncpg
+import websockets
 
 # Import unified constants
 # Since we are in scripts_v2, this import works naturally
