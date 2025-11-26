@@ -13,52 +13,11 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Set, Dict, Optional, List
 import signal
-import sys
-import os
-from pathlib import Path
+import settings
 
-import asyncpg
-import websockets
+# ... (imports)
 
-# Add scripts directory to path
-current_dir = Path(__file__).resolve().parent
-sys.path.append(str(current_dir))
-
-# Import unified constants
-from pump_analysis_lib import (
-    EXCHANGE_FILTER, 
-    EXCHANGE_IDS, 
-    SCORE_THRESHOLD, 
-    TARGET_PATTERNS
-)
-
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('high_score_signal_ws_server.log')
-    ]
-)
-logger = logging.getLogger('HighScoreSignalWSServer')
-
-
-class HighScoreSignalWebSocketServer:
-    """
-    WebSocket сервер для стриминга высококачественных торговых сигналов
-    Поддерживает гибридный режим работы:
-    - PostgreSQL LISTEN/NOTIFY (event-driven, <10ms latency)
-    - Lightweight polling (fallback, 1 sec interval)
-    
-    Фильтры:
-    - total_score > SCORE_THRESHOLD (250)
-    - Паттерны: TARGET_PATTERNS
-    - Timeframes: 15m, 1h, 4h
-    - contract_type_id = 1
-    - exchange_id: Respects EXCHANGE_FILTER
-    - Время жизни сигнала: 32 минуты (настраиваемое)
-    """
+# ... (class definition)
 
     def __init__(self, config: dict):
         # Настройки сервера
@@ -66,17 +25,18 @@ class HighScoreSignalWebSocketServer:
         self.port = int(config.get('WS_SERVER_PORT', 25370))
         self.auth_token = config.get('WS_AUTH_TOKEN')  # Хешированный токен
 
-        # Настройки БД
+        # Настройки БД из settings.py (единый источник правды)
+        db_settings = settings.DATABASE
         self.db_config = {
-            'host': config.get('DB_HOST', 'localhost'),
-            'port': int(config.get('DB_PORT', 5432)),
-            'database': config.get('DB_NAME'),
-            'user': config.get('DB_USER')
+            'host': db_settings['host'],
+            'port': int(db_settings['port']),
+            'database': db_settings['dbname'],
+            'user': db_settings['user']
         }
         
         # Only add password if explicitly provided (supports .pgpass)
-        if config.get('DB_PASSWORD'):
-            self.db_config['password'] = config.get('DB_PASSWORD')
+        if db_settings.get('password'):
+            self.db_config['password'] = db_settings['password']
 
         # Настройки запроса
         self.query_interval = int(config.get('QUERY_INTERVAL_SECONDS', 3))
