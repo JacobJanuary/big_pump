@@ -101,7 +101,7 @@ class HighScoreSignalWebSocketServer:
             'score_month_filter': 100,
             'max_trades_filter': 100,
             'stop_loss_filter': 4.0,
-            'trailing_activation_filter': 48.0,
+            'trailing_activation_filter': 26.0,
             'trailing_distance_filter': 1.0
         }
 
