@@ -120,7 +120,7 @@ class HighScoreSignalWebSocketServer:
         
         # Deduplication state
         self.seen_signals = {} # symbol -> timestamp
-        self.dedup_cooldown_hours = 24
+        self.dedup_cooldown_hours = 12
 
         # Состояние
         self.db_pool: Optional[asyncpg.Pool] = None

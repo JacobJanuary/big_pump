@@ -17,7 +17,7 @@ from pump_analysis_lib import (
     get_entry_price_and_candles
 )
 
-def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_hours=24):
+def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_hours=12):
     """
     Fetch signals, preprocess them, and store in web.signal_analysis table
     
@@ -25,7 +25,7 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
         days: Number of days to look back
         limit: Limit number of signals
         force_refresh: If True, TRUNCATE and repopulate. If False, only add new signals.
-        cooldown_hours: Deduplication cooldown period in hours (default: 24)
+        cooldown_hours: Deduplication cooldown period in hours (default: 12, synchronized with Scanner)
     """
     print(f"Populating signal analysis table for the last {days} days...")
     print(f"Using {cooldown_hours}h deduplication cooldown...")
@@ -206,7 +206,7 @@ if __name__ == "__main__":
     parser.add_argument('--days', type=int, default=30, help='Number of days to look back')
     parser.add_argument('--limit', type=int, default=None, help='Limit number of signals')
     parser.add_argument('--force-refresh', action='store_true', help='Force full refresh (TRUNCATE and repopulate)')
-    parser.add_argument('--cooldown', type=int, default=24, help='Deduplication cooldown in hours (default: 24)')
+    parser.add_argument('--cooldown', type=int, default=12, help='Deduplication cooldown in hours (default: 12)')
     args = parser.parse_args()
     
     populate_signal_analysis(days=args.days, limit=args.limit, force_refresh=args.force_refresh, cooldown_hours=args.cooldown)
