@@ -814,20 +814,19 @@ ORDER BY
                     logger.debug("Fallback check (NOTIFY mode, safety net)")
                     if await self.check_for_changes_lightweight():
                         await self.do_full_query_and_broadcast()
-                        last_full_query = datetime.now()
-
+                        last_full_query = datetime.now(timezone.utc)  # Трекинг времени последнего запроса
                 else:
                     # ===== POLLING MODE =====
                     # Легковесная проверка на изменения
                     has_changes = await self.check_for_changes_lightweight()
 
                     # Принудительный полный запрос каждые N секунд (safety net)
-                    time_since_last = (datetime.now() - last_full_query).total_seconds()
+                    time_since_last = (datetime.now(timezone.utc) - last_full_query).total_seconds()
                     force_full_query = time_since_last >= self.query_interval
 
                     if has_changes or force_full_query:
                         await self.do_full_query_and_broadcast()
-                        last_full_query = datetime.now()
+                        last_full_query = datetime.now(timezone.utc)
                     else:
                         logger.debug("No changes detected, skipping full query")
 
@@ -858,7 +857,11 @@ ORDER BY
                 
                 count = 0
                 for row in rows:
-                    self.seen_signals[row['pair_symbol']] = row['last_ts']
+                    last_ts = row['last_ts']
+                    # Ensure timezone-aware
+                    if last_ts.tzinfo is None:
+                        last_ts = last_ts.replace(tzinfo=timezone.utc)
+                    self.seen_signals[row['pair_symbol']] = last_ts
                     count += 1
                 
                 logger.info(f"Loaded {count} historical signals into deduplication cache.")
