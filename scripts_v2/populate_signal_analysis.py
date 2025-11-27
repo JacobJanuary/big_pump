@@ -206,6 +206,8 @@ if __name__ == "__main__":
     parser.add_argument('--days', type=int, default=30, help='Number of days to look back')
     parser.add_argument('--limit', type=int, default=None, help='Limit number of signals')
     parser.add_argument('--force-refresh', action='store_true', help='Force full refresh (TRUNCATE and repopulate)')
+    parser.add_argument('--cooldown', type=int, default=24, help='Deduplication cooldown in hours (default: 24)')
     args = parser.parse_args()
     
-    populate_signal_analysis(days=args.days, limit=args.limit, force_refresh=args.force_refresh)
+    populate_signal_analysis(days=args.days, limit=args.limit, force_refresh=args.force_refresh, cooldown_hours=args.cooldown)
+
