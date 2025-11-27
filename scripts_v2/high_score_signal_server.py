@@ -381,7 +381,7 @@ ORDER BY
 
     def clean_seen_signals(self):
         """Remove old entries from seen_signals"""
-        now = datetime.now()
+        now = datetime.now(timezone.utc)  # Fixed: timezone-aware
         to_remove = []
         for symbol, ts in self.seen_signals.items():
             if (now - ts).total_seconds() > self.dedup_cooldown_hours * 3600:
