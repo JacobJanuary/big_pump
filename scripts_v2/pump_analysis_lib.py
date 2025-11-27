@@ -57,6 +57,7 @@ def get_binance_price_at_time(symbol, timestamp_ms):
     Get price from Binance at specific timestamp
     Returns: float or None
     """
+    import time
     try:
         url = f"{BINANCE_BASE_URL}/fapi/v1/klines"
         params = {
@@ -68,12 +69,20 @@ def get_binance_price_at_time(symbol, timestamp_ms):
         
         response = requests.get(url, params=params, timeout=10)
         
+        # Rate limiting: Binance allows ~1200 requests/min, play it safe with ~4 req/sec
+        time.sleep(0.25)  # 250ms delay between requests
+        
         if response.status_code == 200:
             data = response.json()
             if data and len(data) > 0:
                 # Return open price of that minute
                 open_price = float(data[0][1])
                 return open_price
+        elif response.status_code == 429:
+            print(f"  Binance API error for {symbol}: 429 (Rate limit exceeded)")
+            print(f"  Waiting 60 seconds before retry...")
+            time.sleep(60)  # Wait 1 minute if we hit rate limit
+            return None
         return None
             
     except Exception as e:
@@ -85,6 +94,7 @@ def get_bybit_price_at_time(symbol, timestamp_ms):
     Get price from Bybit at specific timestamp
     Returns: float or None
     """
+    import time
     try:
         url = f"{BYBIT_BASE_URL}/v5/market/kline"
         params = {
@@ -97,15 +107,22 @@ def get_bybit_price_at_time(symbol, timestamp_ms):
         
         response = requests.get(url, params=params, timeout=10)
         
+        # Rate limiting: Similar to Binance, add delay
+        time.sleep(0.25)  # 250ms delay between requests
+        
         if response.status_code == 200:
             data = response.json()
             if data.get('retCode') == 0:
                 list_data = data.get('result', {}).get('list', [])
                 if list_data and len(list_data) > 0:
-                    # Bybit returns [startTime, open, high, low, close, volume, turnover]
-                    # Note: Bybit returns strings
+                    # Bybit returns [timestamp, open, high, low, close, volume, turnover]
                     open_price = float(list_data[0][1])
                     return open_price
+        elif response.status_code == 429:
+            print(f"  Bybit API error for {symbol}: 429 (Rate limit exceeded)")
+            print(f"  Waiting 60 seconds before retry...")
+            time.sleep(60)
+            return None
         return None
             
     except Exception as e:
