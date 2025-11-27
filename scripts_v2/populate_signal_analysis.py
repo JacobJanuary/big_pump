@@ -17,7 +17,7 @@ from pump_analysis_lib import (
     get_entry_price_and_candles
 )
 
-def populate_signal_analysis(days=30, limit=None, force_refresh=False):
+def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_hours=24):
     """
     Fetch signals, preprocess them, and store in web.signal_analysis table
     
@@ -25,8 +25,10 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False):
         days: Number of days to look back
         limit: Limit number of signals
         force_refresh: If True, TRUNCATE and repopulate. If False, only add new signals.
+        cooldown_hours: Deduplication cooldown period in hours (default: 24)
     """
     print(f"Populating signal analysis table for the last {days} days...")
+    print(f"Using {cooldown_hours}h deduplication cooldown...")
     
     try:
         with get_db_connection() as conn:
@@ -65,7 +67,7 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False):
             print(f"Loaded history for {len(initial_dedup_state)} pairs.")
 
             # Deduplicate
-            unique_signals = deduplicate_signals(signals, cooldown_hours=24, initial_state=initial_dedup_state)
+            unique_signals = deduplicate_signals(signals, cooldown_hours=cooldown_hours, initial_state=initial_dedup_state)
             print(f"After deduplication: {len(unique_signals)} unique signals.")
             
             # Get existing signal timestamps to skip (exact match check)

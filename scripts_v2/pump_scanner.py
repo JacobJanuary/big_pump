@@ -51,9 +51,15 @@ def scan_and_alert():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting scan...")
     print(f"Exchange Filter: {EXCHANGE_FILTER}")
     
-    # Run population script (look back 60 mins to be safe, cron runs every 1-5 mins)
+    # Run population script (look back 60 mins to be safe, cron runs every 15 mins)
     # It returns list of newly inserted signals
-    new_signals = populate_signal_analysis(days=0.042, limit=None, force_refresh=False) # 0.042 days = ~1 hour
+    # Using 12-hour deduplication cooldown to reduce alert delays while preventing spam
+    new_signals = populate_signal_analysis(
+        days=0.042,  # ~1 hour
+        limit=None, 
+        force_refresh=False,
+        cooldown_hours=12  # Reduced from default 24h to minimize notification delays
+    )
     
     if not new_signals:
         print("No new signals found.")
