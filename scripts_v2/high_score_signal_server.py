@@ -347,6 +347,9 @@ ORDER BY
         
         try:
             signal_ts = datetime.fromisoformat(signal_ts_str)
+            # Ensure timezone-aware (from DB comes with TZ, from JSON might not)
+            if signal_ts.tzinfo is None:
+                signal_ts = signal_ts.replace(tzinfo=timezone.utc)
         except:
             # If parsing fails, assume it's new but log error
             logger.error(f"Failed to parse timestamp for {symbol}: {signal_ts_str}")
@@ -354,6 +357,10 @@ ORDER BY
             
         if symbol in self.seen_signals:
             last_ts = self.seen_signals[symbol]
+            
+            # Ensure last_ts is also timezone-aware
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=timezone.utc)
             
             # Если это тот же самый сигнал (тот же timestamp), мы его оставляем
             # Это важно для поддержания списка активных сигналов при поллинге
