@@ -514,7 +514,9 @@ ORDER BY
                 logger.debug("No new unique signals to broadcast")
                 return []  # Return empty list instead of None
 
-            # Update last signals (keep all active ones for initial sync, but broadcast only new ones?)
+            # Deduplication complete - unique_signals contains only non-duplicate signals
+            # based on 12h cooldown check via is_duplicate()
+            
             # Wait, the client expects a list of active signals or a stream of new ones?
             # The original code sent the FULL list of active signals.
             # If we deduplicate, we might filter out active signals that we already sent.
@@ -580,18 +582,8 @@ ORDER BY
             
             # So: Implement `deduplicate_signals` logic on the fetched list.
             
-            unique_signals = []
-            seen_pairs = set()
-            for sig in signals:
-                if sig['pair_symbol'] not in seen_pairs:
-                    unique_signals.append(sig)
-                    seen_pairs.add(sig['pair_symbol'])
-            
-            # Check if the unique list is different from last time?
-            # `check_for_changes_lightweight` checks max_id/timestamp.
-            # If a new signal comes, max_id changes.
-            # We fetch all. We dedup.
-            # We broadcast the new unique list.
+            # unique_signals already filtered by is_duplicate() above (lines 504-508)
+            # No need for additional deduplication
             
             if not unique_signals:
                 logger.debug("No new unique signals to broadcast")
