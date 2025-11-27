@@ -48,11 +48,27 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False):
             
             print(f"Found {len(signals)} signals from database.")
             
+            # Load existing state for deduplication (last signal time per pair)
+            # This ensures we don't insert a signal that is a duplicate of one already in DB
+            print("Loading existing signal history for deduplication...")
+            last_signal_time_query = """
+                SELECT pair_symbol, MAX(signal_timestamp) as last_ts
+                FROM web.signal_analysis
+                GROUP BY pair_symbol
+            """
+            initial_dedup_state = {}
+            if not force_refresh:
+                with conn.cursor() as cur:
+                    cur.execute(last_signal_time_query)
+                    for row in cur.fetchall():
+                        initial_dedup_state[row[0]] = row[1]
+            print(f"Loaded history for {len(initial_dedup_state)} pairs.")
+
             # Deduplicate
-            unique_signals = deduplicate_signals(signals, cooldown_hours=24)
+            unique_signals = deduplicate_signals(signals, cooldown_hours=24, initial_state=initial_dedup_state)
             print(f"After deduplication: {len(unique_signals)} unique signals.")
             
-            # Get existing signal timestamps to skip
+            # Get existing signal timestamps to skip (exact match check)
             if not force_refresh:
                 existing_query = """
                     SELECT signal_timestamp, pair_symbol

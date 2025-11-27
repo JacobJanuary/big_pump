@@ -177,12 +177,16 @@ def fetch_candles_5m(conn, pair_id, start_time_ms, end_time_ms):
     
     return candles
 
-def deduplicate_signals(signals, cooldown_hours=24):
+def deduplicate_signals(signals, cooldown_hours=24, initial_state=None):
     """
     Remove duplicate signals within cooldown period
+    Args:
+        signals: List of signal dicts
+        cooldown_hours: Cooldown in hours
+        initial_state: Dict of {symbol: last_timestamp} to seed deduplication
     Returns: list of unique signals
     """
-    last_signal_time = {}
+    last_signal_time = initial_state.copy() if initial_state else {}
     unique_signals = []
     
     for signal in signals:
