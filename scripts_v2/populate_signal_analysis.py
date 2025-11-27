@@ -94,6 +94,7 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
                 # Skip if already exists (incremental mode)
                 if (signal['timestamp'], signal['pair_symbol']) in existing:
                     skipped += 1
+                    print(f"\n  ⚠️ SKIPPED (exact match): {signal['pair_symbol']} at {signal['timestamp']}")
                     continue
                 
                 # Get entry price and candles
@@ -104,6 +105,8 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
                 )
                 
                 if entry_price is None or not candles:
+                    print(f"\n  ❌ SKIPPED (no entry price/candles): {signal['pair_symbol']} at {signal['timestamp']}")
+                    skipped += 1
                     continue
                 
                 # Calculate metrics
