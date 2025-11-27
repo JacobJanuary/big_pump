@@ -512,7 +512,7 @@ ORDER BY
             
             if not unique_signals:
                 logger.debug("No new unique signals to broadcast")
-                return
+                return []  # Return empty list instead of None
 
             # Update last signals (keep all active ones for initial sync, but broadcast only new ones?)
             # Wait, the client expects a list of active signals or a stream of new ones?
