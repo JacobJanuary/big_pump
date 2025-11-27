@@ -24,6 +24,7 @@ def fetch_minute_candles_from_binance(symbol, start_time_ms, end_time_ms):
     """
     Fetch 1-minute candles from Binance
     """
+    import time
     try:
         url = f"{BINANCE_BASE_URL}/fapi/v1/klines"
         params = {
@@ -35,6 +36,9 @@ def fetch_minute_candles_from_binance(symbol, start_time_ms, end_time_ms):
         }
         
         response = requests.get(url, params=params, timeout=10)
+        
+        # Rate limiting: Add delay to prevent 429 errors
+        time.sleep(0.3)  # 300ms delay for larger data fetches
         
         if response.status_code == 200:
             data = response.json()
@@ -48,6 +52,11 @@ def fetch_minute_candles_from_binance(symbol, start_time_ms, end_time_ms):
                 'volume': float(k[5])
             } for k in data]
             return candles
+        elif response.status_code == 429:
+            print(f"  Binance API rate limit exceeded for {symbol}")
+            print(f"  Waiting 60 seconds...")
+            time.sleep(60)
+            return None
         else:
             print(f"  Binance API error for {symbol}: {response.status_code}")
             return None
@@ -60,6 +69,7 @@ def fetch_minute_candles_from_bybit(symbol, start_time_ms, end_time_ms):
     """
     Fetch 1-minute candles from Bybit
     """
+    import time
     try:
         url = f"{BYBIT_BASE_URL}/v5/market/kline"
         params = {
@@ -73,32 +83,36 @@ def fetch_minute_candles_from_bybit(symbol, start_time_ms, end_time_ms):
         
         response = requests.get(url, params=params, timeout=10)
         
+        # Rate limiting: Add delay to prevent 429 errors
+        time.sleep(0.3)  # 300ms delay for larger data fetches
+        
         if response.status_code == 200:
             data = response.json()
             if data.get('retCode') == 0:
                 # Bybit returns list in REVERSE order (newest first) usually, but check docs
                 # Format: [startTime, open, high, low, close, volume, turnover]
-                raw_candles = data.get('result', {}).get('list', [])
-                
-                candles = []
-                for k in raw_candles:
-                    candles.append({
-                        'open_time': int(k[0]),
-                        'open_price': float(k[1]),
-                        'high_price': float(k[2]),
-                        'low_price': float(k[3]),
-                        'close_price': float(k[4]),
-                        'volume': float(k[5])
-                    })
-                
-                # Sort by time ascending just in case
-                candles.sort(key=lambda x: x['open_time'])
+                list_data = data.get('result', {}).get('list', [])
+                candles = [{
+                    'open_time': int(k[0]),
+                    'open_price': float(k[1]),
+                    'high_price': float(k[2]),
+                    'low_price': float(k[3]),
+                    'close_price': float(k[4]),
+                    'volume': float(k[5])
+                } for k in list_data]
+                # Reverse to get chronological order
+                candles.reverse()
                 return candles
             else:
-                print(f"  Bybit API error for {symbol}: {data.get('retMsg')}")
+                print(f"  Bybit API error for {symbol}: retCode {data.get('retCode')}")
                 return None
+        elif response.status_code == 429:
+            print(f"  Bybit API rate limit exceeded for {symbol}")
+            print(f"  Waiting 60 seconds...")
+            time.sleep(60)
+            return None
         else:
-            print(f"  Bybit HTTP error for {symbol}: {response.status_code}")
+            print(f"  Bybit API HTTP error for {symbol}: {response.status_code}")
             return None
             
     except Exception as e:
