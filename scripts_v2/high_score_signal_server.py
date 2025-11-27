@@ -359,13 +359,17 @@ ORDER BY
             # Это важно для поддержания списка активных сигналов при поллинге
             if signal_ts == last_ts:
                 return False
-                
-            # Check cooldown for NEW signals
-            if (signal_ts - last_ts).total_seconds() < self.dedup_cooldown_hours * 3600:
-                return True
+            
+            # ONLY filter NEWER signals within cooldown
+            # Older signals (from history) should NEVER be filtered
+            if signal_ts > last_ts:
+                if (signal_ts - last_ts).total_seconds() < self.dedup_cooldown_hours * 3600:
+                    return True
         
-        # Update seen
-        self.seen_signals[symbol] = signal_ts
+        # Update seen only if this signal is newer (or first time seeing this pair)
+        if symbol not in self.seen_signals or signal_ts > self.seen_signals[symbol]:
+            self.seen_signals[symbol] = signal_ts
+        
         return False
 
     def clean_seen_signals(self):
