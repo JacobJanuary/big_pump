@@ -145,8 +145,7 @@ def fetch_signals(conn, days=30, limit=None):
         exchange_condition = f"AND tp.exchange_id = {EXCHANGE_IDS['BYBIT']}"
     # If 'ALL', no extra condition needed
     
-    # FIXED: Use sh_patterns linking table instead of time-based JOIN
-    # This prevents missing signals when patterns are created hours before the signal
+    # Using sh_patterns linking table - contains correct patterns for specific signal candles
     query_signals = f"""
         SELECT DISTINCT
             sh.trading_pair_id, 
@@ -155,19 +154,16 @@ def fetch_signals(conn, days=30, limit=None):
             sh.total_score,
             tp.exchange_id
         FROM fas_v2.scoring_history sh
-        JOIN public.trading_pairs tp ON sh.trading_pair_id = tp.id
+        JOIN fas_v2.sh_patterns shp ON shp.scoring_history_id = sh.id
+        JOIN fas_v2.signal_patterns sp ON sp.id = shp.signal_patterns_id
+        JOIN public.trading_pairs tp ON tp.id = sh.trading_pair_id
         WHERE sh.total_score > {SCORE_THRESHOLD}
           AND sh.timestamp >= NOW() - INTERVAL '{days} days'
+          AND sp.pattern_type IN ({placeholders})
+          AND sp.timeframe IN ('15m', '1h', '4h')
           AND tp.contract_type_id = 1
           AND tp.is_active = TRUE
           {exchange_condition}
-          AND EXISTS (
-              SELECT 1
-              FROM fas_v2.sh_patterns shp
-              JOIN fas_v2.signal_patterns sp ON shp.signal_patterns_id = sp.id
-              WHERE shp.scoring_history_id = sh.id
-                AND sp.pattern_type IN ({placeholders})
-          )
         ORDER BY sh.timestamp ASC
         {limit_clause}
     """
