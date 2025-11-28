@@ -5,11 +5,19 @@ Deep dive into why TRADOORUSDT was broadcasted by WebSocket but not added to web
 import asyncio
 import asyncpg
 from datetime import datetime, timezone
+import sys
+from pathlib import Path
+
+# Add project root to path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+from config.settings import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 
 async def investigate_tradoor():
     conn = await asyncpg.connect(
-        host='localhost', port=5433, user='elcrypto_readonly',
-        password='LohNeMamont@)11', database='fox_crypto_new'
+        host=DB_HOST, port=DB_PORT, user=DB_USER,
+        password=DB_PASSWORD, database=DB_NAME
     )
     
     print("="*80)
