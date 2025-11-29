@@ -1,6 +1,6 @@
 """
 Realistic Portfolio Backtest with Volume Filters
-Based on backtest_portfolio_realistic.py with added volume-based signal filtering
+Complete port of backtest_portfolio_realistic.py with volume filtering
 """
 import sys
 import os
@@ -179,11 +179,10 @@ def backtest_with_volume(sl_pct=-8, activation_pct=20, callback_pct=1, timeout_h
     print(f"  TS Activation: {activation_pct}%")
     print(f"  TS Callback: {callback_pct}%")
     print(f"  Timeout: {timeout_hours} hours")
+    print(f"  Position Size: ${POSITION_SIZE}, Leverage: {LEVERAGE}x, Margin: ${MARGIN_PER_POSITION}")
     print(f"\nVolume Filters:")
     print(f"  Min 1m Volume: ${min_volume_1m/1000:.2f}K USDT")
     print(f"  Min 1h Volume: ${min_volume_1h/1000000:.2f}M USDT")
-    print(f"\nPortfolio Settings:")
-    print(f"  Position Size: ${POSITION_SIZE}, Leverage: {LEVERAGE}x, Margin: ${MARGIN_PER_POSITION}")
     print(f"\nRealistic Costs:")
     print(f"  Taker Fee: {TAKER_FEE*100}%")
     print(f"  Slippage: {SLIPPAGE*100}%")
@@ -198,20 +197,18 @@ def backtest_with_volume(sl_pct=-8, activation_pct=20, callback_pct=1, timeout_h
             print("No signals found matching volume criteria.")
             return
         
-        # Calculate volume statistics
-        avg_vol_1m = sum(s['volume_1m'] for s in signals_data) / len(signals_data)
-        avg_vol_1h = sum(s['volume_1h'] for s in signals_data) / len(signals_data)
-        
-        print(f"\nVolume Statistics:")
-        print(f"  Signals: {len(signals_data)}")
-        print(f"  Avg 1m Volume: ${avg_vol_1m/1000:.1f}K USDT")
-        print(f"  Avg 1h Volume: ${avg_vol_1h/1000000:.2f}M USDT")
         print(f"\nSimulating {len(signals_data)} trades...")
         
-        # Simulate all trades (rest of backtest logic from original script)
+        # Simulate all trades
         events = []
+        trade_id = 0
+        exit_reasons = defaultdict(int)
         
-        for sig in signals_data:
+        for i, sig in enumerate(signals_data, 1):
+            if i % 10 == 0:
+                print(f"Simulating {i}/{len(signals_data)}...", end='\r')
+            
+            # Simulate trade with exit time
             pnl_pct, exit_time_ms, exit_reason = simulate_trade_with_exit_time(
                 sig['candles'],
                 sig['entry_price'],
@@ -221,59 +218,177 @@ def backtest_with_volume(sl_pct=-8, activation_pct=20, callback_pct=1, timeout_h
                 timeout_hours
             )
             
-            # Apply trading costs
-            entry_cost = (TAKER_FEE + SLIPPAGE) * POSITION_SIZE  # Entry fee + slippage
-            exit_cost = (TAKER_FEE + SLIPPAGE) * POSITION_SIZE   # Exit fee + slippage
-            total_cost_usd = entry_cost + exit_cost
-            cost_as_pct_of_position = (total_cost_usd / POSITION_SIZE) * 100
+            exit_reasons[exit_reason] += 1
             
-            final_pnl_pct = pnl_pct - cost_as_pct_of_position
+            # Apply slippage (worse execution)
+            if pnl_pct > 0:
+                pnl_pct -= SLIPPAGE * 100  # Reduce profit
+            else:
+                pnl_pct -= SLIPPAGE * 100  # Increase loss
             
-            absolute_pnl_usd = (POSITION_SIZE * final_pnl_pct / 100)
+            # Calculate PnL in dollars from position
+            pnl_dollars = (pnl_pct / 100) * POSITION_SIZE
             
-            # Track event
+           # Apply fees (entry + exit)
+            entry_fee = POSITION_SIZE * TAKER_FEE
+            exit_fee = POSITION_SIZE * TAKER_FEE
+            total_fees = entry_fee + exit_fee
+            
+            # Net PnL
+            net_pnl = pnl_dollars - total_fees
+            net_pnl_pct = (net_pnl / POSITION_SIZE) * 100
+            
+            # Convert times
+            entry_time_dt = sig['entry_time']
+            exit_time_dt = datetime.fromtimestamp(exit_time_ms / 1000, tz=timezone.utc)
+            
+            # Calculate holding time
+            holding_hours = (exit_time_ms - sig['candles'][0]['open_time']) / (1000 * 3600)
+            
+            # Funding rate cost (if held > 8 hours)
+            funding_periods = int(holding_hours / 8)
+            funding_cost = POSITION_SIZE * FUNDING_RATE * funding_periods if funding_periods > 0 else 0
+            net_pnl -= funding_cost
+            
+            # Create events
             events.append({
-                'entry_time': sig['entry_time'],
-                'exit_time': datetime.fromtimestamp(exit_time_ms / 1000, tz=timezone.utc),
+                'type': 'OPEN',
+                'time': entry_time_dt,
+                'trade_id': trade_id,
                 'symbol': sig['symbol'],
-                'pnl_usd': absolute_pnl_usd,
-                'pnl_pct': final_pnl_pct,
-                'exit_reason': exit_reason,
-                'volume_1m': sig['volume_1m'],
-                'volume_1h': sig['volume_1h']
+                'margin': MARGIN_PER_POSITION
             })
+            
+            events.append({
+                'type': 'CLOSE',
+                'time': exit_time_dt,
+                'trade_id': trade_id,
+                'symbol': sig['symbol'],
+                'pnl': net_pnl,
+                'pnl_pct': net_pnl_pct,
+                'exit_reason': exit_reason,
+                'fees': total_fees,
+                'funding': funding_cost
+            })
+            
+            trade_id += 1
         
-        # Calculate metrics
-        total_pnl = sum(e['pnl_usd'] for e in events)
-        wins = [e for e in events if e['pnl_usd'] > 0]
-        losses = [e for e in events if e['pnl_usd'] < 0]
-        win_rate = (len(wins) / len(events) * 100) if events else 0
-        avg_win = (sum(e['pnl_usd'] for e in wins) / len(wins)) if wins else 0
-        avg_loss = (sum(e['pnl_usd'] for e in losses) / len(losses)) if losses else 0
+        print(f"\n\nSimulated {trade_id} trades. Processing event timeline...")
         
-        # Exit reason stats
-        exit_reasons = defaultdict(int)
-        for e in events:
-            exit_reasons[e['exit_reason']] += 1
+        # Sort events chronologically
+        events.sort(key=lambda x: x['time'])
         
-        # Print results
+        # Process events
+        balance = 0
+        locked_margin = 0
+        active_positions = 0
+        capital_added = 0
+        max_active_positions = 0
+        total_fees = 0
+        total_funding = 0
+        
+        daily_stats = defaultdict(lambda: {
+            'opened': 0,
+            'closed': 0,
+            'pnl': 0,
+            'fees': 0,
+            'funding': 0,
+            'balance_eod': 0,
+            'locked_eod': 0,
+            'free_eod': 0,
+            'capital_added': 0
+        })
+        
+        for event in events:
+            event_date = event['time'].date()
+            
+            if event['type'] == 'OPEN':
+                # Check capital needs
+                free_balance = balance - locked_margin
+                if free_balance < MARGIN_PER_POSITION:
+                    needed = MARGIN_PER_POSITION - free_balance
+                    balance += needed
+                    capital_added += needed
+                    daily_stats[event_date]['capital_added'] += needed
+                
+                # Lock margin
+                locked_margin += MARGIN_PER_POSITION
+                active_positions += 1
+                daily_stats[event_date]['opened'] += 1
+                
+                if active_positions > max_active_positions:
+                    max_active_positions = active_positions
+            
+            elif event['type'] == 'CLOSE':
+                # Realize PnL
+                balance += event['pnl']
+                locked_margin -= MARGIN_PER_POSITION
+                active_positions -= 1
+                daily_stats[event_date]['closed'] += 1
+                daily_stats[event_date]['pnl'] += event['pnl']
+                daily_stats[event_date]['fees'] += event.get('fees', 0)
+                daily_stats[event_date]['funding'] += event.get('funding', 0)
+                
+                total_fees += event.get('fees', 0)
+                total_funding += event.get('funding', 0)
+            
+            # Update EOD values
+            daily_stats[event_date]['balance_eod'] = balance
+            daily_stats[event_date]['locked_eod'] = locked_margin
+            daily_stats[event_date]['free_eod'] = balance - locked_margin
+        
+        # Print daily report
+        print("\n" + "="*160)
+        print("DAILY BALANCE REPORT:")
+        print("="*160)
+        print(f"{'Date':<12} {'Opened':<8} {'Closed':<8} {'PnL':<12} {'Fees':<10} {'Funding':<10} {'Balance':<14} {'Locked':<12} {'Free':<14} {'Added':<12}")
+        print("-"*160)
+        
+        for date in sorted(daily_stats.keys()):
+            stats = daily_stats[date]
+            print(f"{date.strftime('%Y-%m-%d'):<12} "
+                  f"{stats['opened']:<8} "
+                  f"{stats['closed']:<8} "
+                  f"${stats['pnl']:>10,.2f} "
+                  f"${stats['fees']:>8,.2f} "
+                  f"${stats['funding']:>8,.2f} "
+                  f"${stats['balance_eod']:>12,.2f} "
+                  f"${stats['locked_eod']:>10,.2f} "
+                  f"${stats['free_eod']:>12,.2f} "
+                  f"${stats['capital_added']:>10,.2f}")
+        
+        # Summary
+        final_balance = balance
+        final_locked = locked_margin
+        net_profit = final_balance - capital_added
+        
+        total_trades = trade_id
+        winning_trades = len([e for e in events if e['type'] == 'CLOSE' and e['pnl'] > 0])
+        losing_trades = len([e for e in events if e['type'] == 'CLOSE' and e['pnl'] <= 0])
+        win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
+        
         print("\n" + "="*140)
-        print("BACKTEST RESULTS")
+        print("SUMMARY:")
         print("="*140)
-        print(f"Total Trades: {len(events)}")
-        print(f"Total PnL: ${total_pnl:.2f} ({total_pnl/POSITION_SIZE/len(events)*100:.2f}% per trade)")
-        print(f"\nWin Rate: {win_rate:.2f}% ({len(wins)} wins / {len(losses)} losses)")
-        print(f"Average Win: ${avg_win:.2f}")
-        print(f"Average Loss: ${avg_loss:.2f}")
-        if losses:
-            print(f"Win/Loss Ratio: {abs(avg_win/avg_loss):.2f}")
-        
+        print(f"Strategy: SL={sl_pct}%, TS Activation={activation_pct}%, Callback={callback_pct}%, Timeout={timeout_hours}h")
+        print(f"Volume Filters: 1m>=${min_volume_1m/1000:.0f}K, 1h>=${min_volume_1h/1000000:.1f}M")
+        print(f"Initial Balance: $0.00")
+        print(f"Capital Added: ${capital_added:,.2f}")
+        print(f"Final Balance: ${final_balance:,.2f}")
+        print(f"Final Locked Margin: ${final_locked:,.2f}")
+        print(f"Net Profit: ${net_profit:,.2f} ({(net_profit/capital_added*100):+.2f}% ROI)" if capital_added > 0 else "Net Profit: $0.00")
+        print(f"Total Fees Paid: ${total_fees:,.2f}")
+        print(f"Total Funding Paid: ${total_funding:,.2f}")
+        print(f"Max Active Positions: {max_active_positions}")
+        print(f"Total Trades: {total_trades}")
+        print(f"Winning Trades: {winning_trades} ({win_rate:.2f}%)")
+        print(f"Losing Trades: {losing_trades}")
         print(f"\nExit Reasons:")
-        for reason, count in sorted(exit_reasons.items(), key=lambda x: x[1], reverse=True):
-            print(f"  {reason}: {count} ({count/len(events)*100:.1f}%)")
-        
+        for reason, count in sorted(exit_reasons.items(), key=lambda x: -x[1]):
+            pct = (count / total_trades * 100) if total_trades > 0 else 0
+            print(f"  {reason}: {count} ({pct:.1f}%)")
         print("="*140)
-        
+
     except Exception as e:
         print(f"Error: {e}")
         import traceback
