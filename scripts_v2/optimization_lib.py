@@ -217,6 +217,119 @@ def simulate_trailing_stop(candles, entry_price, activation_pct, callback_pct, t
     final_price = float(candles[-1]['close_price'])
     return ((final_price - entry_price) / entry_price) * 100
 
+def simulate_partial_close(candles, entry_price, sl_pct, ts_configs, timeout_hours=None):
+    """
+    Simulate 4-part partial position closing with independent trailing stops
+    
+    Each portion (25%) has its own:
+    - Activation threshold
+    - Callback percentage
+    - Exit tracking
+    
+    Args:
+        candles: List of 1-minute OHLC candles
+        entry_price: Entry price for position
+        sl_pct: Stop-loss percentage (applies to all open portions)
+        ts_configs: List of 4 dicts with 'portion', 'activation_pct', 'callback_pct'
+        timeout_hours: Maximum hold time
+        
+    Returns:
+        float: Weighted average PnL percentage
+    """
+    # Initialize portion states
+    portions = []
+    for config in ts_configs:
+        portions.append({
+            'size': config['portion'],  # 0.25
+            'activation_pct': config['activation_pct'],
+            'callback_pct': config['callback_pct'],
+            'activated': False,
+            'closed': False,
+            'peak_price': entry_price,
+            'exit_price': None,
+            'exit_pnl': None
+        })
+    
+    sl_price = entry_price * (1 + sl_pct / 100)
+    entry_time_ms = candles[0]['open_time']
+    timeout_ms = entry_time_ms + (timeout_hours * 3600 * 1000) if timeout_hours else None
+    
+    # Process candles
+    for candle in candles:
+        high = float(candle['high_price'])
+        low = float(candle['low_price'])
+        close = float(candle['close_price'])
+        candle_time = candle['open_time']
+        candle_dir = get_candle_direction(candle)
+        
+        # Process each portion
+        for portion in portions:
+            if portion['closed']:
+                continue
+            
+            activation_price = entry_price * (1 + portion['activation_pct'] / 100)
+            
+            # Intracandle order matters
+            if candle_dir == 'bullish':
+                # Bullish: open -> low -> high -> close
+                # Check SL first (low happens before high)
+                if not portion['activated'] and low <= sl_price:
+                    portion['closed'] = True
+                    portion['exit_price'] = sl_price
+                    portion['exit_pnl'] = sl_pct
+                    continue
+                
+                # Check TS activation
+                if not portion['activated'] and high >= activation_price:
+                    portion['activated'] = True
+                    portion['peak_price'] = high
+                elif portion['activated'] and high > portion['peak_price']:
+                    portion['peak_price'] = high
+            
+            else:  # bearish
+                # Bearish: open -> high -> low -> close
+                # Check TS activation first (high happens before low)
+                if not portion['activated'] and high >= activation_price:
+                    portion['activated'] = True
+                    portion['peak_price'] = high
+                elif portion['activated'] and high > portion['peak_price']:
+                    portion['peak_price'] = high
+                
+                # Check SL after
+                if not portion['activated'] and low <= sl_price:
+                    portion['closed'] = True
+                    portion['exit_price'] = sl_price
+                    portion['exit_pnl'] = sl_pct
+                    continue
+            
+            # Check TS callback (for both bullish and bearish)
+            if portion['activated']:
+                ts_exit_price = portion['peak_price'] * (1 - portion['callback_pct'] / 100)
+                if low <= ts_exit_price:
+                    portion['closed'] = True
+                    portion['exit_price'] = ts_exit_price
+                    portion['exit_pnl'] = ((ts_exit_price - entry_price) / entry_price) * 100
+                    continue
+        
+        # Check timeout for all open portions
+        if timeout_ms and candle_time >= timeout_ms:
+            for portion in portions:
+                if not portion['closed']:
+                    portion['closed'] = True
+                    portion['exit_price'] = close
+                    portion['exit_pnl'] = ((close - entry_price) / entry_price) * 100
+            break
+    
+    # Close any remaining portions at final price
+    final_price = float(candles[-1]['close_price'])
+    for portion in portions:
+        if not portion['closed']:
+            portion['exit_pnl'] = ((final_price - entry_price) / entry_price) * 100
+    
+    # Calculate weighted PnL
+    total_pnl = sum(p['exit_pnl'] * p['size'] for p in portions)
+    return total_pnl
+
 def calculate_peak_time_stats(signals_data):
     """
     Calculate statistics about time to peak
