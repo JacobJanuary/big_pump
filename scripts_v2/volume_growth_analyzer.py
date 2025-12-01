@@ -96,15 +96,25 @@ def get_all_trading_pairs(conn) -> List[Dict]:
     return pairs
 
 
-def calculate_volume_growth(conn, trading_pair_id: int) -> Optional[tuple]:
+def calculate_volume_growth(conn, trading_pair_id: int, min_candles: int = 20, min_yesterday_volume: float = 10000.0) -> Optional[tuple]:
     """
-    Calculate volume growth for a specific trading pair.
+    Calculate volume growth for a specific trading pair with data quality checks.
     
-    Returns: (volume_today, volume_yesterday, growth_percent, growth_absolute) or None
+    Args:
+        conn: Database connection
+        trading_pair_id: Trading pair ID
+        min_candles: Minimum number of candles required for each period (default: 20)
+        min_yesterday_volume: Minimum volume yesterday in USDT to consider (default: 10,000)
+    
+    Returns: (volume_today, volume_yesterday, growth_percent, growth_absolute, 
+              candles_today_count, candles_yesterday_count) or None
     
     Logic:
     - "Today" = last 24 1-hour candles (most recent)
     - "Yesterday" = 24 1-hour candles before that (from 48h ago to 24h ago)
+    - Quality filters:
+      * Requires minimum number of candles in each period
+      * Requires minimum volume yesterday to avoid false positives
     """
     # Get current time
     now = datetime.now(timezone.utc)
@@ -124,9 +134,11 @@ def calculate_volume_growth(conn, trading_pair_id: int) -> Optional[tuple]:
     end_yesterday_ms = int(end_yesterday.timestamp() * 1000)
     start_yesterday_ms = int(start_yesterday.timestamp() * 1000)
     
+    # Enhanced query with candle count
     query = """
         SELECT 
-            COALESCE(SUM(quote_asset_volume), 0) as total_volume
+            COALESCE(SUM(quote_asset_volume), 0) as total_volume,
+            COUNT(*) as candle_count
         FROM public.candles
         WHERE trading_pair_id = %s
           AND interval_id = %s
@@ -135,15 +147,26 @@ def calculate_volume_growth(conn, trading_pair_id: int) -> Optional[tuple]:
     """
     
     with conn.cursor(row_factory=dict_row) as cur:
-        # Get today's volume
+        # Get today's volume and candle count
         cur.execute(query, (trading_pair_id, INTERVAL_1H, start_today_ms, end_today_ms))
         result_today = cur.fetchone()
         volume_today = float(result_today['total_volume'])
+        candles_today = int(result_today['candle_count'])
         
-        # Get yesterday's volume
+        # Get yesterday's volume and candle count
         cur.execute(query, (trading_pair_id, INTERVAL_1H, start_yesterday_ms, end_yesterday_ms))
         result_yesterday = cur.fetchone()
         volume_yesterday = float(result_yesterday['total_volume'])
+        candles_yesterday = int(result_yesterday['candle_count'])
+    
+    # Data quality checks
+    # 1. Check minimum number of candles
+    if candles_today < min_candles or candles_yesterday < min_candles:
+        return None  # Insufficient data
+    
+    # 2. Check minimum volume yesterday (avoid false positives from illiquid pairs)
+    if volume_yesterday < min_yesterday_volume:
+        return None  # Too low liquidity yesterday
     
     # Calculate growth
     if volume_yesterday == 0:
@@ -156,19 +179,27 @@ def calculate_volume_growth(conn, trading_pair_id: int) -> Optional[tuple]:
     
     growth_absolute = volume_today - volume_yesterday
     
-    return (volume_today, volume_yesterday, growth_percent, growth_absolute)
+    return (volume_today, volume_yesterday, growth_percent, growth_absolute, candles_today, candles_yesterday)
 
 
-def analyze_all_pairs(conn) -> List[VolumeAnalysis]:
+def analyze_all_pairs(conn, min_candles: int = 20, min_yesterday_volume: float = 10000.0) -> List[VolumeAnalysis]:
     """
-    Analyze volume growth for all trading pairs.
+    Analyze volume growth for all trading pairs with quality filters.
+    
+    Args:
+        min_candles: Minimum candles required per period (default: 20 out of 24)
+        min_yesterday_volume: Minimum volume yesterday in USDT (default: $10,000)
+    
     Returns list of VolumeAnalysis objects.
     """
     pairs = get_all_trading_pairs(conn)
     results = []
     
     total_pairs = len(pairs)
-    print(f"\n🔍 Analyzing {total_pairs} trading pair configurations...\n")
+    filtered_count = 0
+    
+    print(f"\n🔍 Analyzing {total_pairs} trading pair configurations...")
+    print(f"📋 Filters: min_candles={min_candles}, min_yesterday_volume=${min_yesterday_volume:,.0f}\n")
     
     for idx, pair in enumerate(pairs, 1):
         pair_id = pair['id']
@@ -181,18 +212,20 @@ def analyze_all_pairs(conn) -> List[VolumeAnalysis]:
         
         # Progress indicator
         if idx % 100 == 0 or idx == total_pairs:
-            print(f"  Progress: {idx}/{total_pairs} pairs analyzed...")
+            print(f"  Progress: {idx}/{total_pairs} pairs analyzed, {len(results)} passed filters...")
         
-        # Calculate volume growth
-        volume_data = calculate_volume_growth(conn, pair_id)
+        # Calculate volume growth with quality checks
+        volume_data = calculate_volume_growth(conn, pair_id, min_candles, min_yesterday_volume)
         
         if volume_data is None:
+            filtered_count += 1
             continue
         
-        volume_today, volume_yesterday, growth_percent, growth_absolute = volume_data
+        volume_today, volume_yesterday, growth_percent, growth_absolute, candles_today, candles_yesterday = volume_data
         
         # Skip pairs with no volume
         if volume_today == 0 and volume_yesterday == 0:
+            filtered_count += 1
             continue
         
         analysis = VolumeAnalysis(
@@ -208,7 +241,9 @@ def analyze_all_pairs(conn) -> List[VolumeAnalysis]:
         
         results.append(analysis)
     
-    print(f"\n✅ Analysis complete! Found {len(results)} pairs with volume data.\n")
+    print(f"\n✅ Analysis complete!")
+    print(f"   Passed filters: {len(results)} pairs")
+    print(f"   Filtered out: {filtered_count} pairs (low liquidity or insufficient data)\n")
     
     return results
 
@@ -302,6 +337,40 @@ def save_to_file(results: List[VolumeAnalysis], output_dir: Path):
 
 def main():
     """Main execution"""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='Volume Growth Analyzer - Find top trading pairs by 24h volume growth',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Default filters (min 20 candles, min $10k yesterday volume)
+  python3 volume_growth_analyzer.py
+  
+  # More strict filters (crypto veterans only)
+  python3 volume_growth_analyzer.py --min-candles 23 --min-volume 100000
+  
+  # More relaxed filters (include newer/smaller pairs)
+  python3 volume_growth_analyzer.py --min-candles 15 --min-volume 1000
+        """
+    )
+    
+    parser.add_argument(
+        '--min-candles',
+        type=int,
+        default=20,
+        help='Minimum number of 1h candles required per 24h period (default: 20 out of 24)'
+    )
+    
+    parser.add_argument(
+        '--min-volume',
+        type=float,
+        default=10000.0,
+        help='Minimum volume yesterday in USDT to consider (default: 10000)'
+    )
+    
+    args = parser.parse_args()
+    
     print("\n" + "=" * 120)
     print("🚀 VOLUME GROWTH ANALYZER")
     print("=" * 120)
@@ -320,8 +389,8 @@ def main():
         conn = get_db_connection()
         print("✅ Database connection established\n")
         
-        # Analyze all pairs
-        results = analyze_all_pairs(conn)
+        # Analyze all pairs with user-specified filters
+        results = analyze_all_pairs(conn, min_candles=args.min_candles, min_yesterday_volume=args.min_volume)
         
         # Display top 100
         display_top_100(results)
@@ -342,3 +411,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
