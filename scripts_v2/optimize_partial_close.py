@@ -73,7 +73,8 @@ def load_signals_with_minute_candles():
                 'open_price': float(row[1]),
                 'high_price': float(row[2]),
                 'low_price': float(row[3]),
-                'close_price': float(row[4])
+                'close_price': float(row[4]),
+                'volume': float(row[5])
             } for row in candles_rows]
             
             if candles:
