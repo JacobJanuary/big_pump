@@ -33,8 +33,10 @@ from pump_analysis_lib import (
     EXCHANGE_FILTER, 
     EXCHANGE_IDS, 
     SCORE_THRESHOLD, 
-    TARGET_PATTERNS
+    TARGET_PATTERNS,
+    INDICATOR_FILTERS
 )
+
 
 # Настройка логирования
 logging.basicConfig(
@@ -160,7 +162,7 @@ class HighScoreSignalWebSocketServer:
         - Timeframe: 15m, 1h, or 4h
         - Exchange: Respects EXCHANGE_FILTER
         - Contract: PERPETUAL only
-        - Indicators: RSI > 72, Volume Z-Score > 12, OI Delta % > 40
+        - Indicators: Configurable via INDICATOR_FILTERS (set to 0 to disable)
         """
         placeholders = ','.join([f"'{p}'" for p in TARGET_PATTERNS])
         
@@ -171,6 +173,17 @@ class HighScoreSignalWebSocketServer:
         elif EXCHANGE_FILTER == 'BYBIT':
             exchange_filter_clause = f"AND tp.exchange_id = {EXCHANGE_IDS['BYBIT']}"
         # If ALL, no extra clause needed (assuming we want all active exchanges)
+        
+        # Build dynamic indicator filters (skip if threshold is 0)
+        indicator_conditions = []
+        if INDICATOR_FILTERS['rsi_threshold'] > 0:
+            indicator_conditions.append(f"AND i.rsi > {INDICATOR_FILTERS['rsi_threshold']}")
+        if INDICATOR_FILTERS['volume_zscore_threshold'] > 0:
+            indicator_conditions.append(f"AND i.volume_zscore > {INDICATOR_FILTERS['volume_zscore_threshold']}")
+        if INDICATOR_FILTERS['oi_delta_threshold'] > 0:
+            indicator_conditions.append(f"AND i.oi_delta_pct > {INDICATOR_FILTERS['oi_delta_threshold']}")
+        
+        indicator_filter_clause = "\n    ".join(indicator_conditions)
         
         query = f"""
 -- Запрос высококачественных сигналов с паттернами {TARGET_PATTERNS} и фильтрами по индикаторам
@@ -217,9 +230,7 @@ WHERE sh.total_score > {SCORE_THRESHOLD}
     AND tp.is_active = TRUE
     AND sh.is_active = TRUE
     AND shi.indicators_timeframe = sp.timeframe  -- Match indicator timeframe to pattern timeframe
-    AND i.rsi > 72
-    AND i.volume_zscore > 12
-    AND i.oi_delta_pct > 40
+    {indicator_filter_clause}
     {exchange_filter_clause}
     AND sh.timestamp >= now() - INTERVAL '%s minutes'
 
@@ -244,6 +255,7 @@ ORDER BY
     sh.timestamp DESC;
 """
         return query
+
 
 
     async def init_db(self):

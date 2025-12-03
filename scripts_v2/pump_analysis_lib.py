@@ -36,6 +36,15 @@ EXCHANGE_IDS = {
     'BYBIT': 2
 }
 
+# --- Indicator Filter Configuration ---
+# Set to 0 to disable a specific filter
+INDICATOR_FILTERS = {
+    'rsi_threshold': 72,            # RSI > 72 (set to 0 to disable)
+    'volume_zscore_threshold': 12,  # Volume Z-Score > 12 (set to 0 to disable)
+    'oi_delta_threshold': 40,       # OI Delta % > 40 (set to 0 to disable)
+}
+
+
 def get_db_connection():
     """Get database connection"""
     conn_params = [
@@ -131,7 +140,7 @@ def get_bybit_price_at_time(symbol, timestamp_ms):
 
 def fetch_signals(conn, days=30, limit=None):
     """
-    Fetch signals from database with exchange filtering and indicator filters
+    Fetch signals from database with exchange filtering and configurable indicator filters
     Returns: list of signal dicts
     
     Filters:
@@ -139,7 +148,7 @@ def fetch_signals(conn, days=30, limit=None):
     - Patterns: SQUEEZE_IGNITION or OI_EXPLOSION
     - Timeframe: 15m, 1h, or 4h
     - Exchange: Binance (PERPETUAL/Futures only)
-    - Indicators: RSI > 72, Volume Z-Score > 12, OI Delta % > 40
+    - Indicators: Configurable via INDICATOR_FILTERS (set to 0 to disable)
     """
     placeholders = ','.join([f"'{p}'" for p in TARGET_PATTERNS])
     limit_clause = f"LIMIT {limit}" if limit else ""
@@ -152,8 +161,19 @@ def fetch_signals(conn, days=30, limit=None):
         exchange_condition = f"AND tp.exchange_id = {EXCHANGE_IDS['BYBIT']}"
     # If 'ALL', no extra condition needed
     
-    # Updated query with indicator filters
-    # Note: DISTINCT sh.id to avoid duplicates when signal has patterns on multiple timeframes
+    # Build dynamic indicator filters (skip if threshold is 0)
+    indicator_conditions = []
+    if INDICATOR_FILTERS['rsi_threshold'] > 0:
+        indicator_conditions.append(f"AND i.rsi > {INDICATOR_FILTERS['rsi_threshold']}")
+    if INDICATOR_FILTERS['volume_zscore_threshold'] > 0:
+        indicator_conditions.append(f"AND i.volume_zscore > {INDICATOR_FILTERS['volume_zscore_threshold']}")
+    if INDICATOR_FILTERS['oi_delta_threshold'] > 0:
+        indicator_conditions.append(f"AND i.oi_delta_pct > {INDICATOR_FILTERS['oi_delta_threshold']}")
+    
+    indicator_filter_clause = "\n          ".join(indicator_conditions)
+    
+    # Updated query with dynamic indicator filters
+    # Note: DISTINCT ON (sh.id) to avoid duplicates when signal has patterns on multiple timeframes
     query_signals = f"""
         SELECT DISTINCT ON (sh.id)
             sh.id,
@@ -184,9 +204,7 @@ def fetch_signals(conn, days=30, limit=None):
           AND tp.contract_type_id = 1  -- PERPETUAL (Futures)
           AND tp.is_active = TRUE
           AND shi.indicators_timeframe = sp.timeframe  -- Match indicator timeframe to pattern timeframe
-          AND i.rsi > 72
-          AND i.volume_zscore > 12
-          AND i.oi_delta_pct > 40
+          {indicator_filter_clause}
           {exchange_condition}
         ORDER BY sh.id, sh.timestamp ASC
         {limit_clause}
@@ -197,6 +215,7 @@ def fetch_signals(conn, days=30, limit=None):
         signals = cur.fetchall()
     
     return signals
+
 
 
 def fetch_candles_5m(conn, pair_id, start_time_ms, end_time_ms):
