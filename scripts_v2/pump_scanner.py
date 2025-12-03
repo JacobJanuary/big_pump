@@ -45,49 +45,116 @@ def send_telegram_alert(message):
 def scan_and_alert():
     """
     Main scanner function:
-    1. Calls populate_signal_analysis to fetch and store new signals (deduplicated)
-    2. Alerts on any newly inserted signals
+    1. Loads state of already-sent signals
+    2. Fetches current signals from DB  
+    3. Sends Telegram alerts for new signals not yet notified
+    4. Updates state file
     """
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Starting scan...")
     print(f"Exchange Filter: {EXCHANGE_FILTER}")
     
-    # Run population script (look back 60 mins to be safe, cron runs every 15 mins)
-    # It returns list of newly inserted signals
-    # Using 12-hour deduplication cooldown to reduce alert delays while preventing spam
-    new_signals = populate_signal_analysis(
+    # State file to track sent signals (per symbol, with timestamp)
+    state_file = current_dir / 'scanner_state.json'
+    sent_signals = {}
+    
+    # Load existing state
+    if state_file.exists():
+        try:
+            with open(state_file, 'r') as f:
+                data = json.load(f)
+                # Convert string timestamps back to datetime
+                for symbol, ts_str in data.items():
+                    sent_signals[symbol] = datetime.fromisoformat(ts_str)
+            print(f"Loaded state: {len(sent_signals)} symbols previously notified")
+        except Exception as e:
+            print(f"Warning: Failed to load state file: {e}")
+    
+    # Run population to ensure DB is up-to-date
+    # This also applies deduplication, but we handle Telegram separately
+    populate_signal_analysis(
         days=0.042,  # ~1 hour
         limit=None, 
         force_refresh=False,
-        cooldown_hours=12  # Reduced from default 24h to minimize notification delays
+        cooldown_hours=12
     )
     
-    if not new_signals:
-        print("No new signals found.")
-        return
-
-    print(f"Found {len(new_signals)} NEW signals! Sending alerts...")
+    # Now fetch ALL current signals from DB (last 12 hours to match cooldown)
+    from pump_analysis_lib import get_db_connection, fetch_signals
     
-    for signal in new_signals:
-        symbol = signal['pair_symbol']
-        total_score = signal['total_score']
-        # pattern_type might not be in the signal dict from populate, let's check
-        # populate uses fetch_signals which returns pattern_type
-        pattern_type = signal.get('pattern_type', 'Unknown')
-        ts = signal['timestamp']
+    conn = get_db_connection()
+    try:
+        # Get signals from last 12 hours (matching cooldown)
+        all_signals = fetch_signals(conn, days=0.5, limit=None)  # 12 hours
         
-        print(f"ALERTING: {symbol} | Score: {total_score} | Pattern: {pattern_type}")
+        if not all_signals:
+            print("No signals found in database.")
+            return
         
-        # Construct Message
-        msg = (
-            f"🐋 *WHALE ALERT* 🐋\n\n"
-            f"🚀 *{symbol}* is primed for a pump!\n\n"
-            f"📊 *Score*: `{total_score:.0f}`\n"
-            f"🔥 *Pattern*: `{pattern_type}`\n"
-            f"⏰ *Time*: `{ts.strftime('%H:%M UTC')}`\n\n"
-            f"⚠️ _High volatility expected. Stop-loss recommended at -8%._"
-        )
+        print(f"Found {len(all_signals)} total signals in DB (last 12h)")
         
-        send_telegram_alert(msg)
+        # Filter for signals we haven't sent yet
+        # Use 12-hour cooldown just like populate_signal_analysis
+        COOLDOWN_HOURS = 12
+        new_to_send = []
+        
+        for signal in all_signals:
+            symbol = signal['pair_symbol']
+            signal_ts = signal['timestamp']
+            
+            # Check if we already sent notification for this symbol recently
+            if symbol in sent_signals:
+                last_sent = sent_signals[symbol]
+                time_diff_hours = (signal_ts - last_sent).total_seconds() / 3600
+                
+                if time_diff_hours < COOLDOWN_HOURS:
+                    # Too soon, skip
+                    continue
+            
+            # This is a new signal to send!
+            new_to_send.append(signal)
+        
+        if not new_to_send:
+            print("No new signals to send (all already notified).")
+            return
+        
+        print(f"Found {len(new_to_send)} NEW signals to send!")
+        
+        # Send alerts
+        for signal in new_to_send:
+            symbol = signal['pair_symbol']
+            total_score = signal['total_score']
+            pattern_type = signal.get('pattern_type', 'Unknown')
+            ts = signal['timestamp']
+            
+            print(f"ALERTING: {symbol} | Score: {total_score} | Pattern: {pattern_type}")
+            
+            # Construct Message
+            msg = (
+                f"🐋 *WHALE ALERT* 🐋\n\n"
+                f"🚀 *{symbol}* is primed for a pump!\n\n"
+                f"📊 *Score*: `{total_score:.0f}`\n"
+                f"🔥 *Pattern*: `{pattern_type}`\n"
+                f"⏰ *Time*: `{ts.strftime('%H:%M UTC')}`\n\n"
+                f"⚠️ _High volatility expected. Stop-loss recommended at -8%._"
+            )
+            
+            send_telegram_alert(msg)
+            
+            # Update sent state
+            sent_signals[symbol] = ts
+        
+        # Save updated state
+        try:
+            state_to_save = {symbol: ts.isoformat() for symbol, ts in sent_signals.items()}
+            with open(state_file, 'w') as f:
+                json.dump(state_to_save, f, indent=2)
+            print(f"State saved: {len(sent_signals)} symbols tracked")
+        except Exception as e:
+            print(f"Warning: Failed to save state: {e}")
+            
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     scan_and_alert()
