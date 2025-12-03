@@ -146,6 +146,9 @@ class HighScoreSignalWebSocketServer:
         
         logger.info(f"Filters: total_score > {SCORE_THRESHOLD}, patterns={TARGET_PATTERNS}, "
                    f"Exchange Filter: {EXCHANGE_FILTER}")
+        logger.info(f"Indicator Filters: RSI>{INDICATOR_FILTERS['rsi_threshold']}, "
+                   f"Vol Z-Score>{INDICATOR_FILTERS['volume_zscore_threshold']}, "
+                   f"OI Delta>{INDICATOR_FILTERS['oi_delta_threshold']}%")
 
     def hash_token(self, token: str) -> str:
         """Хеширование токена для безопасного сравнения"""
