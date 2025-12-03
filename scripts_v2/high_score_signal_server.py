@@ -151,8 +151,16 @@ class HighScoreSignalWebSocketServer:
 
     def build_signal_query(self) -> str:
         """
-        Формирует SQL запрос для высококачественных сигналов
+        Формирует SQL запрос для высококачественных сигналов с фильтрами по индикаторам
         Возвращает запрос с placeholder для signal_window_minutes
+        
+        Filters:
+        - total_score > 250
+        - Patterns: SQUEEZE_IGNITION or OI_EXPLOSION
+        - Timeframe: 15m, 1h, or 4h
+        - Exchange: Respects EXCHANGE_FILTER
+        - Contract: PERPETUAL only
+        - Indicators: RSI > 72, Volume Z-Score > 12, OI Delta % > 40
         """
         placeholders = ','.join([f"'{p}'" for p in TARGET_PATTERNS])
         
@@ -165,8 +173,8 @@ class HighScoreSignalWebSocketServer:
         # If ALL, no extra clause needed (assuming we want all active exchanges)
         
         query = f"""
--- Запрос высококачественных сигналов с паттернами {TARGET_PATTERNS}
-SELECT
+-- Запрос высококачественных сигналов с паттернами {TARGET_PATTERNS} и фильтрами по индикаторам
+SELECT DISTINCT ON (sh.id)
     sh.id,
     sh.trading_pair_id,
     tp.pair_symbol,
@@ -178,33 +186,42 @@ SELECT
     tp.exchange_id,
     tp.contract_type_id,
     
+    -- Индикаторы
+    i.rsi,
+    i.volume_zscore,
+    i.oi_delta_pct,
+    
     -- Собираем информацию о паттернах
     array_agg(DISTINCT sp.pattern_type) FILTER (WHERE sp.pattern_type IS NOT NULL) as patterns,
     array_agg(DISTINCT sp.timeframe) FILTER (WHERE sp.timeframe IS NOT NULL) as timeframes
     
 FROM fas_v2.scoring_history sh
 JOIN public.trading_pairs tp ON sh.trading_pair_id = tp.id
--- Добавляем JOIN для получения паттернов
-LEFT JOIN fas_v2.sh_patterns shp ON shp.scoring_history_id = sh.id
-LEFT JOIN fas_v2.signal_patterns sp ON shp.signal_patterns_id = sp.id
+
+-- Паттерны
+JOIN fas_v2.sh_patterns shp ON shp.scoring_history_id = sh.id
+JOIN fas_v2.signal_patterns sp ON shp.signal_patterns_id = sp.id
     AND sp.pattern_type IN ({placeholders})
     AND sp.timeframe IN ('15m', '1h', '4h')
 
+-- Индикаторы
+JOIN fas_v2.sh_indicators shi ON shi.scoring_history_id = sh.id
+JOIN fas_v2.indicators i ON (
+    i.trading_pair_id = shi.indicators_trading_pair_id 
+    AND i.timestamp = shi.indicators_timestamp 
+    AND i.timeframe = shi.indicators_timeframe
+)
+
 WHERE sh.total_score > {SCORE_THRESHOLD}
-    AND tp.contract_type_id = 1
+    AND tp.contract_type_id = 1  -- PERPETUAL (Futures)
     AND tp.is_active = TRUE
     AND sh.is_active = TRUE
+    AND shi.indicators_timeframe = sp.timeframe  -- Match indicator timeframe to pattern timeframe
+    AND i.rsi > 72
+    AND i.volume_zscore > 12
+    AND i.oi_delta_pct > 40
     {exchange_filter_clause}
     AND sh.timestamp >= now() - INTERVAL '%s minutes'
-    -- Проверяем что есть хотя бы один нужный паттерн
-    AND EXISTS (
-        SELECT 1
-        FROM fas_v2.sh_patterns shp2
-        JOIN fas_v2.signal_patterns sp2 ON shp2.signal_patterns_id = sp2.id
-        WHERE shp2.scoring_history_id = sh.id
-            AND sp2.pattern_type IN ({placeholders})
-            AND sp2.timeframe IN ('15m', '1h', '4h')
-    )
 
 GROUP BY
     sh.id,
@@ -216,13 +233,18 @@ GROUP BY
     sh.timestamp,
     sh.created_at,
     tp.exchange_id,
-    tp.contract_type_id
+    tp.contract_type_id,
+    i.rsi,
+    i.volume_zscore,
+    i.oi_delta_pct
 
 ORDER BY 
+    sh.id,
     sh.total_score DESC,
     sh.timestamp DESC;
 """
         return query
+
 
     async def init_db(self):
         """Инициализация пула соединений с БД"""
@@ -418,6 +440,11 @@ ORDER BY
                         'contract_type_id': row['contract_type_id'],
                         'patterns': row['patterns'] if row['patterns'] else [],
                         'timeframes': row['timeframes'] if row['timeframes'] else [],
+                        
+                        # Indicator values
+                        'rsi': float(row['rsi']) if row['rsi'] else None,
+                        'volume_zscore': float(row['volume_zscore']) if row['volume_zscore'] else None,
+                        'oi_delta_pct': float(row['oi_delta_pct']) if row['oi_delta_pct'] else None,
                         
                         # Добавляем параметры по умолчанию
                         'recommended_action': self.default_params['recommended_action'],

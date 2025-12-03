@@ -131,8 +131,15 @@ def get_bybit_price_at_time(symbol, timestamp_ms):
 
 def fetch_signals(conn, days=30, limit=None):
     """
-    Fetch signals from database with exchange filtering
+    Fetch signals from database with exchange filtering and indicator filters
     Returns: list of signal dicts
+    
+    Filters:
+    - total_score > 250
+    - Patterns: SQUEEZE_IGNITION or OI_EXPLOSION
+    - Timeframe: 15m, 1h, or 4h
+    - Exchange: Binance (PERPETUAL/Futures only)
+    - Indicators: RSI > 72, Volume Z-Score > 12, OI Delta % > 40
     """
     placeholders = ','.join([f"'{p}'" for p in TARGET_PATTERNS])
     limit_clause = f"LIMIT {limit}" if limit else ""
@@ -145,26 +152,43 @@ def fetch_signals(conn, days=30, limit=None):
         exchange_condition = f"AND tp.exchange_id = {EXCHANGE_IDS['BYBIT']}"
     # If 'ALL', no extra condition needed
     
-    # Using sh_patterns linking table - contains correct patterns for specific signal candles
+    # Updated query with indicator filters
+    # Note: DISTINCT sh.id to avoid duplicates when signal has patterns on multiple timeframes
     query_signals = f"""
-        SELECT DISTINCT
+        SELECT DISTINCT ON (sh.id)
+            sh.id,
             sh.trading_pair_id, 
             sh.pair_symbol, 
             sh.timestamp, 
             sh.total_score,
-            tp.exchange_id
+            tp.exchange_id,
+            sp.pattern_type,
+            sp.timeframe,
+            i.rsi,
+            i.volume_zscore,
+            i.oi_delta_pct
         FROM fas_v2.scoring_history sh
         JOIN fas_v2.sh_patterns shp ON shp.scoring_history_id = sh.id
         JOIN fas_v2.signal_patterns sp ON sp.id = shp.signal_patterns_id
+        JOIN fas_v2.sh_indicators shi ON shi.scoring_history_id = sh.id
+        JOIN fas_v2.indicators i ON (
+            i.trading_pair_id = shi.indicators_trading_pair_id 
+            AND i.timestamp = shi.indicators_timestamp 
+            AND i.timeframe = shi.indicators_timeframe
+        )
         JOIN public.trading_pairs tp ON tp.id = sh.trading_pair_id
         WHERE sh.total_score > {SCORE_THRESHOLD}
           AND sh.timestamp >= NOW() - INTERVAL '{days} days'
           AND sp.pattern_type IN ({placeholders})
           AND sp.timeframe IN ('15m', '1h', '4h')
-          AND tp.contract_type_id = 1
+          AND tp.contract_type_id = 1  -- PERPETUAL (Futures)
           AND tp.is_active = TRUE
+          AND shi.indicators_timeframe = sp.timeframe  -- Match indicator timeframe to pattern timeframe
+          AND i.rsi > 72
+          AND i.volume_zscore > 12
+          AND i.oi_delta_pct > 40
           {exchange_condition}
-        ORDER BY sh.timestamp ASC
+        ORDER BY sh.id, sh.timestamp ASC
         {limit_clause}
     """
     
@@ -173,6 +197,7 @@ def fetch_signals(conn, days=30, limit=None):
         signals = cur.fetchall()
     
     return signals
+
 
 def fetch_candles_5m(conn, pair_id, start_time_ms, end_time_ms):
     """
