@@ -218,7 +218,7 @@ def optimize_for_score_threshold(score_threshold, cooldown_hours=12):
     
     return {
         'score_threshold': score_threshold,
-        'signals_count': len(signals),
+        'signals_count': len(deduplicated_signals),
         'best_params': {
             'sl': best['sl'],
             'activation': best['activation'],
