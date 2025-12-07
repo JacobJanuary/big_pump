@@ -21,9 +21,60 @@ from optimization_lib import get_candle_direction
 sys.path.insert(0, str(scripts_dir))
 from report_enhanced import simulate_signal_exit
 
+def deduplicate_signals_by_cooldown(signals, cooldown_hours=12):
+    """
+    Deduplicate signals: keep only one signal per pair within cooldown period
+    If multiple signals for same pair within cooldown, keep the one with highest score
+    
+    Args:
+        signals: List of signal dicts with 'pair_symbol', 'signal_timestamp', 'total_score'
+        cooldown_hours: Cooldown period in hours (default: 12)
+    
+    Returns:
+        List of deduplicated signals
+    """
+    from datetime import timedelta
+    
+    # Sort by timestamp
+    sorted_signals = sorted(signals, key=lambda x: x['signal_timestamp'])
+    
+    # Track last signal time for each pair
+    last_signal_time = {}
+    deduplicated = []
+    
+    for signal in sorted_signals:
+        symbol = signal['pair_symbol']
+        timestamp = signal['signal_timestamp']
+        score = signal['total_score']
+        
+        if symbol not in last_signal_time:
+            # First signal for this pair
+            last_signal_time[symbol] = timestamp
+            deduplicated.append(signal)
+        else:
+            # Check if cooldown period has passed
+            time_diff = (timestamp - last_signal_time[symbol]).total_seconds() / 3600
+            
+            if time_diff >= cooldown_hours:
+                # Cooldown passed, add this signal
+                last_signal_time[symbol] = timestamp
+                deduplicated.append(signal)
+            else:
+                # Within cooldown - check if this signal has higher score
+                # Find the last added signal for this pair
+                for i in range(len(deduplicated) - 1, -1, -1):
+                    if deduplicated[i]['pair_symbol'] == symbol:
+                        if score > deduplicated[i]['total_score']:
+                            # Replace with higher score signal
+                            deduplicated[i] = signal
+                            last_signal_time[symbol] = timestamp
+                        break
+    
+    return deduplicated
 
 def backtest_with_score_threshold(min_score=150, max_score=300, step=10,
-                                   sl_pct=-7, activation_pct=14, callback_pct=9, timeout_hours=20):
+                                   sl_pct=-7, activation_pct=14, callback_pct=9, timeout_hours=20,
+                                   cooldown_hours=12):
     """
     Test strategy performance across different score thresholds
     
@@ -35,11 +86,13 @@ def backtest_with_score_threshold(min_score=150, max_score=300, step=10,
         activation_pct: TS activation percentage
         callback_pct: TS callback percentage
         timeout_hours: Timeout in hours
+        cooldown_hours: Deduplication cooldown in hours (default: 12)
     """
     print("="*120)
     print("SCORE THRESHOLD OPTIMIZATION")
     print(f"Testing score thresholds from {min_score} to {max_score} with step {step}")
     print(f"Strategy: SL={sl_pct}%, TS Activation={activation_pct}%, Callback={callback_pct}%, Timeout={timeout_hours}h")
+    print(f"Deduplication: {cooldown_hours}h cooldown per pair")
     print("="*120)
     
     results = []
@@ -84,17 +137,31 @@ def backtest_with_score_threshold(min_score=150, max_score=300, step=10,
         
         print(f"Found {len(rows)} signals with score >= {score_threshold}")
         
+        # Convert to signal dicts for deduplication
+        all_signals = [{
+            'pair_symbol': row[0],
+            'signal_timestamp': row[1],
+            'total_score': row[2],
+            'entry_price': float(row[3]),
+            'candles_data': row[4],
+            'entry_time_dt': row[5]
+        } for row in rows]
+        
+        # Deduplicate: one signal per pair within cooldown period
+        deduplicated_signals = deduplicate_signals_by_cooldown(all_signals, cooldown_hours)
+        print(f"After {cooldown_hours}h deduplication: {len(deduplicated_signals)} unique signals")
+        
         # Simulate trades
         trades = []
         exit_reasons = {'TS': 0, 'SL': 0, 'LIQUIDATION': 0, 'TIMEOUT': 0, 'EOD': 0}
         
-        for row in rows:
-            symbol = row[0]
-            signal_ts = row[1]
-            total_score = row[2]
-            entry_price = float(row[3])
-            candles_data = row[4]
-            entry_time_dt = row[5]
+        for signal in deduplicated_signals:
+            symbol = signal['pair_symbol']
+            signal_ts = signal['signal_timestamp']
+            total_score = signal['total_score']
+            entry_price = signal['entry_price']
+            candles_data = signal['candles_data']
+            entry_time_dt = signal['entry_time_dt']
             
             if not candles_data:
                 continue
@@ -215,6 +282,7 @@ if __name__ == "__main__":
     parser.add_argument('--activation', type=float, default=14, help='TS activation percentage')
     parser.add_argument('--callback', type=float, default=9, help='TS callback percentage')
     parser.add_argument('--timeout', type=float, default=20, help='Timeout hours')
+    parser.add_argument('--cooldown', type=float, default=12, help='Deduplication cooldown hours')
     args = parser.parse_args()
     
     backtest_with_score_threshold(
@@ -224,6 +292,7 @@ if __name__ == "__main__":
         sl_pct=args.sl,
         activation_pct=args.activation,
         callback_pct=args.callback,
-        timeout_hours=args.timeout
+        timeout_hours=args.timeout,
+        cooldown_hours=args.cooldown
     )
 
