@@ -70,11 +70,11 @@ def analyze_signal_candles(candles, entry_price, entry_time_dt):
     return drawdown_pct, min_price_time, max_pump_pct, max_pump_time
 
 def generate_detailed_report(days=30):
-    print("="*120)
+    print("="*140)
     print(f"DETAILED SIGNAL ANALYSIS (LAST {days} DAYS)")
-    print("="*120)
-    print(f"{'Signal Time':<18} {'Symbol':<10} {'Score':<6} {'Drawdown':<25} {'Subsequent Max Pump':<25}")
-    print("-" * 120)
+    print("="*140)
+    print(f"{'Signal Time':<18} {'Symbol':<10} {'Score':<6} {'Drawdown (from entry)':<35} {'Subsequent Max Pump':<25}")
+    print("-" * 140)
     
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -127,9 +127,20 @@ def generate_detailed_report(days=30):
                 # Format Output
                 ts_str = signal_ts.strftime('%Y-%m-%d %H:%M')
                 
-                # Drawdown Info
+                # Drawdown Info with status marker
                 dd_time_str = format_time_diff(signal_ts, dd_time)
-                dd_info = f"{dd_pct:>6.2f}% at {dd_time_str}"
+                
+                # Determine status based on drawdown
+                # Liquidation at -8% (with 10x leverage, 80% margin threshold)
+                # SL typically at -7%
+                if dd_pct < -8:
+                    status = "🔴 LIQ"
+                elif dd_pct < -7:
+                    status = "🟡 SL "
+                else:
+                    status = "🟢 OK "
+                
+                dd_info = f"{status} {dd_pct:>6.2f}% at {dd_time_str}"
                 
                 # Pump Info
                 if pump_time:
@@ -138,15 +149,9 @@ def generate_detailed_report(days=30):
                 else:
                     pump_info = "N/A"
                 
-                # Highlight logic
-                # User asked: "по каждому сигналу на каждой просадке более 4%"
-                # We show ALL, but maybe mark significant ones?
-                # User said "по каждому сигналу без сокращений" -> Show ALL.
-                
-                # If drawdown > 4% (meaning < -4%), user specifically asked about these details.
-                # We will print all, but the format matches their request.
-                
-                print(f"{ts_str:<18} {symbol:<10} {score:<6} {dd_info:<25} {pump_info:<25}")
+                print(f"{ts_str:<18} {symbol:<10} {score:<6} {dd_info:<35} {pump_info:<25}")
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Detailed signal analysis report.')
