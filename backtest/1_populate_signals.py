@@ -99,20 +99,23 @@ def fetch_signals_custom_score(conn, days=30, limit=None, min_score=150):
     
     return signals
 
-def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_hours=12, min_score=150):
+def populate_signal_analysis(days=30, limit=None, force_refresh=False, min_score=150):
     """
     Fetch signals with custom score threshold and store in web.signal_analysis table
+    
+    IMPORTANT: This version does NOT deduplicate signals!
+    We need ALL signals to test different score thresholds.
+    Deduplication will happen during optimization phase based on score.
     
     Args:
         days: Number of days to look back
         limit: Limit number of signals
         force_refresh: If True, TRUNCATE and repopulate
-        cooldown_hours: Deduplication cooldown period
         min_score: Minimum total_score threshold (default: 150)
     """
     print(f"Populating signal analysis table for the last {days} days...")
     print(f"Minimum score threshold: {min_score}")
-    print(f"Using {cooldown_hours}h deduplication cooldown...")
+    print(f"⚠️  NO DEDUPLICATION - Loading ALL signals for score testing")
     
     try:
         with get_db_connection() as conn:
@@ -133,37 +136,24 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
             
             print(f"Found {len(signals)} signals from database.")
             
-            # Load existing state for deduplication
-            print("Loading existing signal history for deduplication...")
-            last_signal_time_query = """
-                SELECT pair_symbol, MAX(signal_timestamp) as last_ts
-                FROM web.signal_analysis
-                GROUP BY pair_symbol
-            """
-            initial_dedup_state = {}
-            if not force_refresh:
-                with conn.cursor() as cur:
-                    cur.execute(last_signal_time_query)
-                    for row in cur.fetchall():
-                        initial_dedup_state[row[0]] = row[1]
-            print(f"Loaded history for {len(initial_dedup_state)} pairs.")
-
-            # Deduplicate
-            unique_signals = deduplicate_signals(signals, cooldown_hours=cooldown_hours, initial_state=initial_dedup_state)
-            print(f"After deduplication: {len(unique_signals)} unique signals.")
+            # NO DEDUPLICATION - we need all signals for testing different thresholds
+            unique_signals = signals
+            print(f"Loading all {len(unique_signals)} signals (no deduplication).")
             
             # Get existing signal timestamps to skip
             if not force_refresh:
                 existing_query = """
-                    SELECT signal_timestamp, pair_symbol
+                    SELECT signal_timestamp, pair_symbol, total_score
                     FROM web.signal_analysis
                 """
                 with conn.cursor() as cur:
                     cur.execute(existing_query)
-                    existing = set((row[0], row[1]) for row in cur.fetchall())
+                    # Use (timestamp, symbol, score) as unique key to allow multiple scores for same pair
+                    existing = set((row[0], row[1], row[2]) for row in cur.fetchall())
                 print(f"Found {len(existing)} existing signals in database.")
             else:
                 existing = set()
+
             
             # Process each signal
             inserted = 0
@@ -174,8 +164,8 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
                 if i % 10 == 0:
                     print(f"Processing {i}/{len(unique_signals)}... (inserted: {inserted}, skipped: {skipped})", end='\r')
                 
-                # Skip if already exists
-                if (signal['timestamp'], signal['pair_symbol']) in existing:
+                # Skip if already exists (same timestamp, symbol, AND score)
+                if (signal['timestamp'], signal['pair_symbol'], signal['total_score']) in existing:
                     skipped += 1
                     continue
                 
@@ -276,11 +266,10 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description='Populate signal analysis with custom score threshold.')
+    parser = argparse.ArgumentParser(description='Populate signal analysis with custom score threshold (NO deduplication).')
     parser.add_argument('--days', type=int, default=30, help='Days to look back')
     parser.add_argument('--limit', type=int, default=None, help='Limit number of signals')
     parser.add_argument('--force-refresh', action='store_true', help='Force full refresh')
-    parser.add_argument('--cooldown', type=int, default=12, help='Deduplication cooldown in hours')
     parser.add_argument('--min-score', type=int, default=150, help='Minimum total_score threshold')
     args = parser.parse_args()
     
@@ -288,6 +277,6 @@ if __name__ == "__main__":
         days=args.days,
         limit=args.limit,
         force_refresh=args.force_refresh,
-        cooldown_hours=args.cooldown,
         min_score=args.min_score
     )
+
