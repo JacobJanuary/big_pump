@@ -16,11 +16,7 @@ scripts_dir = parent_dir / 'scripts_v2'
 sys.path.append(str(scripts_dir))
 
 from pump_analysis_lib import get_db_connection, EXCHANGE_FILTER, EXCHANGE_IDS
-from optimization_lib import get_candle_direction
-
-# Import simulation function from report_enhanced
-sys.path.insert(0, str(scripts_dir))
-from report_enhanced import simulate_signal_exit
+from optimization_lib import simulate_combined  # Use same function as optimize_advanced.py!
 
 def deduplicate_signals_by_cooldown(signals, cooldown_hours=12):
     """Deduplicate signals: keep highest score per pair within cooldown"""
@@ -150,11 +146,23 @@ def optimize_for_score_threshold(score_threshold, cooldown_hours=12):
             else:
                 candles = candles_data
             
-            # Simulate
-            (exit_reason, exit_time_dt, pnl_pct, max_dd_pct, max_dd_time, 
-             max_pump_pct, max_pump_time, ts_activation_time) = simulate_signal_exit(
-                candles, signal['entry_price'], signal['entry_time_dt'],
-                sl, activation, callback, timeout
+            # Convert candle format from {time, o, h, l, c} to {open_time, open_price, high_price, low_price, close_price}
+            formatted_candles = [{
+                'open_time': c['time'],
+                'open_price': float(c['o']),
+                'high_price': float(c['h']),
+                'low_price': float(c['l']),
+                'close_price': float(c['c'])
+            } for c in candles]
+            
+            # Simulate using same function as optimize_advanced.py
+            pnl_pct = simulate_combined(
+                formatted_candles,
+                signal['entry_price'],
+                sl,
+                activation,
+                callback,
+                timeout_hours=timeout
             )
             
             profits.append(pnl_pct)
