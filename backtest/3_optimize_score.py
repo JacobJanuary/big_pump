@@ -111,17 +111,17 @@ def optimize_for_score_threshold(score_threshold, cooldown_hours=12):
         print(f"⚠️  Too few signals ({len(signals)}) for reliable optimization")
         return None
     
-    # Parameter ranges (like optimize_advanced.py)
-    sl_levels = list(range(-10, 0))  # -10% to -1%
-    activation_levels = list(range(5, 31, 5))  # 5%, 10%, 15%, 20%, 25%, 30%
-    callback_rates = list(range(5, 16, 5))  # 5%, 10%, 15%
+    # Parameter ranges (EXACTLY like optimize_advanced.py)
+    sl_levels = list(range(-10, 0))  # -10% to -1%, step 1% = 10 values
+    activation_levels = list(range(3, 51))  # 3% to 50%, step 1% = 48 values
+    callback_rates = list(range(1, 11))  # 1% to 10%, step 1% = 10 values
     timeout_options = [20]  # Fixed 20h
     
     total_combos = len(sl_levels) * len(activation_levels) * len(callback_rates)
     print(f"\nParameter space:")
-    print(f"  SL: {sl_levels}")
-    print(f"  Activation: {activation_levels}")
-    print(f"  Callback: {callback_rates}")
+    print(f"  SL: {len(sl_levels)} values ({min(sl_levels)}% to {max(sl_levels)}%)")
+    print(f"  Activation: {len(activation_levels)} values ({min(activation_levels)}% to {max(activation_levels)}%)")
+    print(f"  Callback: {len(callback_rates)} values ({min(callback_rates)}% to {max(callback_rates)}%)")
     print(f"  Total combinations: {total_combos}")
     
     print(f"\nTesting all combinations...")
@@ -130,7 +130,7 @@ def optimize_for_score_threshold(score_threshold, cooldown_hours=12):
     
     for sl, activation, callback, timeout in product(sl_levels, activation_levels, callback_rates, timeout_options):
         current += 1
-        if current % 50 == 0:
+        if current % 500 == 0:
             print(f"  Progress: {current}/{total_combos} ({current/total_combos*100:.1f}%)...", end='\r')
         
         profits = []
