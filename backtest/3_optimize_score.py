@@ -65,15 +65,18 @@ def optimize_for_score_threshold(score_threshold, cooldown_hours=12):
     
     query = f"""
         SELECT 
+            sa.id,
             sa.pair_symbol,
             sa.signal_timestamp,
             sa.total_score,
-            sa.entry_price,
-            sa.candles_data,
-            sa.entry_time
+            sa.entry_price
         FROM web.signal_analysis sa
         JOIN public.trading_pairs tp ON sa.trading_pair_id = tp.id
         WHERE sa.total_score >= {score_threshold}
+        AND EXISTS (
+            SELECT 1 FROM web.minute_candles mc
+            WHERE mc.signal_analysis_id = sa.id
+        )
         AND (
             '{EXCHANGE_FILTER}' = 'ALL' 
             OR ('{EXCHANGE_FILTER}' = 'BINANCE' AND tp.exchange_id = {EXCHANGE_IDS['BINANCE']})
@@ -86,29 +89,59 @@ def optimize_for_score_threshold(score_threshold, cooldown_hours=12):
         cur.execute(query)
         rows = cur.fetchall()
     
-    conn.close()
-    
     if not rows:
         print(f"No signals found for score >= {score_threshold}")
+        conn.close()
         return None
     
     print(f"Found {len(rows)} raw signals")
     
-    # Convert and deduplicate
-    all_signals = [{
-        'pair_symbol': row[0],
-        'signal_timestamp': row[1],
-        'total_score': row[2],
-        'entry_price': float(row[3]),
-        'candles_data': row[4],
-        'entry_time_dt': row[5]
-    } for row in rows]
+    # Load signals with candles from minute_candles table (like optimize_advanced.py)
+    signals_data = []
     
-    signals = deduplicate_signals_by_cooldown(all_signals, cooldown_hours)
-    print(f"After {cooldown_hours}h deduplication: {len(signals)} unique signals")
+    for row in rows:
+        signal_id = row[0]
+        
+        # Fetch minute candles for this signal
+        candles_query = """
+            SELECT open_time, open_price, high_price, low_price, close_price
+            FROM web.minute_candles
+            WHERE signal_analysis_id = %s
+            ORDER BY open_time ASC
+        """
+        
+        with conn.cursor() as cur:
+            cur.execute(candles_query, (signal_id,))
+            candles_rows = cur.fetchall()
+        
+        candles = [{
+            'open_time': int(c[0]),
+            'open_price': float(c[1]),
+            'high_price': float(c[2]),
+            'low_price': float(c[3]),
+            'close_price': float(c[4])
+        } for c in candles_rows]
+        
+        if candles:
+            signals_data.append({
+                'signal_id': signal_id,
+                'pair_symbol': row[1],
+                'signal_timestamp': row[2],
+                'total_score': row[3],
+                'entry_price': float(row[4]),
+                'candles': candles
+            })
     
-    if len(signals) < 10:
-        print(f"⚠️  Too few signals ({len(signals)}) for reliable optimization")
+    conn.close()
+    
+    print(f"Loaded {len(signals_data)} signals with minute candles")
+    
+    # Deduplicate
+    deduplicated_signals = deduplicate_signals_by_cooldown(signals_data, cooldown_hours)
+    print(f"After {cooldown_hours}h deduplication: {len(deduplicated_signals)} unique signals")
+    
+    if len(deduplicated_signals) < 10:
+        print(f"⚠️  Too few signals ({len(deduplicated_signals)}) for reliable optimization")
         return None
     
     # Parameter ranges (EXACTLY like optimize_advanced.py)
@@ -135,29 +168,10 @@ def optimize_for_score_threshold(score_threshold, cooldown_hours=12):
         
         profits = []
         
-        for signal in signals:
-            candles_data = signal['candles_data']
-            
-            if not candles_data:
-                continue
-            
-            if isinstance(candles_data, str):
-                candles = json.loads(candles_data)
-            else:
-                candles = candles_data
-            
-            # Convert candle format from {time, o, h, l, c} to {open_time, open_price, high_price, low_price, close_price}
-            formatted_candles = [{
-                'open_time': c['time'],
-                'open_price': float(c['o']),
-                'high_price': float(c['h']),
-                'low_price': float(c['l']),
-                'close_price': float(c['c'])
-            } for c in candles]
-            
+        for signal in deduplicated_signals:
             # Simulate using same function as optimize_advanced.py
             pnl_pct = simulate_combined(
-                formatted_candles,
+                signal['candles'],
                 signal['entry_price'],
                 sl,
                 activation,
