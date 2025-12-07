@@ -1,5 +1,5 @@
 """
-Fetch and store 1-minute candles from Binance/Bybit API for each signal
+Fetch minute candles for signals in web.signal_analysis
 """
 import sys
 import os
@@ -8,9 +8,11 @@ import requests
 import time
 from datetime import datetime, timezone
 
-# Add scripts directory to path
+# Add parent scripts directory to path
 current_dir = Path(__file__).resolve().parent
-sys.path.append(str(current_dir))
+parent_dir = current_dir.parent
+scripts_dir = parent_dir / 'scripts_v2'
+sys.path.append(str(scripts_dir))
 
 from pump_analysis_lib import get_db_connection, BINANCE_BASE_URL, BYBIT_BASE_URL, EXCHANGE_IDS
 
