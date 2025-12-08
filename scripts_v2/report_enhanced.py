@@ -143,17 +143,22 @@ def generate_enhanced_report(days=30, sl_pct=-7, activation_pct=14, callback_pct
     print("-" * 160)
     
     with get_db_connection() as conn:
+        # Query signals
         query = f"""
             SELECT 
+                sa.id,
                 sa.pair_symbol,
                 sa.signal_timestamp,
                 sa.total_score,
                 sa.entry_price,
-                sa.candles_data,
                 sa.entry_time
             FROM web.signal_analysis sa
             JOIN public.trading_pairs tp ON sa.trading_pair_id = tp.id
             WHERE sa.signal_timestamp >= NOW() - INTERVAL '{days} days'
+            AND EXISTS (
+                SELECT 1 FROM web.minute_candles mc
+                WHERE mc.signal_analysis_id = sa.id
+            )
             AND (
                 '{EXCHANGE_FILTER}' = 'ALL' 
                 OR ('{EXCHANGE_FILTER}' = 'BINANCE' AND tp.exchange_id = {EXCHANGE_IDS['BINANCE']})
@@ -175,21 +180,36 @@ def generate_enhanced_report(days=30, sl_pct=-7, activation_pct=14, callback_pct
         total_pnl = 0
         
         for row in rows:
-            symbol = row[0]
-            signal_ts = row[1]
-            score = row[2]
-            entry_price = float(row[3])
-            candles_data = row[4]
+            signal_id = row[0]
+            symbol = row[1]
+            signal_ts = row[2]
+            score = row[3]
+            entry_price = float(row[4])
             entry_time_dt = row[5]
             
-            if not candles_data:
+            # Load minute candles from table (like backtest_portfolio_realistic.py)
+            candles_query = """
+                SELECT open_time, open_price, high_price, low_price, close_price
+                FROM web.minute_candles
+                WHERE signal_analysis_id = %s
+                ORDER BY open_time ASC
+            """
+            
+            with conn.cursor() as cur:
+                cur.execute(candles_query, (signal_id,))
+                candles_rows = cur.fetchall()
+            
+            if not candles_rows:
                 continue
             
-            # Parse candles
-            if isinstance(candles_data, str):
-                candles = json.loads(candles_data)
-            else:
-                candles = candles_data
+            # Convert to format expected by simulate_signal_exit
+            candles = [{
+                'time': int(c[0]),
+                'o': float(c[1]),
+                'h': float(c[2]),
+                'l': float(c[3]),
+                'c': float(c[4])
+            } for c in candles_rows]
             
             # Simulate exit
             (exit_reason, exit_time, pnl_pct, max_dd_pct, max_dd_time, 
