@@ -42,8 +42,8 @@ def simulate_signal_exit(candles, entry_price, entry_time_dt, sl_pct, activation
     max_price = entry_price
     max_price_time = entry_time_dt
     
-    # Liquidation threshold (10x leverage, 80% margin)
-    LIQUIDATION_THRESHOLD = 0.8
+    # Liquidation threshold (10x leverage)
+    LIQUIDATION_THRESHOLD = 1.0  # 100% of margin (correct for 10x leverage = -10% price drop)
     LEVERAGE = 10
     liquidation_price = entry_price * (1 - (LIQUIDATION_THRESHOLD / LEVERAGE))
     
@@ -241,7 +241,7 @@ def generate_enhanced_report(days=30, sl_pct=-7, activation_pct=14, callback_pct
             elif exit_reason == 'SL':
                 details = f"Hit SL at {sl_pct}%"
             elif exit_reason == 'LIQUIDATION':
-                details = f"Liquidated at -8%"
+                details = f"Liquidated at -10%"
             elif exit_reason == 'TIMEOUT':
                 details = f"Timeout after {timeout_hours}h, TS not activated"
             else:
