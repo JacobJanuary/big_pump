@@ -178,17 +178,28 @@ def simulate_combined(candles, entry_price, sl_pct, activation_pct, callback_pct
     # Hybrid timeout parameters
     grace_period_hours = 2
     grace_period_ms = grace_period_hours * 3600 * 1000
+    small_loss_threshold = -2.0  # If loss is -2% or less, give grace period
     grace_period_active = False
-    best_price_in_grace = 0
-    small_loss_threshold = -2.0  # If loss <= -2%, activate grace period
+    best_price_in_grace = entry_price
+    
+    # Liquidation parameters (10x leverage)
+    LIQUIDATION_THRESHOLD = 1.0  # 100% of margin
+    LEVERAGE = 10
+    liquidation_price = entry_price * (1 - (LIQUIDATION_THRESHOLD / LEVERAGE))  # -10% for 10x
     
     for candle in candles:
+        open_price = float(candle['open_price'])
         high = float(candle['high_price'])
         low = float(candle['low_price'])
         close = float(candle['close_price'])
         candle_time = candle['open_time']
-        candle_dir = get_candle_direction(candle)
         current_pnl = ((close - entry_price) / entry_price) * 100
+        candle_dir = get_candle_direction(candle)
+        
+        # CHECK LIQUIDATION FIRST (before any other exit)
+        # For LONG positions with 10x leverage: liquidation if price drops 10%
+        if low <= liquidation_price:
+            return -10.0  # Loss of entire margin
         
         # Process events in correct order based on candle direction
         if candle_dir == 'bullish':

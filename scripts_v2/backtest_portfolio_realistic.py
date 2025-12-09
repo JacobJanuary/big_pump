@@ -28,7 +28,7 @@ MARGIN_PER_POSITION = POSITION_SIZE / LEVERAGE  # $100
 # Realistic trading costs
 TAKER_FEE = 0.0005  # 0.05% (Binance Futures)
 SLIPPAGE = 0.001    # 0.1% average slippage
-LIQUIDATION_THRESHOLD = 0.8  # 80% of margin
+LIQUIDATION_THRESHOLD = 1.0  # 100% of margin (correct for 10x leverage = -10% price drop)
 FUNDING_RATE = 0.0001  # 0.01% per 8 hours
 
 def simulate_trade_with_exit_time(candles, entry_price, sl_pct, activation_pct, callback_pct, timeout_hours):
@@ -50,7 +50,7 @@ def simulate_trade_with_exit_time(candles, entry_price, sl_pct, activation_pct, 
         candle_dir = get_candle_direction(candle)
         
         # Check liquidation (before any other exit)
-        # For LONG positions: liquidation if price drops ~8% with 10x leverage
+        # For LONG positions with 10x leverage: liquidation if price drops 10%
         liquidation_price = entry_price * (1 - (LIQUIDATION_THRESHOLD / LEVERAGE))
         if low <= liquidation_price:
             # Liquidation = loss of entire margin
