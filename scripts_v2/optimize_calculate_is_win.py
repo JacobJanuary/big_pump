@@ -49,8 +49,8 @@ def simulate_trade(conn, trading_pair_id, entry_time, entry_price):
     if not entry_price:
         return None
     
-    sl_price = entry_price * (1 + STOP_LOSS_PCT / 100)
-    tp_price = entry_price * (1 + TAKE_PROFIT_PCT / 100)
+    sl_price = float(entry_price) * (1 + STOP_LOSS_PCT / 100)
+    tp_price = float(entry_price) * (1 + TAKE_PROFIT_PCT / 100)
     end_time = entry_time + timedelta(hours=MAX_HOLDING_HOURS)
     
     # Fetch candles
