@@ -22,7 +22,7 @@ from pump_analysis_lib import get_db_connection
 # Trading parameters
 ENTRY_DELAY_MINUTES = 18
 STOP_LOSS_PCT = -10.0
-TAKE_PROFIT_PCT = 10.0
+TAKE_PROFIT_PCT = 20.0
 MAX_HOLDING_HOURS = 24
 
 def get_entry_price(conn, trading_pair_id, entry_time):
