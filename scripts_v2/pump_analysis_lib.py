@@ -243,28 +243,60 @@ def fetch_candles_5m(conn, pair_id, start_time_ms, end_time_ms):
     
     return candles
 
-def deduplicate_signals(signals, cooldown_hours=24, initial_state=None):
+def deduplicate_signals(signals, cooldown_hours=24, initial_state=None, score_threshold=1.2):
     """
     Remove duplicate signals within cooldown period
+    
+    Smart Deduplication: Allows signals with significantly higher scores (20%+ by default)
+    to override previous signals within the cooldown period.
+    
     Args:
         signals: List of signal dicts
         cooldown_hours: Cooldown in hours
-        initial_state: Dict of {symbol: last_timestamp} to seed deduplication
+        initial_state: Dict of {symbol: {'timestamp': datetime, 'score': float}} to seed deduplication
+        score_threshold: Minimum score ratio to allow duplicate (default 1.2 = 20% improvement)
     Returns: list of unique signals
     """
-    last_signal_time = initial_state.copy() if initial_state else {}
+    # Initialize state with proper structure
+    last_signal_data = {}
+    if initial_state:
+        for symbol, data in initial_state.items():
+            # Support both old format (timestamp only) and new format (dict with timestamp and score)
+            if isinstance(data, dict):
+                last_signal_data[symbol] = data
+            else:
+                # Old format: just timestamp, assume score 0 (will allow any new signal)
+                last_signal_data[symbol] = {'timestamp': data, 'score': 0}
+    
     unique_signals = []
     
     for signal in signals:
         symbol = signal['pair_symbol']
         signal_ts = signal['timestamp']
+        signal_score = float(signal.get('total_score', 0))
         
-        if symbol in last_signal_time:
-            last_ts = last_signal_time[symbol]
-            if (signal_ts - last_ts).total_seconds() < cooldown_hours * 3600:
-                continue
+        if symbol in last_signal_data:
+            last_data = last_signal_data[symbol]
+            last_ts = last_data['timestamp']
+            last_score = last_data.get('score', 0)
+            
+            time_diff_hours = (signal_ts - last_ts).total_seconds() / 3600
+            
+            # Check if within cooldown period
+            if time_diff_hours < cooldown_hours:
+                # Within cooldown - check score improvement
+                score_ratio = signal_score / last_score if last_score > 0 else float('inf')
+                
+                if score_ratio < score_threshold:
+                    # Score not high enough, skip this signal
+                    continue
+                # else: Score is high enough (20%+ improvement), allow it
         
-        last_signal_time[symbol] = signal_ts
+        # Update state with new signal data
+        last_signal_data[symbol] = {
+            'timestamp': signal_ts,
+            'score': signal_score
+        }
         unique_signals.append(signal)
     
     return unique_signals
