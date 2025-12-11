@@ -37,7 +37,7 @@ def get_entry_price(conn, trading_pair_id, entry_time):
     """
     
     with conn.cursor() as cur:
-        cur.execute(query, (trading_pair_id, entry_time))
+        cur.execute(query, (trading_pair_id, int(entry_time.timestamp())))
         result = cur.fetchone()
         return float(result[0]) if result else None
 
@@ -64,8 +64,12 @@ def simulate_trade(conn, trading_pair_id, entry_time, entry_price):
         ORDER BY open_time ASC
     """
     
+    # Convert to unix timestamp (BIGINT) for public.candles
+    entry_ts = int(entry_time.timestamp())
+    end_ts = int(end_time.timestamp())
+    
     with conn.cursor() as cur:
-        cur.execute(query, (trading_pair_id, entry_time, end_time))
+        cur.execute(query, (trading_pair_id, entry_ts, end_ts))
         candles = cur.fetchall()
     
     if not candles:
