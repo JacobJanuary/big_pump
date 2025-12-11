@@ -124,7 +124,6 @@ def calculate_is_win_for_all():
     query = """
         SELECT id, trading_pair_id, signal_timestamp, entry_price
         FROM web.signal_analysis
-        WHERE is_win IS NULL
         ORDER BY signal_timestamp DESC
     """
     
