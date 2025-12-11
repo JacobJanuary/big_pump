@@ -160,38 +160,65 @@ def calculate_is_win_for_all():
         # Calculate entry time
         entry_time = signal_ts + timedelta(minutes=ENTRY_DELAY_MINUTES)
         
+    # Collect updates for batch processing
+    updates = []
+    BATCH_SIZE = 1000
+    
+    print(f"\n{'='*100}")
+    print("PROCESSING SIGNALS (BATCHED)")
+    print("="*100)
+    
+    try:
+        from psycopg2.extras import execute_batch
+    except ImportError:
+        # Fallback for psycopg 3 or if extras not avail
+        def execute_batch(cur, sql, args_list):
+            for args in args_list:
+                cur.execute(sql, args)
+    
+    for sig_id, trading_pair_id, signal_ts, stored_entry_price in signals:
+        processed += 1
+        
+        # Calculate entry time
+        entry_time = signal_ts + timedelta(minutes=ENTRY_DELAY_MINUTES)
+        
         # Get entry price (use stored if available)
         entry_price = stored_entry_price if stored_entry_price else get_entry_price(conn, trading_pair_id, entry_time)
         
         if entry_price is None:
-            if processed == 1:
+            if processed <= 5: # Only print first few errors
                 print(f"\nDEBUG: Failed to get entry price for PairID {trading_pair_id}, Time {entry_time} "
-                      f"(TS: {int(entry_time.timestamp())})")
+                      f"(TS: {int(entry_time.timestamp() * 1000)})")
             timeouts += 1
-            # Update as NULL (timeout/unknown)
-            update_query = "UPDATE web.signal_analysis SET is_win = NULL WHERE id = %s"
-            with conn.cursor() as cur:
-                cur.execute(update_query, (sig_id,))
-            continue
-
-        # Simulate trade
-        is_win = simulate_trade(conn, trading_pair_id, entry_time, entry_price)
-        
-        if is_win is None and processed <= 3:
-             print(f"\nDEBUG: Timeout (no candles found?) PairID {trading_pair_id}, EntryTime {entry_time} "
-                   f"(TS: {int(entry_time.timestamp())}), Price {entry_price}")
-        
-        # Track stats
-        if is_win is True:
-            wins += 1
-        elif is_win is False:
-            losses += 1
+            updates.append((None, sig_id))
         else:
-            timeouts += 1
+            # Simulate trade
+            is_win = simulate_trade(conn, trading_pair_id, entry_time, entry_price)
+            updates.append((is_win, sig_id))
         
-        # Commit every 100 signals
-        if processed % 100 == 0:
+            # Track stats
+            if is_win is True:
+                wins += 1
+            elif is_win is False:
+                losses += 1
+            else:
+                timeouts += 1
+        
+        # Execute batch
+        if len(updates) >= BATCH_SIZE:
+            with conn.cursor() as cur:
+                execute_batch(cur, "UPDATE web.signal_analysis SET is_win = %s WHERE id = %s", updates)
             conn.commit()
+            updates = []
+            
+            print(f"Progress: {processed:,}/{total:,} ({processed/total*100:.1f}%) - "
+                  f"W:{wins} L:{losses} T:{timeouts}", end='\r')
+    
+    # Process remaining
+    if updates:
+        with conn.cursor() as cur:
+             execute_batch(cur, "UPDATE web.signal_analysis SET is_win = %s WHERE id = %s", updates)
+        conn.commit()
     
     # Final commit
     conn.commit()
