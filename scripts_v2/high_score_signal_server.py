@@ -539,112 +539,59 @@ ORDER BY
         """
         Выполняет полный запрос сигналов и рассылку всем клиентам
         Используется как при NOTIFY, так и при обнаружении изменений в polling mode
+        
+        FIXED: Deduplication now only tracks signals that are actually broadcast,
+        preventing valid signals from being blocked by invalid previous signals.
         """
         try:
             signals = await self.fetch_signals()
             
-            # Deduplicate
-            unique_signals = []
-            for sig in signals:
-                if not self.is_duplicate(sig):
-                    unique_signals.append(sig)
-            
-            # Clean up old seen signals
-            self.clean_seen_signals()
-            
-            if not unique_signals:
-                logger.debug("No new unique signals to broadcast")
-                return []  # Return empty list instead of None
-
-            # Deduplication complete - unique_signals contains only non-duplicate signals
-            # based on 12h cooldown check via is_duplicate()
-            
-            # Wait, the client expects a list of active signals or a stream of new ones?
-            # The original code sent the FULL list of active signals.
-            # If we deduplicate, we might filter out active signals that we already sent.
-            # If the client is stateless, it needs the full list.
-            # If the client is stateful, it wants updates.
-            # The user said: "all signals in case of detection are immediately broadcast... check for duplicates"
-            # If I filter duplicates, I am suppressing the broadcast of existing signals.
-            # This effectively turns it into an event stream of NEW signals.
-            # BUT, handle_auth sends self.last_signals.
-            # So self.last_signals should probably contain ALL active signals.
-            # But broadcast_signals should maybe only send NEW ones?
-            # The original code sent `signals` (the full list) to `broadcast_signals`.
-            # Let's assume the user wants to filter duplicates from the *stream*.
-            # But if we filter them, `self.last_signals` will only have new ones.
-            # If a new client connects, they get `self.last_signals`. If that only has new ones, they miss old active ones.
-            # So:
-            # 1. `signals` = all active signals from DB.
-            # 2. `self.last_signals` = `signals` (for new clients).
-            # 3. `new_unique_signals` = filter `signals` against `seen_signals`.
-            # 4. Broadcast `new_unique_signals`?
-            # OR does the user mean "don't send the SAME signal object twice"?
-            # The user said "check for duplicates... signals update every 15 minutes".
-            # This implies the same signal might be re-detected.
-            # If I use `is_duplicate` which checks 24h cooldown, I am effectively saying "Only one signal per pair per 24h".
-            # This matches `populate_signal_analysis.py`.
-            # So if I filter the list from DB using `is_duplicate`, I get a list of "valid unique signals in the window".
-            # If I broadcast this list, it's fine.
-            # But if the list is [A, B] and next time it is [A, B, C].
-            # If I broadcast [A, B, C], the client receives A and B again.
-            # The original code did exactly this: broadcast the full list.
-            # If the user wants to avoid duplicates, maybe they mean "don't broadcast if the list hasn't changed"?
-            # The `check_for_changes_lightweight` already does this optimization.
-            # But if the user explicitly asked for "check for duplicates", they probably mean the 24h cooldown logic.
-            # So I will apply the 24h cooldown filter to the list fetched from DB.
-            # This ensures that if a pair signals again within 24h, it is NOT included in the list.
-            
-            # Apply filter to the full list
-            filtered_signals = []
-            # We need to be careful. `is_duplicate` updates `seen_signals`.
-            # If we run this every 3 seconds, we don't want to mark a signal as "seen" and then filter it out next time because it's "seen".
-            # We want to filter out *subsequent* signals for the same pair.
-            # But the DB query returns the *latest* signal for the pair (ORDER BY timestamp DESC).
-            # Wait, the query returns ALL signals in the window.
-            # If there are multiple signals for the same pair in the window, we should only keep the first one?
-            # `deduplicate_signals` in lib does exactly this.
-            # But here we are in a loop.
-            # Let's use a local deduplication for the current batch, AND a global one for 24h history.
-            
-            # Actually, `is_duplicate` as implemented checks if we saw this pair in the last 24h.
-            # If we saw it 1 minute ago (in the previous loop), it will return True.
-            # This would filter out the signal we just sent!
-            # That's bad if we want to maintain a list of "active signals".
-            # If the goal is "Broadcast NEW signals only", then filtering is correct.
-            # If the goal is "Broadcast ACTIVE signals", then we should NOT filter out signals we just sent, ONLY signals that are "duplicates" of older ones (e.g. double signal in 15 mins).
-            
-            # Let's look at `deduplicate_signals` in lib again.
-            # It takes a list and returns unique ones.
-            # It doesn't have state across calls.
-            # So I should implement `deduplicate_signals` logic on the `signals` list returned from DB.
-            # And NOT use a persistent `seen_signals` that blocks re-sending the same signal object.
-            # BUT, if the user wants to prevent "spamming" the same signal every 3 seconds, the `check_for_changes_lightweight` handles that.
-            # So the "duplicate" check is likely about the "multiple signals for same pair" issue.
-            
-            # So: Implement `deduplicate_signals` logic on the fetched list.
-            
-            # unique_signals already filtered by is_duplicate() above (lines 504-508)
-            # No need for additional deduplication
-            
-            if not unique_signals:
-                logger.debug("No new unique signals to broadcast")
+            if not signals:
+                logger.debug("No signals from query")
                 return []
+            
+            # FIX: Don't deduplicate BEFORE broadcast
+            # The query already filters by score, pattern, and indicators
+            # Signals that reach here have passed all filters
+            
+            # Store for new clients
+            self.last_signals = signals
+            
+            # Broadcast to all clients
+            await self.broadcast_signals(signals)
+            
+            # FIX: Update seen_signals AFTER successful broadcast
+            # This ensures we only track signals that were actually sent
+            for sig in signals:
+                symbol = sig['pair_symbol']
+                signal_ts_str = sig['timestamp']
+                
+                try:
+                    signal_ts = datetime.fromisoformat(signal_ts_str)
+                    if signal_ts.tzinfo is None:
+                        signal_ts = signal_ts.replace(tzinfo=timezone.utc)
+                    
+                    # Update seen_signals with the latest broadcast signal
+                    if symbol not in self.seen_signals or signal_ts > self.seen_signals[symbol]:
+                        self.seen_signals[symbol] = signal_ts
+                        logger.debug(f"Updated seen_signals[{symbol}] = {signal_ts}")
+                except Exception as e:
+                    logger.error(f"Failed to update seen_signals for {symbol}: {e}")
+            
+            # Clean up old entries
+            self.clean_seen_signals()
 
-            self.last_signals = unique_signals
-            await self.broadcast_signals(unique_signals)
-
-            logger.info(f"📡 Broadcast {len(unique_signals)} high-score signals to {len(self.authenticated_clients)} clients")
+            logger.info(f"📡 Broadcast {len(signals)} high-score signals to {len(self.authenticated_clients)} clients")
             
             # Детальная статистика по паттернам
-            if unique_signals:
+            if signals:
                 pattern_counts = {}
-                for sig in unique_signals:
+                for sig in signals:
                     for pattern in sig.get('patterns', []):
                         pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
                 logger.info(f"   Pattern distribution: {pattern_counts}")
             
-            return unique_signals
+            return signals
                 
         except Exception as e:
             logger.error(f"Error in full query and broadcast: {e}")

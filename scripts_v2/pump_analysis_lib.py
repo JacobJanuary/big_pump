@@ -24,7 +24,11 @@ BINANCE_BASE_URL = "https://fapi.binance.com"
 BYBIT_BASE_URL = "https://api.bybit.com"
 REQUEST_DELAY = 0.15  # Rate limiting
 
-SCORE_THRESHOLD = 250
+# --- Signal Filter Configuration ---
+# Minimum total score for high-quality signals
+SCORE_THRESHOLD = 100
+
+# Target patterns to filter for
 TARGET_PATTERNS = ['SQUEEZE_IGNITION', 'OI_EXPLOSION']
 
 # Exchange Configuration
@@ -39,9 +43,9 @@ EXCHANGE_IDS = {
 # --- Indicator Filter Configuration ---
 # Set to 0 to disable a specific filter
 INDICATOR_FILTERS = {
-    'rsi_threshold': 72,            # RSI > 72 (set to 0 to disable)
-    'volume_zscore_threshold': 12,  # Volume Z-Score > 12 (set to 0 to disable)
-    'oi_delta_threshold': 40,       # OI Delta % > 40 (set to 0 to disable)
+    'rsi_threshold': 0,            # DISABLED
+    'volume_zscore_threshold': 12,  # Volume Z-Score > 12
+    'oi_delta_threshold': 40,       # OI Delta % > 40
 }
 
 
