@@ -37,7 +37,8 @@ def get_entry_price(conn, trading_pair_id, entry_time):
     """
     
     with conn.cursor() as cur:
-        cur.execute(query, (trading_pair_id, int(entry_time.timestamp())))
+        # DB uses Milliseconds!
+        cur.execute(query, (trading_pair_id, int(entry_time.timestamp() * 1000)))
         result = cur.fetchone()
         return float(result[0]) if result else None
 
@@ -64,9 +65,9 @@ def simulate_trade(conn, trading_pair_id, entry_time, entry_price):
         ORDER BY open_time ASC
     """
     
-    # Convert to unix timestamp (BIGINT) for public.candles
-    entry_ts = int(entry_time.timestamp())
-    end_ts = int(end_time.timestamp())
+    # Convert to unix timestamp MS (BIGINT) for public.candles
+    entry_ts = int(entry_time.timestamp() * 1000)
+    end_ts = int(end_time.timestamp() * 1000)
     
     with conn.cursor() as cur:
         cur.execute(query, (trading_pair_id, entry_ts, end_ts))
@@ -162,18 +163,23 @@ def calculate_is_win_for_all():
         # Get entry price (use stored if available)
         entry_price = stored_entry_price if stored_entry_price else get_entry_price(conn, trading_pair_id, entry_time)
         
+        if entry_price is None:
+            if processed == 1:
+                print(f"\nDEBUG: Failed to get entry price for PairID {trading_pair_id}, Time {entry_time} "
+                      f"(TS: {int(entry_time.timestamp())})")
+            timeouts += 1
+            # Update as NULL (timeout/unknown)
+            update_query = "UPDATE web.signal_analysis SET is_win = NULL WHERE id = %s"
+            with conn.cursor() as cur:
+                cur.execute(update_query, (sig_id,))
+            continue
+
         # Simulate trade
         is_win = simulate_trade(conn, trading_pair_id, entry_time, entry_price)
         
-        # Update database
-        update_query = """
-            UPDATE web.signal_analysis
-            SET is_win = %s
-            WHERE id = %s
-        """
-        
-        with conn.cursor() as cur:
-            cur.execute(update_query, (is_win, sig_id))
+        if is_win is None and processed <= 3:
+             print(f"\nDEBUG: Timeout (no candles found?) PairID {trading_pair_id}, EntryTime {entry_time} "
+                   f"(TS: {int(entry_time.timestamp())}), Price {entry_price}")
         
         # Track stats
         if is_win is True:
