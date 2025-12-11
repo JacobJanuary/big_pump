@@ -218,22 +218,55 @@ def optimize_filters():
     print(f"Found {len(results):,} valid combinations. Saved to {output_file}")
 
     print(f"\n{'='*100}")
-    print("TOP 20 FILTER COMBINATIONS")
+    print("TOP FILTER COMBINATIONS (Grouped by Performance)")
     print("="*100)
-    print(f"\n{'Rank':<6} {'Score':<8} {'RSI':<6} {'Vol Z':<8} {'OI Δ':<8} {'Win%':<8} {'Wins':<6} {'Loss':<6} {'Trades':<8} {'Signals':<8}")
-    print("-"*100)
+    print(f"\n{'Rank':<6} {'Score':<15} {'RSI':<12} {'Vol Z':<12} {'OI Δ':<12} {'Win%':<8} {'Wins':<6} {'Loss':<6} {'Trades':<8} {'Signals':<8}")
+    print("-"*110)
     
-    for i, result in enumerate(results[:20], 1):
-        print(f"{i:<6} "
-              f">{result['score']:<7} "
-              f">{result['rsi']:<5} "
-              f">{result['volume_zscore']:<7} "
-              f">{result['oi_delta']:<7} "
-              f"{result['win_rate']:<7.2f}% "
-              f"{result['wins']:<6} "
-              f"{result['losses']:<6} "
-              f"{result['trades']:<8} "
-              f"{result['total_signals']:<8}")
+    # Group results by performance metrics
+    grouped = {}
+    for r in results:
+        key = (r['win_rate'], r['wins'], r['losses'], r['trades'], r['total_signals'])
+        if key not in grouped:
+            grouped[key] = {'scores': [], 'rsis': [], 'vols': [], 'ois': []}
+        
+        grouped[key]['scores'].append(r['score'])
+        grouped[key]['rsis'].append(r['rsi'])
+        grouped[key]['vols'].append(r['volume_zscore'])
+        grouped[key]['ois'].append(r['oi_delta'])
+        
+    # Process and print groups
+    rank = 0
+    # Sort groups by WinRate desc, then Trades desc
+    sorted_keys = sorted(grouped.keys(), key=lambda x: (x[0], x[3]), reverse=True)
+    
+    for key in sorted_keys[:20]: # Top 20 groups
+        rank += 1
+        data = grouped[key]
+        win_rate, wins, losses, trades, total_sig = key
+        
+        # Helper to format range
+        def fmt_range(vals):
+            min_v, max_v = min(vals), max(vals)
+            if min_v == max_v:
+                return f">{min_v}"
+            return f">{min_v}-{max_v}"
+            
+        s_str = fmt_range(data['scores'])
+        r_str = fmt_range(data['rsis'])
+        v_str = fmt_range(data['vols'])
+        o_str = fmt_range(data['ois'])
+        
+        print(f"{rank:<6} "
+              f"{s_str:<15} "
+              f"{r_str:<12} "
+              f"{v_str:<12} "
+              f"{o_str:<12} "
+              f"{win_rate:<7.2f}% "
+              f"{wins:<6} "
+              f"{losses:<6} "
+              f"{trades:<8} "
+              f"{total_sig:<8}")
 
 if __name__ == '__main__':
     optimize_filters()
