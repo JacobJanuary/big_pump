@@ -240,7 +240,7 @@ def optimize_filters():
     # Sort groups by WinRate desc, then Trades desc
     sorted_keys = sorted(grouped.keys(), key=lambda x: (x[0], x[3]), reverse=True)
     
-    for key in sorted_keys[:20]: # Top 20 groups
+    for key in sorted_keys[:100]: # Top 100 groups
         rank += 1
         data = grouped[key]
         win_rate, wins, losses, trades, total_sig = key
