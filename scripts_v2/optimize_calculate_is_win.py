@@ -150,15 +150,6 @@ def calculate_is_win_for_all():
     print("PROCESSING SIGNALS")
     print("="*100)
     
-    for sig_id, trading_pair_id, signal_ts, stored_entry_price in signals:
-        processed += 1
-        
-        if processed % 100 == 0:
-            print(f"Progress: {processed:,}/{total:,} ({processed/total*100:.1f}%) - "
-                  f"W:{wins} L:{losses} T:{timeouts}", end='\r')
-        
-        # Calculate entry time
-        entry_time = signal_ts + timedelta(minutes=ENTRY_DELAY_MINUTES)
         
     # Collect updates for batch processing
     updates = []
