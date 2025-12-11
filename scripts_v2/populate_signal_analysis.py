@@ -50,34 +50,25 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
             
             print(f"Found {len(signals)} signals from database.")
             
-            # Load existing state for deduplication (last signal time and score per pair)
+            # Load existing state for deduplication (last signal time per pair)
             # This ensures we don't insert a signal that is a duplicate of one already in DB
             print("Loading existing signal history for deduplication...")
-            last_signal_data_query = """
-                SELECT pair_symbol, MAX(signal_timestamp) as last_ts, 
-                       (array_agg(total_score ORDER BY signal_timestamp DESC))[1] as last_score
+            last_signal_time_query = """
+                SELECT pair_symbol, MAX(signal_timestamp) as last_ts
                 FROM web.signal_analysis
                 GROUP BY pair_symbol
             """
             initial_dedup_state = {}
             if not force_refresh:
                 with conn.cursor() as cur:
-                    cur.execute(last_signal_data_query)
+                    cur.execute(last_signal_time_query)
                     for row in cur.fetchall():
-                        initial_dedup_state[row[0]] = {
-                            'timestamp': row[1],
-                            'score': float(row[2]) if row[2] else 0
-                        }
+                        initial_dedup_state[row[0]] = row[1]
             print(f"Loaded history for {len(initial_dedup_state)} pairs.")
 
-            # Deduplicate with smart score-based logic (20% improvement required)
-            unique_signals = deduplicate_signals(
-                signals, 
-                cooldown_hours=cooldown_hours, 
-                initial_state=initial_dedup_state,
-                score_threshold=1.2  # 20% improvement required
-            )
-            print(f"After smart deduplication: {len(unique_signals)} unique signals.")
+            # Deduplicate (12h cooldown, time-based only)
+            unique_signals = deduplicate_signals(signals, cooldown_hours=cooldown_hours, initial_state=initial_dedup_state)
+            print(f"After deduplication: {len(unique_signals)} unique signals.")
             
             # Get existing signal timestamps to skip (exact match check)
             if not force_refresh:

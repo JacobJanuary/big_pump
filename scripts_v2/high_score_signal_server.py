@@ -120,10 +120,9 @@ class HighScoreSignalWebSocketServer:
         self.authenticated_clients: Set = set()
         self.client_info: Dict = {}
         
-        # Smart Deduplication state
-        self.seen_signals = {}  # symbol -> {timestamp, score}
+        # Deduplication state (simple 12h time-based)
+        self.seen_signals = {}  # symbol -> timestamp
         self.dedup_cooldown_hours = int(config.get('DEDUP_COOLDOWN_HOURS', 12))
-        self.dedup_score_threshold = float(config.get('DEDUP_SCORE_THRESHOLD', 1.2))  # 20% improvement required
 
         # Состояние
         self.db_pool: Optional[asyncpg.Pool] = None
@@ -150,8 +149,7 @@ class HighScoreSignalWebSocketServer:
         logger.info(f"Indicator Filters: RSI>{INDICATOR_FILTERS['rsi_threshold']}, "
                    f"Vol Z-Score>{INDICATOR_FILTERS['volume_zscore_threshold']}, "
                    f"OI Delta>{INDICATOR_FILTERS['oi_delta_threshold']}%")
-        logger.info(f"Smart Deduplication: {self.dedup_cooldown_hours}h cooldown, "
-                   f"{(self.dedup_score_threshold - 1) * 100:.0f}% score improvement required")
+        logger.info(f"Deduplication: {self.dedup_cooldown_hours}h cooldown (time-based only)")
 
     def hash_token(self, token: str) -> str:
         """Хеширование токена для безопасного сравнения"""
@@ -378,21 +376,12 @@ ORDER BY
             logger.error(f"Error processing NOTIFY: {e}")
             self.stats['errors'] += 1
 
-    def is_weak_duplicate(self, signal: dict) -> bool:
+    def is_duplicate(self, signal: dict) -> bool:
         """
-        Check if signal is a weak duplicate within cooldown period.
-        
-        A signal is considered a weak duplicate if:
-        1. Same symbol has been broadcast within cooldown period (12h)
-        2. New signal's score is NOT significantly higher (< 20% improvement)
-        
-        Returns:
-            True if signal should be filtered (weak duplicate)
-            False if signal should be broadcast (new or strong enough)
+        Check if signal is a duplicate within cooldown period (time-based only)
         """
         symbol = signal['pair_symbol']
         signal_ts_str = signal['timestamp']
-        new_score = float(signal['total_score'])
         
         try:
             signal_ts = datetime.fromisoformat(signal_ts_str)
@@ -400,59 +389,39 @@ ORDER BY
                 signal_ts = signal_ts.replace(tzinfo=timezone.utc)
         except Exception as e:
             logger.error(f"Failed to parse timestamp for {symbol}: {e}")
-            return False  # Allow signal if timestamp parsing fails
-        
-        # Check if we've seen this symbol recently
-        if symbol not in self.seen_signals:
-            return False  # New symbol, not a duplicate
-        
-        last_signal = self.seen_signals[symbol]
-        last_ts = last_signal['timestamp']
-        last_score = last_signal['score']
-        
-        # Ensure last_ts is timezone-aware
-        if last_ts.tzinfo is None:
-            last_ts = last_ts.replace(tzinfo=timezone.utc)
-        
-        # Check if within cooldown period
-        time_diff_hours = (signal_ts - last_ts).total_seconds() / 3600
-        
-        if time_diff_hours >= self.dedup_cooldown_hours:
-            # Outside cooldown period, not a duplicate
             return False
         
-        # Within cooldown period - check score improvement
-        score_ratio = new_score / last_score if last_score > 0 else float('inf')
+        if symbol in self.seen_signals:
+            last_ts = self.seen_signals[symbol]
+            
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=timezone.utc)
+            
+            # Same timestamp = not duplicate
+            if signal_ts == last_ts:
+                return False
+            
+            # ONLY filter NEWER signals within cooldown
+            if signal_ts > last_ts:
+                if (signal_ts - last_ts).total_seconds() < self.dedup_cooldown_hours * 3600:
+                    return True
         
-        if score_ratio >= self.dedup_score_threshold:
-            # Signal is strong enough (20%+ improvement)
-            logger.info(f"✅ Allowing stronger signal: {symbol} "
-                       f"(score {new_score:.2f} vs {last_score:.2f}, "
-                       f"ratio {score_ratio:.2f}, {time_diff_hours:.2f}h ago)")
-            return False
-        else:
-            # Signal is too weak
-            logger.debug(f"❌ Blocking weak duplicate: {symbol} "
-                        f"(score {new_score:.2f} vs {last_score:.2f}, "
-                        f"ratio {score_ratio:.2f} < {self.dedup_score_threshold}, "
-                        f"{time_diff_hours:.2f}h ago)")
-            return True
+        # Update seen only if newer
+        if symbol not in self.seen_signals or signal_ts > self.seen_signals[symbol]:
+            self.seen_signals[symbol] = signal_ts
+        
+        return False
 
     def clean_seen_signals(self):
         """Remove old entries from seen_signals"""
         now = datetime.now(timezone.utc)
         to_remove = []
-        
-        for symbol, signal_data in self.seen_signals.items():
-            ts = signal_data['timestamp']
+        for symbol, ts in self.seen_signals.items():
             if (now - ts).total_seconds() > self.dedup_cooldown_hours * 3600:
                 to_remove.append(symbol)
         
         for symbol in to_remove:
             del self.seen_signals[symbol]
-        
-        if to_remove:
-            logger.debug(f"Cleaned {len(to_remove)} old signals from seen_signals")
 
     async def fetch_signals(self) -> List[dict]:
         """Получение высококачественных сигналов из БД"""
@@ -567,8 +536,7 @@ ORDER BY
         Выполняет полный запрос сигналов и рассылку всем клиентам
         Используется как при NOTIFY, так и при обнаружении изменений в polling mode
         
-        SMART DEDUPLICATION: Filters weak duplicates (< 20% score improvement within 12h)
-        while allowing strong signals through.
+        Deduplication: Simple 12h time-based cooldown
         """
         try:
             signals = await self.fetch_signals()
@@ -577,55 +545,35 @@ ORDER BY
                 logger.debug("No signals from query")
                 return []
             
-            # Smart deduplication: filter signals that are too weak
-            filtered_signals = []
+            # Deduplicate (time-based only)
+            unique_signals = []
             for sig in signals:
-                if not self.is_weak_duplicate(sig):
-                    filtered_signals.append(sig)
+                if not self.is_duplicate(sig):
+                    unique_signals.append(sig)
             
-            if not filtered_signals:
-                logger.debug("No signals after smart deduplication")
+            self.clean_seen_signals()
+            
+            if not unique_signals:
+                logger.debug("No new unique signals to broadcast")
                 return []
             
             # Store for new clients
-            self.last_signals = filtered_signals
+            self.last_signals = unique_signals
             
-            # Broadcast filtered signals
-            await self.broadcast_signals(filtered_signals)
-            
-            # Update seen_signals AFTER successful broadcast
-            for sig in filtered_signals:
-                symbol = sig['pair_symbol']
-                signal_ts_str = sig['timestamp']
-                
-                try:
-                    signal_ts = datetime.fromisoformat(signal_ts_str)
-                    if signal_ts.tzinfo is None:
-                        signal_ts = signal_ts.replace(tzinfo=timezone.utc)
-                    
-                    # Update with new timestamp AND score
-                    self.seen_signals[symbol] = {
-                        'timestamp': signal_ts,
-                        'score': float(sig['total_score'])
-                    }
-                    logger.debug(f"Updated seen_signals[{symbol}] = {{ts: {signal_ts}, score: {sig['total_score']}}}")
-                except Exception as e:
-                    logger.error(f"Failed to update seen_signals for {symbol}: {e}")
-            
-            # Clean up old entries
-            self.clean_seen_signals()
+            # Broadcast
+            await self.broadcast_signals(unique_signals)
 
-            logger.info(f"📡 Broadcast {len(filtered_signals)} high-score signals to {len(self.authenticated_clients)} clients")
+            logger.info(f"📡 Broadcast {len(unique_signals)} high-score signals to {len(self.authenticated_clients)} clients")
             
             # Детальная статистика по паттернам
-            if filtered_signals:
+            if unique_signals:
                 pattern_counts = {}
-                for sig in filtered_signals:
+                for sig in unique_signals:
                     for pattern in sig.get('patterns', []):
                         pattern_counts[pattern] = pattern_counts.get(pattern, 0) + 1
                 logger.info(f"   Pattern distribution: {pattern_counts}")
             
-            return filtered_signals
+            return unique_signals
                 
         except Exception as e:
             logger.error(f"Error in full query and broadcast: {e}")
