@@ -29,12 +29,21 @@ def load_all_signals(conn):
     print("Loading all signals into memory...")
     query = """
         SELECT 
-            total_score as score,
-            rsi,
-            volume_zscore,
-            oi_delta_pct,
-            is_win
-        FROM web.signal_analysis
+            w.total_score as score,
+            COALESCE(i.rsi, 0) as rsi,
+            COALESCE(i.volume_zscore, 0) as volume_zscore,
+            COALESCE(i.oi_delta_pct, 0) as oi_delta_pct,
+            w.is_win
+        FROM web.signal_analysis w
+        JOIN fas_v2.scoring_history sh ON w.trading_pair_id = sh.trading_pair_id 
+            AND w.signal_timestamp = sh.timestamp
+        JOIN fas_v2.sh_indicators shi ON shi.scoring_history_id = sh.id
+        JOIN fas_v2.indicators i ON (
+            i.trading_pair_id = shi.indicators_trading_pair_id 
+            AND i.timestamp = shi.indicators_timestamp 
+            AND i.timeframe = shi.indicators_timeframe
+        )
+        WHERE w.is_win IS NOT NULL
     """
     
     # Try importing pandas for speed
