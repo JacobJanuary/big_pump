@@ -25,8 +25,9 @@ BYBIT_BASE_URL = "https://api.bybit.com"
 REQUEST_DELAY = 0.15  # Rate limiting
 
 # --- Signal Filter Configuration ---
-# Minimum total score for high-quality signals
-SCORE_THRESHOLD = 118
+# Score range for high-quality signals
+SCORE_THRESHOLD = 118       # Minimum score
+SCORE_THRESHOLD_MAX = 300   # Maximum score (set to None for no upper limit)
 
 # Target patterns to filter for
 TARGET_PATTERNS = ['SQUEEZE_IGNITION', 'OI_EXPLOSION']

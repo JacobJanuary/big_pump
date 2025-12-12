@@ -32,7 +32,8 @@ import websockets
 from pump_analysis_lib import (
     EXCHANGE_FILTER, 
     EXCHANGE_IDS, 
-    SCORE_THRESHOLD, 
+    SCORE_THRESHOLD,
+    SCORE_THRESHOLD_MAX,
     TARGET_PATTERNS,
     INDICATOR_FILTERS
 )
@@ -88,7 +89,7 @@ class HighScoreSignalWebSocketServer:
 
         # Настройки запроса
         self.query_interval = int(config.get('QUERY_INTERVAL_SECONDS', 3))
-        self.signal_window_minutes = int(config.get('SIGNAL_WINDOW_MINUTES', 30))
+        self.signal_window_minutes = int(config.get('SIGNAL_WINDOW_MINUTES', 300))
 
         # Гибридный режим: NOTIFY + Polling
         self.use_notify = config.get('USE_NOTIFY', 'true').lower() == 'true'
@@ -120,9 +121,8 @@ class HighScoreSignalWebSocketServer:
         self.authenticated_clients: Set = set()
         self.client_info: Dict = {}
         
-        # Deduplication state (simple 12h time-based)
-        self.seen_signals = {}  # symbol -> timestamp
-        self.dedup_cooldown_hours = int(config.get('DEDUP_COOLDOWN_HOURS', 12))
+        # Deduplication: DB-based (uses web.signal_analysis)
+        self.dedup_cooldown_hours = 12  # Config for logging only
 
         # Состояние
         self.db_pool: Optional[asyncpg.Pool] = None
@@ -144,12 +144,13 @@ class HighScoreSignalWebSocketServer:
         is_default = self.auth_token == default_hash
         logger.info(f"Auth Status: {'⚠️ USING DEFAULT PASSWORD' if is_default else '✅ Custom password loaded'}")
         
-        logger.info(f"Filters: total_score > {SCORE_THRESHOLD}, patterns={TARGET_PATTERNS}, "
+        max_score_str = str(SCORE_THRESHOLD_MAX) if SCORE_THRESHOLD_MAX else 'unlimited'
+        logger.info(f"Filters: total_score {SCORE_THRESHOLD}-{max_score_str}, patterns={TARGET_PATTERNS}, "
                    f"Exchange Filter: {EXCHANGE_FILTER}")
         logger.info(f"Indicator Filters: RSI>{INDICATOR_FILTERS['rsi_threshold']}, "
                    f"Vol Z-Score>{INDICATOR_FILTERS['volume_zscore_threshold']}, "
                    f"OI Delta>{INDICATOR_FILTERS['oi_delta_threshold']}%")
-        logger.info(f"Deduplication: {self.dedup_cooldown_hours}h cooldown (time-based only)")
+        logger.info(f"Deduplication: {self.dedup_cooldown_hours}h cooldown (DB-based via web.signal_analysis)")
 
     def hash_token(self, token: str) -> str:
         """Хеширование токена для безопасного сравнения"""
@@ -229,7 +230,8 @@ JOIN fas_v2.indicators i ON (
     AND i.timeframe = shi.indicators_timeframe
 )
 
-WHERE sh.total_score > {SCORE_THRESHOLD}
+WHERE sh.total_score >= {SCORE_THRESHOLD}
+    {'AND sh.total_score <= ' + str(SCORE_THRESHOLD_MAX) if SCORE_THRESHOLD_MAX else ''}
     AND tp.contract_type_id = 1  -- PERPETUAL (Futures)
     AND tp.is_active = TRUE
     AND sh.is_active = TRUE
@@ -376,52 +378,36 @@ ORDER BY
             logger.error(f"Error processing NOTIFY: {e}")
             self.stats['errors'] += 1
 
-    def is_duplicate(self, signal: dict) -> bool:
+    async def is_duplicate_db(self, signal: dict) -> bool:
         """
-        Check if signal is a duplicate within cooldown period (time-based only)
+        Check if signal is a duplicate based on ACTUAL processed signals in web.signal_analysis.
+        Returns True if we should BLOCK this signal (i.e., we already traded this pair recently).
+        
+        Query logic:
+        - entry_time > NOW() - 12 hours: Signal was processed recently
+        - entry_time < NOW() - 10 minutes: Grace period to avoid race with scanner
         """
+        trading_pair_id = signal['trading_pair_id']
         symbol = signal['pair_symbol']
-        signal_ts_str = signal['timestamp']
         
         try:
-            signal_ts = datetime.fromisoformat(signal_ts_str)
-            if signal_ts.tzinfo is None:
-                signal_ts = signal_ts.replace(tzinfo=timezone.utc)
-        except Exception as e:
-            logger.error(f"Failed to parse timestamp for {symbol}: {e}")
-            return False
-        
-        if symbol in self.seen_signals:
-            last_ts = self.seen_signals[symbol]
-            
-            if last_ts.tzinfo is None:
-                last_ts = last_ts.replace(tzinfo=timezone.utc)
-            
-            # Same timestamp = not duplicate
-            if signal_ts == last_ts:
-                return False
-            
-            # ONLY filter NEWER signals within cooldown
-            if signal_ts > last_ts:
-                if (signal_ts - last_ts).total_seconds() < self.dedup_cooldown_hours * 3600:
+            async with self.db_pool.acquire() as conn:
+                count = await conn.fetchval("""
+                    SELECT COUNT(*)
+                    FROM web.signal_analysis
+                    WHERE trading_pair_id = $1
+                      AND entry_time > NOW() - INTERVAL '12 hours'
+                      AND entry_time < NOW() - INTERVAL '10 minutes'
+                """, trading_pair_id)
+                
+                if count > 0:
+                    logger.debug(f"Duplicate BLOCKED: {symbol} (found {count} recent entries in web.signal_analysis)")
                     return True
-        
-        # Update seen only if newer
-        if symbol not in self.seen_signals or signal_ts > self.seen_signals[symbol]:
-            self.seen_signals[symbol] = signal_ts
-        
-        return False
-
-    def clean_seen_signals(self):
-        """Remove old entries from seen_signals"""
-        now = datetime.now(timezone.utc)
-        to_remove = []
-        for symbol, ts in self.seen_signals.items():
-            if (now - ts).total_seconds() > self.dedup_cooldown_hours * 3600:
-                to_remove.append(symbol)
-        
-        for symbol in to_remove:
-            del self.seen_signals[symbol]
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error checking duplicate in DB for {symbol}: {e}")
+            return False  # On error, allow signal to pass
 
     async def fetch_signals(self) -> List[dict]:
         """Получение высококачественных сигналов из БД"""
@@ -545,13 +531,12 @@ ORDER BY
                 logger.debug("No signals from query")
                 return []
             
-            # Deduplicate (time-based only)
+            # Deduplicate (DB-based via web.signal_analysis)
             unique_signals = []
             for sig in signals:
-                if not self.is_duplicate(sig):
+                is_dup = await self.is_duplicate_db(sig)
+                if not is_dup:
                     unique_signals.append(sig)
-            
-            self.clean_seen_signals()
             
             if not unique_signals:
                 logger.debug("No new unique signals to broadcast")
@@ -801,36 +786,7 @@ ORDER BY
                 self.stats['errors'] += 1
                 await asyncio.sleep(5)  # Короткая пауза при ошибке
 
-    async def load_seen_signals(self):
-        """
-        Загрузка истории сигналов за последние 24 часа для корректной дедупликации после перезапуска
-        """
-        try:
-            logger.info(f"Loading signal history for the last {self.dedup_cooldown_hours} hours...")
-            async with self.db_pool.acquire() as conn:
-                query = f"""
-                    SELECT tp.pair_symbol, MAX(sh.timestamp) as last_ts
-                    FROM fas_v2.scoring_history sh
-                    JOIN public.trading_pairs tp ON sh.trading_pair_id = tp.id
-                    WHERE sh.timestamp >= NOW() - INTERVAL '{self.dedup_cooldown_hours} hours'
-                      AND sh.total_score > {SCORE_THRESHOLD}
-                    GROUP BY tp.pair_symbol
-                """
-                rows = await conn.fetch(query)
-                
-                count = 0
-                for row in rows:
-                    last_ts = row['last_ts']
-                    # Ensure timezone-aware
-                    if last_ts.tzinfo is None:
-                        last_ts = last_ts.replace(tzinfo=timezone.utc)
-                    self.seen_signals[row['pair_symbol']] = last_ts
-                    count += 1
-                
-                logger.info(f"Loaded {count} historical signals into deduplication cache.")
-                
-        except Exception as e:
-            logger.error(f"Failed to load seen signals: {e}")
+
 
     async def start(self):
         """Запуск сервера с гибридным режимом"""
@@ -841,8 +797,7 @@ ORDER BY
         # Инициализация БД
         await self.init_db()
         
-        # Load seen signals from DB to persist deduplication across restarts
-        await self.load_seen_signals()
+        # NOTE: Deduplication is now DB-based (web.signal_analysis), no memory preload needed
 
         # Попытка инициализации NOTIFY
         await self.init_notify_listener()
