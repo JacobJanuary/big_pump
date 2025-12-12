@@ -88,7 +88,6 @@ def optimize_filters():
                         print(f"Processed {count} combinations...", end='\r')
                     
                     # 1. Filter
-                    # List comprehension is fast
                     filtered = [
                         s for s in signals 
                         if s['score'] >= score and
@@ -100,7 +99,8 @@ def optimize_filters():
                     if not filtered:
                         continue
                         
-                    # 2. Deduplicate / Select Best in 12h Window
+                    # 2. Deduplicate: Global Greedy (Best first, mask neighbors +/- 12h)
+                    
                     # Group by pair first
                     by_pair = {}
                     for s in filtered:
@@ -111,49 +111,34 @@ def optimize_filters():
                     final_selection = []
                     
                     for pair, pair_signals in by_pair.items():
-                        # Sort by time
-                        # pair_signals.sort(key=lambda x: x['timestamp']) # Already sorted from DB
-                        
-                        # Logic: Select locally optimal signals in 12h windows
-                        # This is tricky iteratively.
-                        # Simple greedy approach:
-                        # Find global max for pair? No, 12h window.
-                        # Sliding window is complex. 
-                        # User wants: "if... > 1 signal in 12h, select best".
-                        # Let's cluster them. If S1 and S2 are within 12h, they are in same cluster.
-                        # Then pick max from cluster.
-                        
-                        # Clustering logic:
                         if not pair_signals: continue
                         
-                        clusters = []
-                        current_cluster = [pair_signals[0]]
+                        # Sort by Growth DESC (Best first)
+                        candidates = sorted(pair_signals, key=lambda x: x['max_grow'], reverse=True)
                         
-                        for i in range(1, len(pair_signals)):
-                            s = pair_signals[i]
-                            prev = current_cluster[-1]
+                        consumed_indices = set()
+                        
+                        for i in range(len(candidates)):
+                            if i in consumed_indices: continue
                             
-                            # Diff hours
-                            diff = (s['timestamp'] - prev['timestamp']).total_seconds() / 3600
+                            best = candidates[i]
+                            final_selection.append(best)
                             
-                            if diff <= 12:
-                                current_cluster.append(s)
-                            else:
-                                # Close cluster, pick best
-                                best = max(current_cluster, key=lambda x: x['max_grow'])
-                                final_selection.append(best)
-                                # Start new
-                                clusters.append(current_cluster)
-                                current_cluster = [s]
+                            # Mask neighbors within +/- 12h
+                            best_time = best['timestamp']
+                            for j in range(i+1, len(candidates)):
+                                if j in consumed_indices: continue
                                 
-                        # Last cluster
-                        best = max(current_cluster, key=lambda x: x['max_grow'])
-                        final_selection.append(best)
-                        
+                                other = candidates[j]
+                                diff_hours = abs((best_time - other['timestamp']).total_seconds()) / 3600.0
+                                
+                                if diff_hours <= 12.0:
+                                    consumed_indices.add(j)
+
                     # 3. Calculate Stats
                     best_signals = 0 # > 15
                     weak_signals = 0 # < 10
-                    mid_signals = 0  # 10 <= x <= 15
+                    # mid_signals = 0  
                     
                     for s in final_selection:
                         g = s['max_grow']
@@ -161,24 +146,15 @@ def optimize_filters():
                             best_signals += 1
                         elif g < 10:
                             weak_signals += 1
-                        else:
-                            mid_signals += 1
                             
                     total = len(final_selection)
                     
-                    # 4. Score
-                    # Objective: Maximize Best, Minimize Weak
-                    # optimization_metric = best_signals - (weak_signals * 1.5) # Penalty
-                    # Or just best_signals desc, weak_signals asc
-                    
-                    # Let's store raw stats and sort later
+                    # 4. Score = Best - Weak
                     results.append({
                         'params': (score, rsi, vol, oi),
                         'total': total,
                         'best': best_signals,
                         'weak': weak_signals,
-                        'mid': mid_signals,
-                        'win_rate_15': (best_signals/total*100) if total else 0,
                         'bad_rate_10': (weak_signals/total*100) if total else 0
                     })
 
