@@ -26,7 +26,7 @@ REQUEST_DELAY = 0.15  # Rate limiting
 
 # --- Signal Filter Configuration ---
 # Minimum total score for high-quality signals
-SCORE_THRESHOLD = 100
+SCORE_THRESHOLD = 118
 
 # Target patterns to filter for
 TARGET_PATTERNS = ['SQUEEZE_IGNITION', 'OI_EXPLOSION']
@@ -43,7 +43,7 @@ EXCHANGE_IDS = {
 # --- Indicator Filter Configuration ---
 # Set to 0 to disable a specific filter
 INDICATOR_FILTERS = {
-    'rsi_threshold': 0,            # DISABLED
+    'rsi_threshold': 1,            # DISABLED
     'volume_zscore_threshold': 12,  # Volume Z-Score > 12
     'oi_delta_threshold': 40,       # OI Delta % > 40
 }
@@ -142,13 +142,13 @@ def get_bybit_price_at_time(symbol, timestamp_ms):
         print(f"  Error getting Bybit price for {symbol}: {e}")
         return None
 
-def fetch_signals(conn, days=30, limit=None):
+def fetch_signals(conn, days=30, limit=None, min_score=None, max_score=None):
     """
     Fetch signals from database with exchange filtering and configurable indicator filters
     Returns: list of signal dicts
     
     Filters:
-    - total_score > 250
+    - total_score between min_score and max_score (default min=SCORE_THRESHOLD, max=None)
     - Patterns: SQUEEZE_IGNITION or OI_EXPLOSION
     - Timeframe: 15m, 1h, or 4h
     - Exchange: Binance (PERPETUAL/Futures only)
@@ -156,6 +156,15 @@ def fetch_signals(conn, days=30, limit=None):
     """
     placeholders = ','.join([f"'{p}'" for p in TARGET_PATTERNS])
     limit_clause = f"LIMIT {limit}" if limit else ""
+    
+    # Defaults
+    if min_score is None:
+        min_score = SCORE_THRESHOLD
+    
+    score_condition = f"AND sh.total_score >= {min_score}"
+    if max_score is not None:
+        score_condition += f" AND sh.total_score <= {max_score}"
+
     
     # Exchange filter logic
     exchange_condition = ""
@@ -201,7 +210,8 @@ def fetch_signals(conn, days=30, limit=None):
             AND i.timeframe = shi.indicators_timeframe
         )
         JOIN public.trading_pairs tp ON tp.id = sh.trading_pair_id
-        WHERE sh.total_score > {SCORE_THRESHOLD}
+        WHERE 1=1
+          {score_condition}
           AND sh.timestamp >= NOW() - INTERVAL '{days} days'
           AND sp.pattern_type IN ({placeholders})
           AND sp.timeframe IN ('15m', '1h', '4h')

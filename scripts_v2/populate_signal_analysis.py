@@ -17,7 +17,7 @@ from pump_analysis_lib import (
     get_entry_price_and_candles
 )
 
-def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_hours=12):
+def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_hours=12, min_score=100, max_score=300):
     """
     Fetch signals, preprocess them, and store in web.signal_analysis table
     
@@ -26,8 +26,11 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
         limit: Limit number of signals
         force_refresh: If True, TRUNCATE and repopulate. If False, only add new signals.
         cooldown_hours: Deduplication cooldown period in hours (default: 12, synchronized with Scanner)
+        min_score: Minimum total score (default: 100)
+        max_score: Maximum total score (default: 300)
     """
     print(f"Populating signal analysis table for the last {days} days...")
+    print(f"Score Range: {min_score} - {max_score}")
     print(f"Using {cooldown_hours}h deduplication cooldown...")
     
     try:
@@ -42,7 +45,7 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
                 print("Incremental mode: Only adding new signals...")
             
             # Fetch signals
-            signals = fetch_signals(conn, days=days, limit=limit)
+            signals = fetch_signals(conn, days=days, limit=limit, min_score=min_score, max_score=max_score)
             
             if not signals:
                 print("No signals found.")
@@ -124,6 +127,7 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
                         max_price_time_ms = candle['open_time']
                     
                     if low < min_price:
+                        min_price = low
                         min_price = low
                 
                 max_growth_pct = ((max_price - entry_price) / entry_price) * 100
@@ -210,7 +214,16 @@ if __name__ == "__main__":
     parser.add_argument('--limit', type=int, default=None, help='Limit number of signals')
     parser.add_argument('--force-refresh', action='store_true', help='Force full refresh (TRUNCATE and repopulate)')
     parser.add_argument('--cooldown', type=int, default=12, help='Deduplication cooldown in hours (default: 12)')
+    parser.add_argument('--min-score', type=float, default=100, help='Minimum total score (default: 100)')
+    parser.add_argument('--max-score', type=float, default=300, help='Maximum total score (default: 300)')
     args = parser.parse_args()
     
-    populate_signal_analysis(days=args.days, limit=args.limit, force_refresh=args.force_refresh, cooldown_hours=args.cooldown)
+    populate_signal_analysis(
+        days=args.days, 
+        limit=args.limit, 
+        force_refresh=args.force_refresh, 
+        cooldown_hours=args.cooldown,
+        min_score=args.min_score,
+        max_score=args.max_score
+    )
 
