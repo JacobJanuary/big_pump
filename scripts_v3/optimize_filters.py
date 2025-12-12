@@ -185,28 +185,26 @@ def optimize_filters():
     print(f"\nOptimization complete. Processed {count} combinations.")
     
     # Sorting Strategy:
-    # 1. Must have at least X signals (e.g. 5) to be significant?
-    # 2. Sort by 'best' count primarily? Or by ratio?
-    # User said: "selection of best signals ... and as few as possible < 10%"
-    # Let's define a Rank Score = Best_Count * (1 - Bad_Rate_10/100)
-    # This rewards finding MANY best signals, but penalizes if the set is full of junk.
+    # User wants: Maximize Best (>15%) AND Minimize Weak (<10%).
+    # Previous metric (Best * (1 - BadRate)) favored high volume too much.
+    # New Metric: Profitability Score = Best_Signals - Weak_Signals
+    # This directly penalizes every weak signal.
+    # If a config gives 100 Best and 100 Weak, Score = 0.
+    # If a config gives 50 Best and 10 Weak, Score = 40 (Better).
     
     def rank_score(r):
-        if r['total'] < 5: return 0
-        return r['best'] * (1 - (r['bad_rate_10'] / 100))
-        # Example: 10 best, 0 weak -> 10 * 1 = 10
-        # Example: 10 best, 10 weak (50% bad) -> 10 * 0.5 = 5
-        # Example: 5 best, 0 weak -> 5
+        if r['total'] < 5: return -999999 # Require minimum sample
+        return r['best'] - r['weak']
         
     results.sort(key=rank_score, reverse=True)
     
-    print("\nTop 20 Filter Configurations:")
-    print(f"{'Score':<6} | {'RSI':<4} | {'VolZ':<4} | {'OI%':<4} || {'Total':<5} | {'Best (>15%)':<12} | {'Weak (<10%)':<12} | {'Bad Rate %':<10} | {'RankScore':<8}")
-    print("-" * 100)
+    print("\nTop 20 Filter Configurations (Sorted by Best - Weak):")
+    print(f"{'Score':<6} | {'RSI':<4} | {'VolZ':<4} | {'OI%':<4} || {'Total':<5} | {'Best (>15%)':<12} | {'Weak (<10%)':<12} | {'Bad Rate %':<10} | {'Score':<8}")
+    print("-" * 105)
     
     for r in results[:20]:
         p = r['params']
-        print(f"{p[0]:<6} | {p[1]:<4} | {p[2]:<4} | {p[3]:<4} || {r['total']:<5} | {r['best']:<12} | {r['weak']:<12} | {r['bad_rate_10']:<10.1f} | {rank_score(r):<8.2f}")
+        print(f"{p[0]:<6} | {p[1]:<4} | {p[2]:<4} | {p[3]:<4} || {r['total']:<5} | {r['best']:<12} | {r['weak']:<12} | {r['bad_rate_10']:<10.1f} | {rank_score(r):<8}")
 
 if __name__ == "__main__":
     optimize_filters()
