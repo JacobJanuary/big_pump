@@ -104,7 +104,7 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
                 entry_price, candles, entry_time_dt = get_entry_price_and_candles(
                     conn, signal,
                     analysis_hours=24,
-                    entry_offset_minutes=18
+                    entry_offset_minutes=17
                 )
                 
                 if entry_price is None or not candles:
