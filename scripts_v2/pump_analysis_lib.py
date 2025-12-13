@@ -281,7 +281,7 @@ def deduplicate_signals(signals, cooldown_hours=24, initial_state=None):
     
     return unique_signals
 
-def get_entry_price_and_candles(conn, signal, analysis_hours=24, entry_offset_minutes=17):
+def get_entry_price_and_candles(conn, signal, analysis_hours=24, entry_offset_minutes=18):
     """
     Get entry price from appropriate API and fetch analysis candles
     

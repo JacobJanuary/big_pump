@@ -139,7 +139,7 @@ def generate_enhanced_report(days=30, sl_pct=-7, activation_pct=14, callback_pct
     print(f"ENHANCED DETAILED SIGNAL ANALYSIS (LAST {days} DAYS)")
     print(f"Parameters: SL={sl_pct}%, TS Activation={activation_pct}%, TS Callback={callback_pct}%, Timeout={timeout_hours}h")
     print("="*160)
-    print(f"{'Signal Time':<18} {'Symbol':<12} {'Exit':<12} {'Time':<8} {'PnL':<8} {'Max DD':<15} {'Max Pump':<15} {'Details':<50}")
+    print(f"{'Entry Time':<18} {'Symbol':<12} {'Exit':<12} {'Time':<8} {'PnL':<8} {'Max DD':<15} {'Max Pump':<15} {'Details':<50}")
     print("-" * 160)
     
     with get_db_connection() as conn:
@@ -222,21 +222,21 @@ def generate_enhanced_report(days=30, sl_pct=-7, activation_pct=14, callback_pct
             total_pnl += pnl_pct
             
             # Format output
-            ts_str = signal_ts.strftime('%Y-%m-%d %H:%M')
-            exit_time_str = format_time_diff(signal_ts, exit_time)
+            entry_str = entry_time_dt.strftime('%Y-%m-%d %H:%M')
+            exit_time_str = format_time_diff(entry_time_dt, exit_time)
             pnl_str = f"{pnl_pct:>6.2f}%"
             
             # Max drawdown info
-            dd_time_str = format_time_diff(signal_ts, max_dd_time)
+            dd_time_str = format_time_diff(entry_time_dt, max_dd_time)
             dd_str = f"{max_dd_pct:>6.2f}% @{dd_time_str}"
             
             # Max pump info
-            pump_time_str = format_time_diff(signal_ts, max_pump_time)
+            pump_time_str = format_time_diff(entry_time_dt, max_pump_time)
             pump_str = f"{max_pump_pct:>6.2f}% @{pump_time_str}"
             
             # Details based on exit reason
             if exit_reason == 'TS':
-                ts_act_str = format_time_diff(signal_ts, ts_activation_time)
+                ts_act_str = format_time_diff(entry_time_dt, ts_activation_time)
                 details = f"TS activated @{ts_act_str}, peak {max_pump_pct:.2f}%"
             elif exit_reason == 'SL':
                 details = f"Hit SL at {sl_pct}%"
@@ -247,7 +247,7 @@ def generate_enhanced_report(days=30, sl_pct=-7, activation_pct=14, callback_pct
             else:
                 details = f"Position still open"
             
-            print(f"{ts_str:<18} {symbol:<12} {exit_reason:<12} {exit_time_str:<8} {pnl_str:<8} {dd_str:<15} {pump_str:<15} {details:<50}")
+            print(f"{entry_str:<18} {symbol:<12} {exit_reason:<12} {exit_time_str:<8} {pnl_str:<8} {dd_str:<15} {pump_str:<15} {details:<50}")
         
         # Summary
         print("\n" + "="*160)
