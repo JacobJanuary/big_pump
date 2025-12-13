@@ -1,4 +1,4 @@
-ƒ"""
+"""
 Realistic Portfolio Backtest with:
 - Trading fees
 - Liquidation checks
