@@ -46,7 +46,7 @@ EXCHANGE_IDS = {
 INDICATOR_FILTERS = {
     'rsi_threshold': 1,            # DISABLED
     'volume_zscore_threshold': 12,  # Volume Z-Score > 12
-    'oi_delta_threshold': 40,       # OI Delta % > 40
+    'oi_delta_threshold': 20,       # OI Delta % > 20
 }
 
 

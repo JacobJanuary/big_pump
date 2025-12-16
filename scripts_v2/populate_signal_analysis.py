@@ -17,7 +17,7 @@ from pump_analysis_lib import (
     get_entry_price_and_candles
 )
 
-def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_hours=12, min_score=100, max_score=300):
+def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_hours=12, min_score=118, max_score=300):
     """
     Fetch signals, preprocess them, and store in web.signal_analysis table
     
