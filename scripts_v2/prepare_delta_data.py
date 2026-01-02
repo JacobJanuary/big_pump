@@ -211,18 +211,24 @@ def prepare_delta_data(limit=None, create_table=False):
             print("-" * 60)
             
             total_bars = 0
+            start_time = datetime.now()
             
             for i, sig in enumerate(signals, 1):
                 signal_id = sig['signal_analysis_id']
                 pair_symbol = sig['pair_symbol']
                 
-                print(f"[{i}/{len(signals)}] {pair_symbol} (signal #{signal_id})...", end=' ', flush=True)
+                # Прогресс с временем
+                elapsed = (datetime.now() - start_time).total_seconds()
+                avg_time = elapsed / i if i > 1 else 0
+                remaining = avg_time * (len(signals) - i)
+                
+                print(f"[{i}/{len(signals)}] {pair_symbol:<15} (signal #{signal_id})...", end=' ', flush=True)
                 
                 bars_count = aggregate_signal_to_1s(conn, signal_id, pair_symbol)
                 conn.commit()
                 
                 total_bars += bars_count
-                print(f"✅ {bars_count} баров")
+                print(f"✅ {bars_count:,} баров | ETA: {int(remaining)}s")
             
             print("\n" + "=" * 60)
             print(f"📊 Итого: {total_bars} 1-секундных баров создано")
