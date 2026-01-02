@@ -125,6 +125,9 @@ def extract_and_filter_trades(zip_path: Path, start_ms: int, end_ms: int):
                 text_file = io.TextIOWrapper(f, encoding='utf-8')
                 reader = csv.reader(text_file)
                 
+                # Пропускаем заголовок
+                next(reader, None)
+                
                 for row in reader:
                     # agg_trade_id,price,quantity,first_trade_id,last_trade_id,transact_time,is_buyer_maker
                     transact_time = int(row[5])
