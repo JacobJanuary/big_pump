@@ -68,20 +68,26 @@ def create_1s_table(conn):
 
 def get_signals_to_process(conn, limit=None):
     """Получить сигналы, которые ещё не обработаны в 1s."""
+    print("   Получаю список сигналов...", end=' ', flush=True)
+    
+    # Оптимизированный запрос: NOT IN вместо LEFT JOIN
     query = """
-        SELECT DISTINCT at.signal_analysis_id, at.pair_symbol, sa.signal_timestamp
-        FROM web.agg_trades at
-        JOIN web.signal_analysis sa ON sa.id = at.signal_analysis_id
-        LEFT JOIN web.agg_trades_1s a1s ON a1s.signal_analysis_id = at.signal_analysis_id
-        WHERE a1s.id IS NULL
-        ORDER BY at.signal_analysis_id
+        SELECT DISTINCT signal_analysis_id, pair_symbol
+        FROM web.agg_trades
+        WHERE signal_analysis_id NOT IN (
+            SELECT DISTINCT signal_analysis_id FROM web.agg_trades_1s
+        )
+        ORDER BY signal_analysis_id
     """
     if limit:
         query += f" LIMIT {limit}"
     
     with conn.cursor(row_factory=dict_row) as cur:
         cur.execute(query)
-        return cur.fetchall()
+        result = cur.fetchall()
+    
+    print(f"найдено {len(result)}", flush=True)
+    return result
 
 def aggregate_signal_to_1s(conn, signal_id: int, pair_symbol: str, large_trade_sigma: float = 2.0):
     """
@@ -195,16 +201,30 @@ def aggregate_signal_to_1s(conn, signal_id: int, pair_symbol: str, large_trade_s
         for i in range(0, len(rows), INSERT_BATCH_SIZE):
             batch = rows[i:i + INSERT_BATCH_SIZE]
             cur.executemany(insert_sql, batch)
-            conn.commit()  # Коммит после каждого батча
+            conn.commit()
     
     return len(rows)
 
-def prepare_delta_data(limit=None, create_table=False):
+def process_signal(args):
+    """Обработка одного сигнала (для multiprocessing)."""
+    signal_id, pair_symbol, idx, total = args
+    
+    try:
+        with get_db_connection() as conn:
+            bars_count = aggregate_signal_to_1s(conn, signal_id, pair_symbol)
+            print(f"[{idx}/{total}] {pair_symbol:<15} ✅ {bars_count:,} баров", flush=True)
+            return bars_count
+    except Exception as e:
+        print(f"[{idx}/{total}] {pair_symbol:<15} ❌ {e}", flush=True)
+        return 0
+
+def prepare_delta_data(limit=None, create_table=False, workers=8):
     """
     Главная функция: агрегировать все aggTrades в 1-секундные бары.
     """
     print("🚀 Подготовка Delta Data (1-секундные бары)")
     print(f"   Порог крупной сделки: mean + {LARGE_TRADE_SIGMA}σ (динамически)")
+    print(f"   Воркеров: {workers}")
     print("-" * 60)
     
     try:
@@ -220,31 +240,27 @@ def prepare_delta_data(limit=None, create_table=False):
             
             print(f"Найдено сигналов для обработки: {len(signals)}")
             print("-" * 60)
-            
-            total_bars = 0
-            start_time = datetime.now()
-            
-            for i, sig in enumerate(signals, 1):
-                signal_id = sig['signal_analysis_id']
-                pair_symbol = sig['pair_symbol']
-                
-                # Прогресс с временем
-                elapsed = (datetime.now() - start_time).total_seconds()
-                avg_time = elapsed / i if i > 1 else 0
-                remaining = avg_time * (len(signals) - i)
-                
-                print(f"[{i}/{len(signals)}] {pair_symbol:<15} (signal #{signal_id})...", end=' ', flush=True)
-                
-                bars_count = aggregate_signal_to_1s(conn, signal_id, pair_symbol)
-                
-                total_bars += bars_count
-                print(f"✅ {bars_count:,} баров | ETA: {int(remaining)}s")
-                
-                # Пауза для снижения нагрузки на БД
-                time.sleep(PAUSE_BETWEEN_SIGNALS)
-            
-            print("\n" + "=" * 60)
-            print(f"📊 Итого: {total_bars} 1-секундных баров создано")
+        
+        # Подготовка аргументов для пула
+        args_list = [
+            (sig['signal_analysis_id'], sig['pair_symbol'], i, len(signals))
+            for i, sig in enumerate(signals, 1)
+        ]
+        
+        # Параллельная обработка
+        from multiprocessing import Pool
+        
+        start_time = datetime.now()
+        
+        with Pool(processes=workers) as pool:
+            results = pool.map(process_signal, args_list)
+        
+        total_bars = sum(results)
+        elapsed = (datetime.now() - start_time).total_seconds()
+        
+        print("\n" + "=" * 60)
+        print(f"📊 Итого: {total_bars:,} 1-секундных баров создано")
+        print(f"⏱️ Время: {elapsed:.1f} секунд")
             
     except Exception as e:
         print(f"❌ Ошибка: {e}")
@@ -256,8 +272,10 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='Агрегация aggTrades в 1-секундные бары')
     parser.add_argument('--limit', type=int, default=None, help='Лимит сигналов')
+    parser.add_argument('--workers', type=int, default=8, help='Кол-во параллельных процессов (default: 8)')
     parser.add_argument('--create-table', action='store_true', help='Создать таблицу (нужны права)')
     
     args = parser.parse_args()
     
-    prepare_delta_data(limit=args.limit, create_table=args.create_table)
+    prepare_delta_data(limit=args.limit, create_table=args.create_table, workers=args.workers)
+
