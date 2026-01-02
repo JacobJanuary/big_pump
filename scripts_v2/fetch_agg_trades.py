@@ -167,12 +167,47 @@ def insert_trades(conn, signal_id: int, pair_symbol: str, trades: list):
     
     return len(trades)
 
-def fetch_agg_trades(limit=None, dry_run=False):
+def process_signal(sig):
+    """
+    Обработать один сигнал (для multiprocessing).
+    Возвращает (signal_id, trades_list) или (signal_id, None) при ошибке.
+    """
+    signal_id = sig['id']
+    symbol = sig['pair_symbol']
+    signal_ts = sig['signal_timestamp']
+    
+    # Вычисляем временное окно (48ч после сигнала)
+    if signal_ts.tzinfo is None:
+        signal_ts = signal_ts.replace(tzinfo=timezone.utc)
+    
+    start_ms = int(signal_ts.timestamp() * 1000)
+    end_ms = int((signal_ts + timedelta(hours=48)).timestamp() * 1000)
+    
+    # Определяем нужные даты
+    dates = get_required_dates(signal_ts)
+    
+    # Скачиваем файлы
+    all_trades = []
+    for date in dates:
+        zip_path = download_daily_file(symbol, date)
+        if zip_path:
+            trades = extract_and_filter_trades(zip_path, start_ms, end_ms)
+            all_trades.extend(trades)
+    
+    if not all_trades:
+        return (signal_id, symbol, None)
+    
+    return (signal_id, symbol, all_trades)
+
+def fetch_agg_trades(limit=None, dry_run=False, workers=12):
     """
     Главная функция: скачать и загрузить aggTrades для всех сигналов.
     """
-    print("🚀 Загрузка AggTrades (Daily Dumps)")
+    from multiprocessing import Pool
+    
+    print("🚀 Загрузка AggTrades (Daily Dumps) - 48ч окно")
     print(f"   Директория: {DATA_DIR}")
+    print(f"   Воркеров: {workers}")
     print("-" * 60)
     
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -192,46 +227,24 @@ def fetch_agg_trades(limit=None, dry_run=False):
             processed = 0
             failed = 0
             
-            for i, sig in enumerate(signals, 1):
-                signal_id = sig['id']
-                symbol = sig['pair_symbol']
-                signal_ts = sig['signal_timestamp']
-                
-                print(f"\n[{i}/{len(signals)}] {symbol} @ {signal_ts}")
-                
-                # Вычисляем временное окно (48ч после сигнала)
-                if signal_ts.tzinfo is None:
-                    signal_ts = signal_ts.replace(tzinfo=timezone.utc)
-                
-                start_ms = int(signal_ts.timestamp() * 1000)
-                end_ms = int((signal_ts + timedelta(hours=48)).timestamp() * 1000)
-                
-                # Определяем нужные даты
-                dates = get_required_dates(signal_ts)
-                print(f"    Даты для загрузки: {dates}")
-                
-                # Скачиваем файлы
-                all_trades = []
-                for date in dates:
-                    zip_path = download_daily_file(symbol, date)
-                    if zip_path:
-                        trades = extract_and_filter_trades(zip_path, start_ms, end_ms)
-                        all_trades.extend(trades)
-                        print(f"    📊 {date}: {len(trades)} трейдов в окне")
-                
-                if not all_trades:
-                    print(f"    ⚠️ Нет трейдов для этого сигнала")
+            # Параллельная загрузка
+            with Pool(processes=workers) as pool:
+                results = pool.map(process_signal, signals)
+            
+            # Вставляем результаты в БД последовательно
+            for i, (signal_id, symbol, trades) in enumerate(results, 1):
+                if trades is None:
+                    print(f"[{i}/{len(signals)}] {symbol} - ⚠️ Нет данных")
                     failed += 1
                     continue
                 
-                # Вставляем в БД
                 if not dry_run:
-                    inserted = insert_trades(conn, signal_id, symbol, all_trades)
+                    inserted = insert_trades(conn, signal_id, symbol, trades)
                     conn.commit()
                     total_trades += inserted
-                    print(f"    ✅ Загружено: {inserted} трейдов")
+                    print(f"[{i}/{len(signals)}] {symbol} - ✅ {inserted:,} трейдов")
                 else:
-                    print(f"    🔍 [DRY RUN] Было бы загружено: {len(all_trades)} трейдов")
+                    print(f"[{i}/{len(signals)}] {symbol} - [DRY RUN] {len(trades):,} трейдов")
                 
                 processed += 1
             
@@ -239,7 +252,7 @@ def fetch_agg_trades(limit=None, dry_run=False):
             print(f"📊 Итого:")
             print(f"   Обработано сигналов: {processed}")
             print(f"   Пропущено: {failed}")
-            print(f"   Загружено трейдов: {total_trades}")
+            print(f"   Загружено трейдов: {total_trades:,}")
             
     except Exception as e:
         print(f"❌ Ошибка: {e}")
@@ -252,7 +265,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Загрузка Binance aggTrades')
     parser.add_argument('--limit', type=int, default=None, help='Лимит сигналов')
     parser.add_argument('--dry-run', action='store_true', help='Только показать что будет сделано')
+    parser.add_argument('--workers', type=int, default=12, help='Количество параллельных воркеров')
     
     args = parser.parse_args()
     
-    fetch_agg_trades(limit=args.limit, dry_run=args.dry_run)
+    fetch_agg_trades(limit=args.limit, dry_run=args.dry_run, workers=args.workers)
+
