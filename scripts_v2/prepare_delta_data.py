@@ -18,9 +18,12 @@ current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir))
 
 from pump_analysis_lib import get_db_connection
+import time
 
 # Параметры
 LARGE_TRADE_SIGMA = 2.0  # Крупная сделка = mean + 2σ
+INSERT_BATCH_SIZE = 5000  # Вставка пачками
+PAUSE_BETWEEN_SIGNALS = 0.5  # Пауза между сигналами (сек)
 
 def create_1s_table(conn):
     """Создать таблицу для 1-секундных баров (если не существует)."""
@@ -89,9 +92,11 @@ def aggregate_signal_to_1s(conn, signal_id: int, pair_symbol: str, large_trade_s
                           считать "крупной сделкой" (по умолчанию 2σ)
     """
     # Получаем все трейды для сигнала
+    print("loading...", end=' ', flush=True)
+    
     query = """
         SELECT 
-            transact_time / 1000 as second_ts,  -- мс -> секунды
+            transact_time / 1000 as second_ts,
             price,
             quantity,
             is_buyer_maker
@@ -106,6 +111,8 @@ def aggregate_signal_to_1s(conn, signal_id: int, pair_symbol: str, large_trade_s
     
     if not trades:
         return 0
+    
+    print(f"{len(trades):,} trades...", end=' ', flush=True)
     
     # Вычисляем динамический порог для крупных сделок
     # Используем USD-объём каждой сделки
@@ -183,8 +190,12 @@ def aggregate_signal_to_1s(conn, signal_id: int, pair_symbol: str, large_trade_s
             bar['large_buy'], bar['large_sell'], bar['count']
         ))
     
+    # Батчевая вставка
     with conn.cursor() as cur:
-        cur.executemany(insert_sql, rows)
+        for i in range(0, len(rows), INSERT_BATCH_SIZE):
+            batch = rows[i:i + INSERT_BATCH_SIZE]
+            cur.executemany(insert_sql, batch)
+            conn.commit()  # Коммит после каждого батча
     
     return len(rows)
 
@@ -225,10 +236,12 @@ def prepare_delta_data(limit=None, create_table=False):
                 print(f"[{i}/{len(signals)}] {pair_symbol:<15} (signal #{signal_id})...", end=' ', flush=True)
                 
                 bars_count = aggregate_signal_to_1s(conn, signal_id, pair_symbol)
-                conn.commit()
                 
                 total_bars += bars_count
                 print(f"✅ {bars_count:,} баров | ETA: {int(remaining)}s")
+                
+                # Пауза для снижения нагрузки на БД
+                time.sleep(PAUSE_BETWEEN_SIGNALS)
             
             print("\n" + "=" * 60)
             print(f"📊 Итого: {total_bars} 1-секундных баров создано")
