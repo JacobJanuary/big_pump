@@ -150,11 +150,9 @@ def extract_and_filter_trades(zip_path: Path, start_ms: int, end_ms: int):
     return trades
 
 def insert_trades(conn, signal_id: int, pair_symbol: str, trades: list):
-    """Вставить трейды в web.agg_trades используя execute_values для скорости."""
+    """Вставить трейды в web.agg_trades батчами."""
     if not trades:
         return 0
-    
-    from psycopg2.extras import execute_values
     
     # Подготавливаем данные
     data = [
@@ -162,15 +160,18 @@ def insert_trades(conn, signal_id: int, pair_symbol: str, trades: list):
         for t in trades
     ]
     
+    # Вставляем батчами по 5000
+    BATCH_SIZE = 5000
+    
     with conn.cursor() as cur:
-        execute_values(
-            cur,
-            """INSERT INTO web.agg_trades 
-               (signal_analysis_id, pair_symbol, agg_trade_id, price, quantity, transact_time, is_buyer_maker)
-               VALUES %s""",
-            data,
-            page_size=10000
-        )
+        for i in range(0, len(data), BATCH_SIZE):
+            batch = data[i:i + BATCH_SIZE]
+            cur.executemany(
+                """INSERT INTO web.agg_trades 
+                   (signal_analysis_id, pair_symbol, agg_trade_id, price, quantity, transact_time, is_buyer_maker)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                batch
+            )
     
     return len(trades)
 
