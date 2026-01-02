@@ -150,26 +150,26 @@ def extract_and_filter_trades(zip_path: Path, start_ms: int, end_ms: int):
     return trades
 
 def insert_trades(conn, signal_id: int, pair_symbol: str, trades: list):
-    """Вставить трейды в web.agg_trades используя COPY для скорости."""
+    """Вставить трейды в web.agg_trades используя execute_values для скорости."""
     if not trades:
         return 0
     
-    import io
+    from psycopg2.extras import execute_values
     
-    # Подготавливаем данные для COPY
-    buffer = io.StringIO()
-    for t in trades:
-        # Формат: signal_id, pair_symbol, agg_trade_id, price, quantity, transact_time, is_buyer_maker
-        buffer.write(f"{signal_id}\t{pair_symbol}\t{t['agg_trade_id']}\t{t['price']}\t{t['quantity']}\t{t['transact_time']}\t{t['is_buyer_maker']}\n")
-    
-    buffer.seek(0)
+    # Подготавливаем данные
+    data = [
+        (signal_id, pair_symbol, t['agg_trade_id'], t['price'], t['quantity'], t['transact_time'], t['is_buyer_maker'])
+        for t in trades
+    ]
     
     with conn.cursor() as cur:
-        cur.copy_from(
-            buffer,
-            'web.agg_trades',
-            columns=('signal_analysis_id', 'pair_symbol', 'agg_trade_id', 'price', 'quantity', 'transact_time', 'is_buyer_maker'),
-            sep='\t'
+        execute_values(
+            cur,
+            """INSERT INTO web.agg_trades 
+               (signal_analysis_id, pair_symbol, agg_trade_id, price, quantity, transact_time, is_buyer_maker)
+               VALUES %s""",
+            data,
+            page_size=10000
         )
     
     return len(trades)
