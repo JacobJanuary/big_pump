@@ -20,7 +20,7 @@ sys.path.append(str(current_dir))
 from pump_analysis_lib import get_db_connection
 
 # Параметры
-LARGE_TRADE_THRESHOLD_USD = 10000  # Крупная сделка > $10k
+LARGE_TRADE_SIGMA = 2.0  # Крупная сделка = mean + 2σ
 
 def create_1s_table(conn):
     """Создать таблицу для 1-секундных баров (если не существует)."""
@@ -80,9 +80,13 @@ def get_signals_to_process(conn, limit=None):
         cur.execute(query)
         return cur.fetchall()
 
-def aggregate_signal_to_1s(conn, signal_id: int, pair_symbol: str):
+def aggregate_signal_to_1s(conn, signal_id: int, pair_symbol: str, large_trade_sigma: float = 2.0):
     """
     Агрегировать aggTrades для одного сигнала в 1-секундные бары.
+    
+    Args:
+        large_trade_sigma: Сколько стандартных отклонений от среднего 
+                          считать "крупной сделкой" (по умолчанию 2σ)
     """
     # Получаем все трейды для сигнала
     query = """
@@ -103,6 +107,19 @@ def aggregate_signal_to_1s(conn, signal_id: int, pair_symbol: str):
     if not trades:
         return 0
     
+    # Вычисляем динамический порог для крупных сделок
+    # Используем USD-объём каждой сделки
+    usd_values = [float(t[1]) * float(t[2]) for t in trades]
+    
+    import statistics
+    if len(usd_values) > 10:
+        mean_usd = statistics.mean(usd_values)
+        stdev_usd = statistics.stdev(usd_values)
+        large_threshold = mean_usd + (large_trade_sigma * stdev_usd)
+    else:
+        # Мало данных - используем простой множитель
+        large_threshold = statistics.median(usd_values) * 5
+    
     # Группируем по секундам
     bars = {}
     
@@ -112,9 +129,9 @@ def aggregate_signal_to_1s(conn, signal_id: int, pair_symbol: str):
         qty = float(trade[2])
         is_buyer_maker = trade[3]
         
-        # Примерный USD объём
+        # USD объём
         usd_value = price * qty
-        is_large = usd_value > LARGE_TRADE_THRESHOLD_USD
+        is_large = usd_value > large_threshold
         
         if second_ts not in bars:
             bars[second_ts] = {
@@ -176,7 +193,7 @@ def prepare_delta_data(limit=None, create_table=False):
     Главная функция: агрегировать все aggTrades в 1-секундные бары.
     """
     print("🚀 Подготовка Delta Data (1-секундные бары)")
-    print(f"   Порог крупной сделки: ${LARGE_TRADE_THRESHOLD_USD:,}")
+    print(f"   Порог крупной сделки: mean + {LARGE_TRADE_SIGMA}σ (динамически)")
     print("-" * 60)
     
     try:
