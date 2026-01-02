@@ -1,7 +1,7 @@
 """
 Загрузка Binance aggTrades (daily dumps) для Delta Reversal бэктестинга.
 
-Скачивает daily ZIP файлы, фильтрует 24ч окно после сигнала, загружает в БД.
+Скачивает daily ZIP файлы, фильтрует 48ч окно после сигнала, загружает в БД.
 """
 import os
 import sys
@@ -46,20 +46,23 @@ def get_signals_for_loading(conn, limit=None):
 
 def get_required_dates(signal_timestamp):
     """
-    Определить какие дни нужно скачать для 24ч окна.
+    Определить какие дни нужно скачать для 48ч окна.
     
-    Returns: list of date strings ['2025-01-01', '2025-01-02']
+    Returns: list of date strings ['2025-01-01', '2025-01-02', '2025-01-03']
     """
     # Конвертируем в UTC если нужно
     if signal_timestamp.tzinfo is None:
         signal_timestamp = signal_timestamp.replace(tzinfo=timezone.utc)
     
     start_date = signal_timestamp.date()
-    end_date = (signal_timestamp + timedelta(hours=24)).date()
+    end_date = (signal_timestamp + timedelta(hours=48)).date()
     
-    dates = [start_date.strftime('%Y-%m-%d')]
-    if end_date != start_date:
-        dates.append(end_date.strftime('%Y-%m-%d'))
+    # Собираем все даты в диапазоне
+    dates = []
+    current = start_date
+    while current <= end_date:
+        dates.append(current.strftime('%Y-%m-%d'))
+        current += timedelta(days=1)
     
     return dates
 
@@ -196,12 +199,12 @@ def fetch_agg_trades(limit=None, dry_run=False):
                 
                 print(f"\n[{i}/{len(signals)}] {symbol} @ {signal_ts}")
                 
-                # Вычисляем временное окно (24ч после сигнала)
+                # Вычисляем временное окно (48ч после сигнала)
                 if signal_ts.tzinfo is None:
                     signal_ts = signal_ts.replace(tzinfo=timezone.utc)
                 
                 start_ms = int(signal_ts.timestamp() * 1000)
-                end_ms = int((signal_ts + timedelta(hours=24)).timestamp() * 1000)
+                end_ms = int((signal_ts + timedelta(hours=48)).timestamp() * 1000)
                 
                 # Определяем нужные даты
                 dates = get_required_dates(signal_ts)
