@@ -150,28 +150,24 @@ def extract_and_filter_trades(zip_path: Path, start_ms: int, end_ms: int):
     return trades
 
 def insert_trades(conn, signal_id: int, pair_symbol: str, trades: list):
-    """Вставить трейды в web.agg_trades батчами."""
+    """Вставить трейды в web.agg_trades используя COPY (psycopg3)."""
     if not trades:
         return 0
     
-    # Подготавливаем данные
-    data = [
-        (signal_id, pair_symbol, t['agg_trade_id'], t['price'], t['quantity'], t['transact_time'], t['is_buyer_maker'])
-        for t in trades
-    ]
+    import io
     
-    # Вставляем батчами по 5000
-    BATCH_SIZE = 5000
+    # Подготавливаем данные для COPY (TSV формат)
+    buffer = io.StringIO()
+    for t in trades:
+        buffer.write(f"{signal_id}\t{pair_symbol}\t{t['agg_trade_id']}\t{t['price']}\t{t['quantity']}\t{t['transact_time']}\t{t['is_buyer_maker']}\n")
     
+    buffer.seek(0)
+    
+    # psycopg3 COPY синтаксис
     with conn.cursor() as cur:
-        for i in range(0, len(data), BATCH_SIZE):
-            batch = data[i:i + BATCH_SIZE]
-            cur.executemany(
-                """INSERT INTO web.agg_trades 
-                   (signal_analysis_id, pair_symbol, agg_trade_id, price, quantity, transact_time, is_buyer_maker)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-                batch
-            )
+        with cur.copy("COPY web.agg_trades (signal_analysis_id, pair_symbol, agg_trade_id, price, quantity, transact_time, is_buyer_maker) FROM STDIN") as copy:
+            while data := buffer.read(65536):
+                copy.write(data)
     
     return len(trades)
 
