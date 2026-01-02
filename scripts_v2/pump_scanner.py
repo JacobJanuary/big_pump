@@ -84,7 +84,7 @@ def scan_and_alert():
     conn = get_db_connection()
     try:
         # Get signals from last 12 hours (matching cooldown)
-        all_signals = fetch_signals(conn, days=0.5, limit=None)  # 12 hours
+        all_signals = fetch_signals(conn, days=0.5, limit=None, min_score=118, max_score=300)  # 12 hours, synced with filters
         
         if not all_signals:
             print("No signals found in database.")
