@@ -22,10 +22,10 @@ from pump_analysis_lib import get_db_connection
 
 # Фиксированные параметры
 COMMISSION_PCT = 0.04    # Комиссия Binance (taker)
-SL_PCT = 15.0            # Hard stop loss (защита от катастроф)
 
 # Параметры для оптимизации
 PARAM_GRID = {
+    'sl_pct': [2, 3, 4, 5, 7, 10, 15],              # Stop Loss %
     'trail_activation': [3, 5, 7, 10, 15, 20],      # Активация трейла при +X%
     'trail_callback': [1, 2, 3, 4, 5, 7, 10],       # Откат для выхода
     'reentry_drop': [2, 3, 5, 7, 10],               # Ждать падения X% для перезахода
@@ -98,6 +98,7 @@ class TradeResult:
 
 def run_trailing_reentry_strategy(
     bars: List[dict],
+    sl_pct: float,
     trail_activation: float,
     trail_callback: float,
     reentry_drop: float,
@@ -134,7 +135,7 @@ def run_trailing_reentry_strategy(
             drawdown_from_max = (max_price - price) / max_price * 100
             
             # Hard Stop Loss
-            if pnl_from_entry <= -SL_PCT:
+            if pnl_from_entry <= -sl_pct:
                 trades.append(TradeResult(
                     entry_price=entry_price,
                     exit_price=price,
@@ -208,6 +209,7 @@ def evaluate_params(params: dict) -> dict:
     for signal_id, data in ALL_SIGNALS_DATA.items():
         pnl, wins, losses = run_trailing_reentry_strategy(
             bars=data['bars'],
+            sl_pct=params['sl_pct'],
             trail_activation=params['trail_activation'],
             trail_callback=params['trail_callback'],
             reentry_drop=params['reentry_drop'],
@@ -232,10 +234,11 @@ def evaluate_params(params: dict) -> dict:
 def worker_evaluate(params_tuple):
     """Worker для multiprocessing."""
     params = {
-        'trail_activation': params_tuple[0],
-        'trail_callback': params_tuple[1],
-        'reentry_drop': params_tuple[2],
-        'reentry_cooldown': params_tuple[3]
+        'sl_pct': params_tuple[0],
+        'trail_activation': params_tuple[1],
+        'trail_callback': params_tuple[2],
+        'reentry_drop': params_tuple[3],
+        'reentry_cooldown': params_tuple[4]
     }
     return evaluate_params(params)
 
@@ -250,6 +253,7 @@ def run_optimization(workers: int = 12):
     
     # Генерируем все комбинации параметров
     param_combinations = list(itertools.product(
+        PARAM_GRID['sl_pct'],
         PARAM_GRID['trail_activation'],
         PARAM_GRID['trail_callback'],
         PARAM_GRID['reentry_drop'],
@@ -259,7 +263,7 @@ def run_optimization(workers: int = 12):
     # Фильтруем невалидные комбинации (trail_callback > trail_activation)
     param_combinations = [
         p for p in param_combinations
-        if p[1] < p[0]  # callback < activation
+        if p[2] < p[1]  # callback < activation
     ]
     
     print(f"   Комбинаций для теста: {len(param_combinations)}")
@@ -283,23 +287,22 @@ def run_optimization(workers: int = 12):
     # Сортируем по PnL
     results.sort(key=lambda x: x['total_pnl'], reverse=True)
     
-    # Выводим топ-10
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 80)
     print("📊 ТОП-10 КОМБИНАЦИЙ ПАРАМЕТРОВ")
-    print("=" * 70)
-    print(f"{'#':<3} {'Activation':<12} {'Callback':<10} {'Drop':<8} {'Cooldown':<10} {'PnL %':<12} {'WinRate':<10} {'Trades'}")
-    print("-" * 70)
+    print("=" * 80)
+    print(f"{'#':<3} {'SL%':<6} {'Activ':<8} {'Callback':<10} {'Drop':<8} {'Cooldown':<10} {'PnL %':<12} {'WinRate':<10} {'Trades'}")
+    print("-" * 80)
     
     for i, res in enumerate(results[:10], 1):
         p = res['params']
-        print(f"{i:<3} {p['trail_activation']:<12} {p['trail_callback']:<10} {p['reentry_drop']:<8} {p['reentry_cooldown']:<10} {res['total_pnl']:>+10.2f}% {res['win_rate']:>8.1f}% {res['total_trades']:>6}")
+        print(f"{i:<3} {p['sl_pct']:<6} {p['trail_activation']:<8} {p['trail_callback']:<10} {p['reentry_drop']:<8} {p['reentry_cooldown']:<10} {res['total_pnl']:>+10.2f}% {res['win_rate']:>8.1f}% {res['total_trades']:>6}")
     
     # Выводим худшие 3
-    print("\n" + "-" * 70)
+    print("\n" + "-" * 80)
     print("📉 ХУДШИЕ 3:")
     for i, res in enumerate(results[-3:], 1):
         p = res['params']
-        print(f"{i:<3} {p['trail_activation']:<12} {p['trail_callback']:<10} {p['reentry_drop']:<8} {p['reentry_cooldown']:<10} {res['total_pnl']:>+10.2f}% {res['win_rate']:>8.1f}% {res['total_trades']:>6}")
+        print(f"{i:<3} {p['sl_pct']:<6} {p['trail_activation']:<8} {p['trail_callback']:<10} {p['reentry_drop']:<8} {p['reentry_cooldown']:<10} {res['total_pnl']:>+10.2f}% {res['win_rate']:>8.1f}% {res['total_trades']:>6}")
     
     # Сохраняем результаты
     output_file = Path(__file__).parent.parent / "reports" / "optimization_trailing_reentry.json"
@@ -332,8 +335,9 @@ if __name__ == "__main__":
     
     best = run_optimization(workers=args.workers)
     
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 80)
     print("🏆 ЛУЧШИЕ ПАРАМЕТРЫ:")
+    print(f"   sl_pct: {best['params']['sl_pct']}%")
     print(f"   trail_activation: {best['params']['trail_activation']}%")
     print(f"   trail_callback: {best['params']['trail_callback']}%")
     print(f"   reentry_drop: {best['params']['reentry_drop']}%")
