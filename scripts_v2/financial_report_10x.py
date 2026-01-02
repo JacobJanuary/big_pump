@@ -252,7 +252,8 @@ def generate_report():
     all_trades.sort(key=lambda t: t['exit_ts'])
     
     for trade in all_trades:
-        trade_date = trade['signal_date']
+        # Дата выхода из сделки (а не дата сигнала!)
+        trade_date = date.fromtimestamp(trade['exit_ts'])
         
         # Новый день?
         if current_date != trade_date:
