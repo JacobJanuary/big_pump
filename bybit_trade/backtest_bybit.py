@@ -19,6 +19,17 @@ sys.path.append(str(parent_dir / 'config'))
 
 from pump_analysis_lib import get_db_connection
 
+@dataclass
+class Trade:
+    symbol: str
+    entry_time: pd.Timestamp
+    entry_price: float
+    exit_time: pd.Timestamp = None
+    exit_price: float = None
+    pnl_pct: float = 0.0
+    exit_reason: str = ""
+    duration_s: int = 0
+
 # ... imports ...
 import pandas_ta as ta # Ensure pandas_ta is in requirements
 
