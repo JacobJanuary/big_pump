@@ -60,7 +60,15 @@ def calculate_metrics(df, symbol):
     
     # Time to ATH in first hour (seconds from start)
     ath_idx = first_1h['high_price'].idxmax()
-    time_to_ath_s = (ath_idx - start_time).total_seconds()
+    
+    # Calculate difference
+    diff = ath_idx - start_time
+    
+    # Handle both Timestamp (timedelta result) and integer/float (seconds result)
+    if hasattr(diff, 'total_seconds'):
+        time_to_ath_s = diff.total_seconds()
+    else:
+        time_to_ath_s = float(diff)
     
     # 3. First Dip (Max drawdown from ATH in first hour)
     # We look for the lowest low AFTER the ATH
