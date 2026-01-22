@@ -216,62 +216,8 @@ class Backtester:
             
         return overall_report
 
-    """
-    Wait 5 minutes. If price breaks the High of the first 5 mins -> Buy.
-    Stop Loss: Low of first 5 mins.
-    Take Profit: 3x risk.
-    """
-    # 1. Define range (first X seconds)
-    if len(df) < wait_seconds + 60:
-        return None
-        
-    initial_window = df.iloc[:wait_seconds]
-    high_level = initial_window['high_price'].max()
-    low_level = initial_window['low_price'].min()
-    
-    # 2. Look for breakout
-    # Look at data AFTER the wait window
-    trading_window = df.iloc[wait_seconds:]
-    
-    entry_price = 0
-    entry_time = None
-    
-    for idx, row in trading_window.iterrows():
-        if row['close_price'] > high_level * breakout_multiplier:
-            entry_price = row['close_price']
-            entry_time = idx
-            break
-            
-    if not entry_price:
-        return None
-        
-    # 3. Simulate Trade
-    # TP/SL based on range
-    risk = entry_price - low_level
-    if risk <= 0: # Should not happen if entry > high > low
-        return None
-        
-    tp_price = entry_price + (risk * 3) # 1:3 R:R
-    sl_price = low_level
-    
-    # Check subsequent data for outcome
-    trade_data = df.loc[entry_time:].iloc[1:] # Candles after entry
-    
-    for idx, row in trade_data.iterrows():
-        # Check SL first (conservative)
-        if row['low_price'] <= sl_price:
-            return Trade(symbol, entry_time, entry_price, idx, sl_price, 
-                        (sl_price - entry_price)/entry_price*100, "Stop Loss")
-            
-        # Check TP
-        if row['high_price'] >= tp_price:
-            return Trade(symbol, entry_time, entry_price, idx, tp_price, 
-                        (tp_price - entry_price)/entry_price*100, "Take Profit")
-                        
-    # End of data exit
-    final_price = trade_data.iloc[-1]['close_price']
-    return Trade(symbol, entry_time, entry_price, trade_data.index[-1], final_price, 
-                (final_price - entry_price)/entry_price*100, "End of Data")
+    # ... (rest of class Backtester) ...
+
 
 
 def main():
