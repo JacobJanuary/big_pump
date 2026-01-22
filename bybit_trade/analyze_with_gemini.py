@@ -11,15 +11,16 @@ Requires:
 import os
 import sys
 from pathlib import Path
+
+# Suppress warnings BEFORE importing google
+import warnings
+warnings.simplefilter('ignore', FutureWarning)
+
 import google.generativeai as genai
 from dotenv import load_dotenv
 
 # Load env
 load_dotenv()
-
-# Suppress warnings from google.generativeai regarding deprecation
-import warnings
-warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
@@ -30,9 +31,8 @@ genai.configure(api_key=API_KEY)
 
 # Configuration
 # User requested "gemini-3-pro-preview". 
-# NOTE: The valid API ID for Gemini 1.5 Pro comes in variants like 'gemini-1.5-pro', 'gemini-1.5-pro-001', etc. 'latest' is not always supported.
-# We will try the most standard high-performance model suitable for this task.
-MODEL_NAME = "gemini-1.5-pro" 
+# User requested Pro model
+MODEL_NAME = "gemini-3-pro-preview" 
 
 DATA_FILE = Path(__file__).parent.parent / 'analysis_results' / 'llm_market_data.txt'
 
