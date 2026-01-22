@@ -42,7 +42,7 @@ class Trade:
 def load_candles_24h(conn, listing_id: int) -> pd.DataFrame:
     """Load first 24 hours of 1s candles."""
     query = """
-        SELECT timestamp_s, open_price, high_price, low_price, close_price, volume
+        SELECT timestamp_s, open_price, high_price, low_price, close_price, volume, buy_volume, sell_volume
         FROM bybit_trade.candles_1s
         WHERE listing_id = %s
         ORDER BY timestamp_s ASC
