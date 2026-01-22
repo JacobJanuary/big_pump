@@ -61,75 +61,95 @@ def pure_momentum_24h(df: pd.DataFrame, symbol: str,
     """
     Enter on initial momentum, hold until trailing stop hits or 24h end.
     """
+    # Strategy State
     trades = []
     in_trade = False
-    entry_price = 0.0
-    entry_time = None
-    highest_price = 0.0
+    current_trade = None
     
-    # 1. Check Entry Condition (First minute only)
-    start_price = df.iloc[0]['open_price']
+    # Session State
+    session_high = df.iloc[0]['open_price']
     
-    # Iterate first 60 seconds for entry
-    # Note: This is a simplification. We could scan the whole day, but we want to catch the "listing pump"
-    # and ride it. If valid entry missed in min 1, we ignore (for now).
+    # We iterate through the ENTIRE dataframe for signals
+    # However, for performance, we can just loop once.
     
-    entry_window = df.iloc[:60]
+    start_time = df.index[0]
     
-    for t, row in entry_window.iterrows():
-        cur_price = row['close_price']
-        change_from_start = (cur_price - start_price) / start_price * 100
-        
-        if change_from_start >= pump_pct:
-            # BUY SIGNAL
-            in_trade = True
-            entry_price = cur_price
-            entry_time = t
-            highest_price = cur_price
-            break
-            
-    if not in_trade:
-        return []
-        
-    # 2. Manage Trade (Rest of the data)
-    # Slice df from entry_time onwards
-    trade_data = df.loc[entry_time:].iloc[1:] # Skip entry candle
-    
-    trade = Trade(symbol, entry_time, entry_price)
-    trade.max_price_seen = entry_price
-    
-    for t, row in trade_data.iterrows():
+    for t, row in df.iterrows():
         cur_price = row['close_price']
         
-        # Update High
-        if cur_price > highest_price:
-            highest_price = cur_price
-            trade.max_price_seen = highest_price
+        # 1. Update Session High
+        if cur_price > session_high:
+            session_high = cur_price
             
-        # Trailing Stop Check
-        # Stop price rises with highest_price
-        stop_price = highest_price * (1.0 - trailing_stop_pct)
-        
-        if cur_price <= stop_price:
-            # EXIT: Trailing Stop
-            trade.exit_time = t
-            trade.exit_price = cur_price
-            trade.exit_reason = f"Trailing Stop (-{trailing_stop_pct:.0%})"
-            break
+        # 2. Manage Existing Trade
+        if in_trade:
+            # Update Trade High
+            if cur_price > current_trade.max_price_seen:
+                current_trade.max_price_seen = cur_price
+                
+            # Trailing Stop Check
+            stop_price = current_trade.max_price_seen * (1.0 - trailing_stop_pct)
             
-    # End of Data Exit (if still open)
-    if trade.exit_time is None:
-        last_row = df.iloc[-1]
-        trade.exit_time = df.index[-1]
-        trade.exit_price = last_row['close_price']
-        trade.exit_reason = "End of 24h"
+            if cur_price <= stop_price:
+                # EXIT
+                current_trade.exit_time = t
+                current_trade.exit_price = cur_price
+                current_trade.exit_reason = f"Trailing Stop (-{trailing_stop_pct:.0%})"
+                current_trade.pnl_pct = (cur_price - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.duration_s = int((t - current_trade.entry_time).total_seconds())
+                current_trade.max_pnl_seen = (current_trade.max_price_seen - current_trade.entry_price) / current_trade.entry_price * 100
+                
+                trades.append(current_trade)
+                in_trade = False
+                current_trade = None
+                continue # Don't re-enter on the same candle
+                
+        # 3. Entry Logic (If not in trade)
+        if not in_trade:
+            # Condition A: Initial Pump (First 60s)
+            time_since_start = (t - start_time).total_seconds()
+            is_start_window = time_since_start <= 60
+            
+            buy_signal = False
+            
+            if is_start_window:
+                # Check for +2% from open
+                open_price = df.iloc[0]['open_price']
+                if (cur_price - open_price) / open_price * 100 >= pump_pct:
+                    buy_signal = True
+                    
+            else:
+                # Condition B: Breakout Re-Entry (Price > Session High)
+                # We need to be careful not to buy the *exact* same high that stopped us out unless it breaks higher.
+                # Logic: If Current Close > Previous Session High (implies breakout)
+                # But we just updated session_high above. 
+                # Let's verify if this candle *made* the new high.
+                if cur_price >= session_high and cur_price > df.iloc[0]['open_price']: # Ensure it's not just the start price
+                     # To avoid buying top of every candle, maybe require % clearance? 
+                     # For now, simplistic Breakout of Session High.
+                     # But we must ensure we didn't JUST exit. 
+                     # In this loop logic, exit happens first, so we won't re-enter same tick usually unless low then high.
+                     buy_signal = True
+            
+            if buy_signal:
+                in_trade = True
+                current_trade = Trade(symbol, t, cur_price)
+                current_trade.max_price_seen = cur_price
+                # Update session high if this entry is the new high
+                if cur_price > session_high:
+                    session_high = cur_price
 
-    # Calculate PnL
-    trade.pnl_pct = (trade.exit_price - trade.entry_price) / trade.entry_price * 100
-    trade.duration_s = int((trade.exit_time - trade.entry_time).total_seconds())
-    trade.max_pnl_seen = (trade.max_price_seen - trade.entry_price) / trade.entry_price * 100
-    
-    return [trade]
+    # End of session handling
+    if in_trade:
+        current_trade.exit_time = df.index[-1]
+        current_trade.exit_price = df.iloc[-1]['close_price']
+        current_trade.exit_reason = "End of 24h"
+        current_trade.pnl_pct = (current_trade.exit_price - current_trade.entry_price) / current_trade.entry_price * 100
+        current_trade.duration_s = int((current_trade.exit_time - current_trade.entry_time).total_seconds())
+        current_trade.max_pnl_seen = (current_trade.max_price_seen - current_trade.entry_price) / current_trade.entry_price * 100
+        trades.append(current_trade)
+        
+    return trades
 
 def main():
     conn = get_db_connection()
