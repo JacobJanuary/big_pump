@@ -29,7 +29,7 @@ from pump_analysis_lib import get_db_connection
 import warnings
 
 # Suppress pandas/sql alchemy warning
-warnings.filterwarnings('ignore', category=UserWarning, module='pandas')
+warnings.simplefilter(action='ignore', category=UserWarning)
 
 OUTPUT_DIR = current_dir / "analysis_results"
 OUTPUT_DIR.mkdir(exist_ok=True)
