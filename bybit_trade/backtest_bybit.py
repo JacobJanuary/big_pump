@@ -164,7 +164,40 @@ def strategy_mean_reversion(df: pd.DataFrame, symbol: str, **kwargs):
     return trades
 
 class Backtester:
-    # ... (previous init/load methods) ...
+    def __init__(self, conn):
+        self.conn = conn
+        self.listings = self._load_listings()
+        self.results: List[Trade] = []
+        
+    def _load_listings(self):
+        """Load listings meta data."""
+        return pd.read_sql(
+            "SELECT id, symbol, listing_date FROM bybit_trade.listings WHERE data_fetched = TRUE", 
+            self.conn
+        )
+        
+    def _load_data(self, listing_id: int) -> pd.DataFrame:
+        """Load 1s data for a listing."""
+        query = """
+            SELECT 
+                timestamp_s, open_price, high_price, low_price, close_price, 
+                volume, buy_volume, sell_volume
+            FROM bybit_trade.candles_1s
+            WHERE listing_id = %s
+            ORDER BY timestamp_s ASC
+        """
+        df = pd.read_sql(query, self.conn, params=(listing_id,))
+        if not df.empty:
+            df['timestamp'] = pd.to_datetime(df['timestamp_s'], unit='s')
+            df.set_index('timestamp', inplace=True)
+            
+            # Calculate basic indicators
+            df['vwap'] = (df['volume'] * df['close_price']).cumsum() / df['volume'].cumsum()
+            df['cum_buy'] = df['buy_volume'].cumsum()
+            df['cum_sell'] = df['sell_volume'].cumsum()
+            df['delta_ratio'] = df['cum_buy'] / df['cum_sell']
+            
+        return df
 
     def run_all_strategies(self):
         """Run multiple strategies comparison."""
