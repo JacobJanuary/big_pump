@@ -5,3 +5,4 @@ pandas
 numpy
 sqlalchemy
 pandas_ta
+google-generativeai
