@@ -211,11 +211,12 @@ def pure_momentum_entry(
     df: pd.DataFrame,
     symbol: str,
     pump_pct: float = 2.0,     # Higher threshold (2%)
-    hold_seconds: int = 60,
+    hold_seconds: int = 3600,   # Effectively infinite (1 hour)
     trailing_stop_pct: float = 0.05,
 ) -> list[Trade]:
     """Pure Price Momentum (Catch the God Candles).
     Ignore Smart Money. Just buy if price rips up.
+    Exit mainly via Trailing Stop.
     """
     trades: list[Trade] = []
     
@@ -254,7 +255,8 @@ def pure_momentum_entry(
                          (cur_price - entry_price)/entry_price*100, "Trailing Stop",
                          int((cur_time - entry_time).total_seconds()))]
                          
-        # Time exit
+        # Time exit - REMOVED (set to very long duration essentially)
+        # We want to ride the pump until trailing stop hits
         if (cur_time - entry_time).total_seconds() >= hold_seconds:
             return [Trade(symbol, entry_time, entry_price, cur_time, cur_price,
                          (cur_price - entry_price)/entry_price*100, "Hold Time",
