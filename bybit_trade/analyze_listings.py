@@ -19,25 +19,36 @@ parent_dir = current_dir.parent
 sys.path.append(str(parent_dir / 'scripts_v3'))
 sys.path.append(str(parent_dir / 'config'))
 
-import settings  # Now we can import settings
+# Add scripts directory to path
+current_dir = Path(__file__).resolve().parent
+parent_dir = current_dir.parent
+sys.path.append(str(parent_dir / 'scripts_v3'))
+sys.path.append(str(parent_dir / 'config'))
+
+from dotenv import load_dotenv
+import os
+
+# Explicitly load .env from project root
+load_dotenv(parent_dir / '.env')
 
 OUTPUT_DIR = current_dir / "analysis_results"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 def get_db_engine():
-    """Create SQLAlchemy engine using project settings."""
-    user = settings.DB_USER
-    password = settings.DB_PASSWORD
-    host = settings.DB_HOST
-    port = settings.DB_PORT
-    dbname = settings.DB_NAME
+    """Create SQLAlchemy engine from env vars."""
+    user = os.getenv('DB_USER', 'elcrypto')
+    password = os.getenv('DB_PASSWORD')
+    host = os.getenv('DB_HOST', 'localhost')
+    port = os.getenv('DB_PORT', '5432') # Default, but .env should override
+    dbname = os.getenv('DB_NAME', 'fox_crypto_new')
+
+    print(f"🔌 Connecting to DB: {user}@{host}:{port}/{dbname}")
     
     # URL encode password to handle special characters safely
     from urllib.parse import quote_plus
     if password:
         password = quote_plus(password)
     
-    # Construct connection string
     return create_engine(f"postgresql+psycopg://{user}:{password}@{host}:{port}/{dbname}")
 
 def calculate_metrics(df, symbol):
