@@ -1,3 +1,5 @@
 requests
 psycopg
 python-dotenv
+pandas
+numpy
