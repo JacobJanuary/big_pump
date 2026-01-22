@@ -104,20 +104,18 @@ def smart_money_coef(df: pd.DataFrame) -> float:
 # ----------------------------------------------------------------------
 # 3️⃣  Strategy implementation
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# 3️⃣  Strategy implementation
+# ----------------------------------------------------------------------
 def aggressive_entry(
     df: pd.DataFrame,
     symbol: str,
-    drop_pct: float = 5.0,
-    sm_coef_thr: float = 1.5,
+    drop_pct: float = 3.0,     # Relaxed from 5.0
+    sm_coef_thr: float = 0.5,  # Relaxed from 1.5
     hold_seconds: int = 60,
     trailing_stop_pct: float = 0.03,
 ) -> list[Trade]:
-    """Aggressive dip‑buy strategy.
-    1. Detect price drop ≥ drop_pct in the first minute.
-    2. Require smart‑money coefficient ≥ sm_coef_thr.
-    3. Enter at the next tick.
-    4. Exit after hold_seconds or when price falls trailing_stop_pct from the peak.
-    """
+    """Aggressive dip‑buy strategy."""
     trades: list[Trade] = []
     # 1️⃣ Detect drop
     start = start_minute_metrics(df)
@@ -126,11 +124,13 @@ def aggressive_entry(
     # 2️⃣ Smart‑money check
     if smart_money_coef(df.iloc[:60]) < sm_coef_thr:
         return trades
-    # 3️⃣ Entry point – next tick after detection (use first timestamp + 1s)
+        
+    # 3️⃣ Entry point
     entry_time = df.index[0] + pd.Timedelta(seconds=1)
     if entry_time not in df.index:
         entry_time = df.index[0]
     entry_price = df.at[entry_time, "close_price"]
+    
     # 4️⃣ Exit logic
     highest = entry_price
     for cur_time, row in df.iterrows():
@@ -140,34 +140,76 @@ def aggressive_entry(
         highest = max(highest, cur_price)
         # trailing stop
         if cur_price < highest * (1 - trailing_stop_pct):
-            exit_price = cur_price
-            exit_time = cur_time
-            reason = "Trailing Stop"
-            break
+            return [Trade(symbol, entry_time, entry_price, cur_time, cur_price,
+                         (cur_price - entry_price)/entry_price*100, "Trailing Stop",
+                         int((cur_time - entry_time).total_seconds()))]
         # hold time
         if (cur_time - entry_time).total_seconds() >= hold_seconds:
-            exit_price = cur_price
-            exit_time = cur_time
-            reason = "Hold Time"
-            break
-    else:
-        exit_price = df.iloc[-1]["close_price"]
-        exit_time = df.index[-1]
-        reason = "EOS"
-    pnl = (exit_price - entry_price) / entry_price * 100
-    trades.append(
-        Trade(
-            symbol=symbol,
-            entry_time=entry_time,
-            entry_price=entry_price,
-            exit_time=exit_time,
-            exit_price=exit_price,
-            pnl_pct=pnl,
-            exit_reason=reason,
-            duration_s=int((exit_time - entry_time).total_seconds()),
-        )
-    )
-    return trades
+             return [Trade(symbol, entry_time, entry_price, cur_time, cur_price,
+                         (cur_price - entry_price)/entry_price*100, "Hold Time",
+                         int((cur_time - entry_time).total_seconds()))]
+                         
+    # EOS
+    final_price = df.iloc[-1]["close_price"]
+    return [Trade(symbol, entry_time, entry_price, df.index[-1], final_price,
+                 (final_price - entry_price)/entry_price*100, "EOS",
+                 int((df.index[-1] - entry_time).total_seconds()))]
+
+def momentum_entry(
+    df: pd.DataFrame,
+    symbol: str,
+    pump_pct: float = 1.0,     # Buy if price up 1%
+    sm_coef_thr: float = 0.2,  # Positive smart money
+    hold_seconds: int = 120,    # Hold longer for pumps
+    trailing_stop_pct: float = 0.05,
+) -> list[Trade]:
+    """Momentum buy strategy for pumps."""
+    trades: list[Trade] = []
+    
+    # 1. Condition: Price Up + Smart Money
+    start = start_minute_metrics(df)
+    sm = smart_money_coef(df.iloc[:60])
+    
+    if start["pct_change"] < pump_pct or sm < sm_coef_thr:
+        return trades
+        
+    # 2. Entry (simulated at 10s mark to let initial noise pass, or immediately)
+    # Let's enter at 10s mark if condition met in first 60s (hindsight backtest)
+    # Ideally we check these condition continuously, but for this start-analysis script
+    # we are checking "Start Minute Properties" -> "Trade Outcome".
+    
+    entry_time = df.index[0] + pd.Timedelta(seconds=10)
+    # Find closest time
+    idx_loc = df.index.searchsorted(entry_time)
+    if idx_loc >= len(df): return trades
+    
+    entry_row = df.iloc[idx_loc]
+    entry_price = entry_row['close_price']
+    entry_time = entry_row.name
+    
+    # 3. Exit logic
+    highest = entry_price
+    start_idx = idx_loc
+    
+    for i in range(start_idx + 1, len(df)):
+        cur_time = df.index[i]
+        cur_price = df.iloc[i]['close_price']
+        
+        highest = max(highest, cur_price)
+        
+        # Trailing stop
+        if cur_price < highest * (1 - trailing_stop_pct):
+            return [Trade(symbol, entry_time, entry_price, cur_time, cur_price,
+                         (cur_price - entry_price)/entry_price*100, "Trailing Stop",
+                         int((cur_time - entry_time).total_seconds()))]
+                         
+        # Time exit
+        if (cur_time - entry_time).total_seconds() >= hold_seconds:
+            return [Trade(symbol, entry_time, entry_price, cur_time, cur_price,
+                         (cur_price - entry_price)/entry_price*100, "Hold Time",
+                         int((cur_time - entry_time).total_seconds()))]
+                         
+    return []
 
 # ----------------------------------------------------------------------
 # 4️⃣  Main driver
@@ -192,14 +234,21 @@ def main():
             df = load_candles(conn, lid)
             if df.empty or len(df) < 60:
                 continue
-            trades = aggressive_entry(df, symbol)
+            
+            # Run BOTH strategies
+            t_dip = aggressive_entry(df, symbol)
+            for t in t_dip: t.exit_reason = f"DIP: {t.exit_reason}"
+            
+            t_mom = momentum_entry(df, symbol)
+            for t in t_mom: t.exit_reason = f"MOM: {t.exit_reason}"
+            
+            trades = t_dip + t_mom
             all_trades.extend(trades)
+            
             summary.append(
                 {
                     "symbol": symbol,
                     "pct_change_1m": round(start_minute_metrics(df)["pct_change"], 2),
-                    "max_pump_1m": round(start_minute_metrics(df)["max_pump"], 2),
-                    "max_dip_1m": round(start_minute_metrics(df)["max_dip"], 2),
                     "smart_money": round(smart_money_coef(df.iloc[:60]), 3),
                     "trades": len(trades),
                 }
@@ -211,18 +260,23 @@ def main():
             out_path.parent.mkdir(parents=True, exist_ok=True)
             trades_df.to_csv(out_path, index=False)
             print(f"\n🗂️  Detailed trades saved to {out_path}")
+            
+            # Print detailed trade list
+            print("\n📝 INDIVIDUAL TRADES")
+            print(trades_df[['symbol', 'pnl_pct', 'exit_reason', 'duration_s']].to_string())
+
         if summary:
             sum_df = pd.DataFrame(summary).set_index("symbol")
             print("\n📊 START‑MINUTE SUMMARY (23 tokens)")
             print("-" * 60)
-            print(
-                sum_df[["pct_change_1m", "max_pump_1m", "max_dip_1m", "smart_money", "trades"]]
-            )
+            print(sum_df)
+            
         if all_trades:
             win_rate = (trades_df["pnl_pct"] > 0).mean() * 100
             total_pnl = trades_df["pnl_pct"].sum()
             print("\n🏁 OVERALL")
             print(f"Trades: {len(trades_df)} | Win Rate: {win_rate:.1f}% | Total PnL: {total_pnl:.2f}%")
+            
     finally:
         conn.close()
 
