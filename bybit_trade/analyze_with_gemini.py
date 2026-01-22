@@ -17,6 +17,10 @@ from dotenv import load_dotenv
 # Load env
 load_dotenv()
 
+# Suppress warnings from google.generativeai regarding deprecation
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
+
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     print("❌ Error: GEMINI_API_KEY not found in environment variables.")
