@@ -16,6 +16,8 @@ from pathlib import Path
 import warnings
 warnings.simplefilter('ignore', FutureWarning)
 
+print("🚀 Starting Gemini Analysis...") # Debug print
+
 import google.generativeai as genai
 from dotenv import load_dotenv
 
