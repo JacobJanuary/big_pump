@@ -19,16 +19,23 @@ parent_dir = current_dir.parent
 sys.path.append(str(parent_dir / 'scripts_v3'))
 sys.path.append(str(parent_dir / 'config'))
 
+import settings  # Now we can import settings
+
 OUTPUT_DIR = current_dir / "analysis_results"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 def get_db_engine():
-    """Create SQLAlchemy engine from env vars."""
-    user = os.getenv('DB_USER')
-    password = os.getenv('DB_PASSWORD')
-    host = os.getenv('DB_HOST')
-    port = os.getenv('DB_PORT')
-    dbname = os.getenv('DB_NAME')
+    """Create SQLAlchemy engine using project settings."""
+    user = settings.DB_USER
+    password = settings.DB_PASSWORD
+    host = settings.DB_HOST
+    port = settings.DB_PORT
+    dbname = settings.DB_NAME
+    
+    # URL encode password to handle special characters safely
+    from urllib.parse import quote_plus
+    if password:
+        password = quote_plus(password)
     
     # Construct connection string
     return create_engine(f"postgresql+psycopg://{user}:{password}@{host}:{port}/{dbname}")
