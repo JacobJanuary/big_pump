@@ -135,3 +135,6 @@ def main():
             list_available_models()
             print("\n💡 Please update MODEL_NAME in the script to one of the above.")
 
+
+if __name__ == "__main__":
+    main()
