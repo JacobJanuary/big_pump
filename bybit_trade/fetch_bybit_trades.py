@@ -129,8 +129,12 @@ def insert_trades(conn, listing_id: int, trades: list) -> int:
     if not trades:
         return 0
     
+    # Deduplicate trades by trade_id
+    # Sometimes daily files might overlap slightly or contain duplicates
+    unique_trades = {t['trade_id']: t for t in trades}.values()
+    
     buffer = io.StringIO()
-    for t in trades:
+    for t in unique_trades:
         buffer.write(f"{listing_id}\t{t['trade_id']}\t{t['timestamp']}\t{t['price']}\t{t['volume']}\t{t['side']}\n")
     
     buffer.seek(0)
@@ -143,7 +147,7 @@ def insert_trades(conn, listing_id: int, trades: list) -> int:
             while data := buffer.read(65536):
                 copy.write(data)
     
-    return len(trades)
+    return len(unique_trades)
 
 
 def aggregate_candles_1s(conn, listing_id: int) -> int:
