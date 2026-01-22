@@ -26,38 +26,77 @@ genai.configure(api_key=API_KEY)
 
 # Configuration
 # User requested "gemini-3-pro-preview". 
-# As of now, the latest available via API is often 'gemini-1.5-pro-latest' or 'gemini-2.0-flash-exp'.
-# We will defaults to 'gemini-1.5-pro-latest' which has the context window (2M) needed.
-# If "gemini-3-pro-preview" becomes valid, change it here.
-MODEL_NAME = "gemini-1.5-pro-latest" 
+# NOTE: The valid API ID for Gemini 1.5 Pro comes in variants like 'gemini-1.5-pro', 'gemini-1.5-pro-001', etc. 'latest' is not always supported.
+# We will try the most standard high-performance model suitable for this task.
+MODEL_NAME = "gemini-1.5-pro" 
+
 DATA_FILE = Path(__file__).parent.parent / 'analysis_results' / 'llm_market_data.txt'
 
 PROMPT = """
-You are an expert Quantitative Analyst and Crypto Trader.
-I have attached a dataset of 5-minute candle data for recent Bybit listings.
-Some tokens are labeled "WINNER" (Big Pump, sustained value) and some "LOSER" (Pump & Bleed or Flat).
+ROLE: Expert Quantitative Analyst & Crypto Market Maker.
+TASK: Analyze the attached 1-minute candle data for recent Bybit Listings to reverse-engineer the "Winning Algorithm".
 
-Your Goal:
-Identify DISTINCT PATTERNS in the first 2-4 hours that differentiate WINNERS from LOSERS.
+CONTEXT:
+- You are provided with normalized trading data (~24h) for multiple tokens.
+- Some are labeled "WINNER" (Massive gains, e.g. SKR +300%, ZKP +80%).
+- Some are labeled "LOSER" (Pump & Bleed, Bull Traps).
+- Legend: 
+  - TimeOffset: Minutes since listing.
+  - Price: Normalized (1.0 = Listing Open).
+  - DeltaRatio = BuyVolume / SellVolume.
 
-Look for:
-1. Volume profile: Does volume decay faster/slower for winners?
-2. Delta Ratio: Is there hidden buying (Delta > 1) even if price is flat?
-3. Price Action: Specific candle formations (V-shape, flags) in the consolidation zone.
-4. "Fakeouts": Do losers tend to spike early and fade?
+OBJECTIVE:
+Find the *hidden structural differences* between Winners and Losers in the first 4 hours.
+Focus specifically on the "Re-Accumulation Phase" (usually min 60 to min 240) where "Smart Money" positions itself before the second pump.
 
-The data is normalized:
-- Price 1.0 = Listing Start Price.
-- Time is in minutes from listing.
-- DeltaRatio = BuyVol / SellVol.
+ANALYSIS GUIDELINES (Chain of Thought):
 
-Output your answer as a Structured Trading Strategy:
-1. ENTRY TRIGGERS: (e.g. "Enter if price > VWAP after 120 mins AND Delta > 1.2")
-2. RED FLAGS (AVOID): (e.g. "Do not enter if Volume drops 90% in hour 1")
-3. EXIT Rules.
+1. **Phase 1: The Initial Dump/Volatility (0-60 min)**
+   - Do Winners drop differently than Losers? 
+   - Look at Volume Decay: Do Winners see volume dry up faster?
 
+2. **Phase 2: The Silent Accumulation (60-240 min)**
+   - Compare DeltaRatio (Buy/Sell Vol). 
+   - Hypothesize: Do Winners have DeltaRatio > 1.0 continuously while price is flat/down? (Limit orders absorbing sells).
+   - Hypothesize: Do Losers have DeltaRatio < 0.9 (Distribution)?
+   
+3. **Phase 3: The Breakout Trigger**
+   - What specifically signals the start of the "God Candle"? 
+   - Is it a break of VWAP? A spike in Delta?
+
+OUTPUT FORMAT (Strict):
+
+## 1. DATA INSIGHTS
+- "Winners Avg Delta (Hour 2-4): X.XX" vs "Losers Avg Delta: Y.YY"
+- "Winners Volatility Profile: [Description]"
+
+## 2. THE ALGORITHM (Python-Ready Logic)
+Define exact conditions for a bot.
+- **ENTRY_CONDITION**: 
+  - IF time > 60 mins 
+  - AND Price < X (drawdown limit)
+  - AND DeltaRatio (last 1h) > Y.YY (Critical filter!)
+  - AND Price crosses above [Level: VWAP / Session High]
+  
+- **INVALIDATION (Cut Loss)**:
+  - IF DeltaRatio drops below Z.ZZ...
+
+## 3. TRAP IDENTIFICATION
+- How to spot a "Fake Winner" (a loser that triggered entry rules but failed)?
+- Give one specific rule to filter these out.
+
+Think deeply. Don't give generic advice ("buy low"). Give math.
 Here is the data:
 """
+
+def list_available_models():
+    print("\n🔍 Listing available Gemini models:")
+    try:
+        for m in genai.list_models():
+            if 'gemini' in m.name:
+                print(f" - {m.name}")
+    except Exception as e:
+        print(f"Error listing models: {e}")
 
 def main():
     if not DATA_FILE.exists():
@@ -87,7 +126,8 @@ def main():
         
     except Exception as e:
         print(f"\n❌ API Error: {e}")
-        print("Tip: Check your API Key and Model Name availability.")
+        if "404" in str(e) or "not found" in str(e).lower():
+            print(f"⚠️ Model '{MODEL_NAME}' not found.")
+            list_available_models()
+            print("\n💡 Please update MODEL_NAME in the script to one of the above.")
 
-if __name__ == "__main__":
-    main()
