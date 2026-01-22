@@ -25,6 +25,12 @@ from pathlib import Path
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
+
+# Add scripts_v3 to path to import pump_analysis_lib
+current_dir = Path(__file__).resolve().parent
+project_root = current_dir.parent
+sys.path.append(str(project_root / 'scripts_v3'))
+
 from pump_analysis_lib import get_db_connection
 
 # ----------------------------------------------------------------------
