@@ -22,6 +22,10 @@ from pump_analysis_lib import get_db_connection
 # ... imports ...
 import pandas_ta as ta # Ensure pandas_ta is in requirements
 
+import warnings
+# Suppress pandas/sql alchemy warning
+warnings.simplefilter(action='ignore', category=UserWarning)
+
 # --- INDICATORS ---
 def add_indicators(df):
     """Add technical indicators for strategies."""
@@ -31,8 +35,13 @@ def add_indicators(df):
     # Bollinger Bands
     bb = ta.bbands(df['close_price'], length=20, std=2)
     if bb is not None:
-        df['bb_upper'] = bb['BBU_20_2.0']
-        df['bb_lower'] = bb['BBL_20_2.0']
+        # Dynamically find columns to avoid version/naming issues (e.g. BBU_20_2.0 vs BBU_20_2)
+        upper_cols = [c for c in bb.columns if c.startswith('BBU')]
+        lower_cols = [c for c in bb.columns if c.startswith('BBL')]
+        
+        if upper_cols and lower_cols:
+            df['bb_upper'] = bb[upper_cols[0]]
+            df['bb_lower'] = bb[lower_cols[0]]
         
     # EMA
     df['ema_short'] = ta.ema(df['close_price'], length=9)
