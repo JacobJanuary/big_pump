@@ -87,10 +87,22 @@ def calculate_metrics(df, symbol):
     
     # 5. Volatility (High - Low) / Open over 1m windows
     # Resample to 1m to see how volatility decays
+    # Resampling 'close_price' gives a DataFrame with open, high, low, close columns
     resampled_1m = df['close_price'].resample('1min').ohlc()
-    resampled_1m['volatility_pct'] = (resampled_1m['close']['high'] - resampled_1m['close']['low']) / resampled_1m['close']['open'] * 100
-    avg_volatility_first_15m = resampled_1m.iloc[:15]['volatility_pct'].mean()
-    avg_volatility_next_45m = resampled_1m.iloc[15:60]['volatility_pct'].mean()
+    
+    # Calculate volatility pct
+    resampled_1m['volatility_pct'] = (resampled_1m['high'] - resampled_1m['low']) / resampled_1m['open'] * 100
+    
+    # Check if we have enough data
+    if len(resampled_1m) >= 15:
+        avg_volatility_first_15m = resampled_1m.iloc[:15]['volatility_pct'].mean()
+    else:
+        avg_volatility_first_15m = resampled_1m['volatility_pct'].mean()
+        
+    if len(resampled_1m) >= 60:
+        avg_volatility_next_45m = resampled_1m.iloc[15:60]['volatility_pct'].mean()
+    else:
+        avg_volatility_next_45m = resampled_1m.iloc[15:]['volatility_pct'].mean()
 
     return {
         'symbol': symbol,
