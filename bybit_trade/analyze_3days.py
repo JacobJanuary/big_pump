@@ -103,7 +103,7 @@ def main():
         
         for _, row in listings.iterrows():
             lid, symbol = row['id'], row['symbol']
-            listing_date = pd.to_datetime(row['listing_date'], unit='s')
+            listing_date = pd.to_datetime(row['listing_date'])
             
             df = load_data(conn, lid)
             if df.empty: continue
