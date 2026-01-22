@@ -77,49 +77,75 @@ def calculate_metrics(df, symbol):
     sell_vol = first_1h['sell_volume'].sum()
     buy_ratio = buy_vol / total_vol if total_vol > 0 else 0
     
-    # 5. Volatility
-    # Resample to 1m
-    resampled_1m = df['close_price'].resample('1min').ohlc()
+    # 5. Volatility & Swings (The "Super-Trader" metrics)
+    # We want to find how many times we could have entered/exited.
+    # Count swings > 3%
     
-    # Fix: access columns directly from DataFrame
-    resampled_1m['volatility_pct'] = (resampled_1m['high'] - resampled_1m['low']) / resampled_1m['open'] * 100
+    swing_count_3pct = 0
+    swing_count_5pct = 0
+    total_swing_pnl = 0.0
     
-    if len(resampled_1m) >= 15:
-        avg_volatility_first_15m = resampled_1m.iloc[:15]['volatility_pct'].mean()
-    else:
-        avg_volatility_first_15m = resampled_1m['volatility_pct'].mean()
+    # Simple ZigZag-like algorithm to count swings
+    last_swing_low = df.iloc[0]['low_price']
+    last_swing_high = df.iloc[0]['high_price']
+    direction = 1 # 1 = searching for high, -1 = searching for low
+    
+    # Downsample to 1m for speed (or use 1s but iterate carefully)
+    # Using 1s for precision since we have it
+    prices = df['close_price'].values
+    
+    current_leg_start = prices[0]
+    
+    for p in prices:
+        move_pct = (p - current_leg_start) / current_leg_start * 100
         
-    if len(resampled_1m) >= 60:
-        avg_volatility_next_45m = resampled_1m.iloc[15:60]['volatility_pct'].mean()
-    else:
-        avg_volatility_next_45m = resampled_1m.iloc[15:]['volatility_pct'].mean()
+        if direction == 1: # Uptrend look
+            if move_pct > 3: # Confirmed up swing > 3%
+                # Potential profit locked? No, we wait for reversal.
+                pass
+            if move_pct < -3: # Reversal down > 3%
+                # Previous up swing ended.
+                swing_count_3pct += 1
+                if min(abs(move_pct), abs((p - last_swing_high)/last_swing_high*100)) > 5:
+                    swing_count_5pct += 1
+                
+                direction = -1
+                current_leg_start = p
+                last_swing_high = p # Reset high marker
+        
+        elif direction == -1: # Downtrend look
+            if move_pct > 3: # Reversal up > 3%
+                swing_count_3pct += 1
+                if move_pct > 5:
+                    swing_count_5pct += 1
+                
+                direction = 1
+                current_leg_start = p
+                last_swing_low = p # Reset low marker
 
     return {
         'symbol': symbol,
         'opening_price': opening_price,
-        'max_pump_1m_pct': round(max_pump_1m_pct, 2),
         'max_pump_1h_pct': round(max_pump_1h_pct, 2),
+        'max_pump_1h_pct': round(max_pump_1h_pct, 2),
+        'swings_gt_3pct': swing_count_3pct,
+        'swings_gt_5pct': swing_count_5pct,
         'time_to_ath_s': int(time_to_ath_s),
         'first_dip_drawdown_pct': round(first_dip_drawdown_pct, 2),
         'buy_vol_ratio': round(buy_ratio, 2),
-        'volatility_15m': round(avg_volatility_first_15m, 2),
-        'volatility_rest': round(avg_volatility_next_45m, 2)
     }
 
 def main():
-    print("🚀 Analyzing Bybit Listings (1s Data)")
+    print("🚀 Deep Analysis: Counting Tradable Swings (1s Data)")
     
     conn = None
     try:
         conn = get_db_connection()
         
-        # Get all listings
         listings_df = pd.read_sql(
             "SELECT id, symbol, listing_date FROM bybit_trade.listings WHERE data_fetched = TRUE", 
             conn
         )
-        
-        print(f"Found {len(listings_df)} listings with data.")
         
         results = []
         
@@ -127,62 +153,38 @@ def main():
             lid = row['id']
             symbol = row['symbol']
             
-            # Use conn for pandas read_sql (will trigger warning but work)
-            query = f"""
-                SELECT timestamp_s, open_price, high_price, low_price, close_price, 
-                       volume, buy_volume, sell_volume, trade_count
-                FROM bybit_trade.candles_1s
-                WHERE listing_id = {lid}
-                ORDER BY timestamp_s ASC
-            """
+            # Using 1s data for precision
+            df = pd.read_sql(
+                f"SELECT timestamp_s, close_price, high_price, low_price, volume, buy_volume, sell_volume FROM bybit_trade.candles_1s WHERE listing_id = {lid} ORDER BY timestamp_s ASC",
+                conn
+            )
             
-            df = pd.read_sql(query, conn)
+            if df.empty: continue
             
-            if df.empty:
-                print(f"⚠️ {symbol}: No data")
-                continue
-            
-            df['timestamp'] = pd.to_datetime(df['timestamp_s'], unit='s')
-            df.set_index('timestamp', inplace=True)
-                
             metrics = calculate_metrics(df, symbol)
             if metrics:
                 results.append(metrics)
-                pump_str = f"{metrics['max_pump_1h_pct']}%"
-                dip_str = f"-{metrics['first_dip_drawdown_pct']}%"
-                print(f"  ✓ {symbol:<10} Pump: {pump_str:>8} | Dip: {dip_str:>8}")
-        
+                print(f"  ✓ {symbol:<10} Swings >3%: {metrics['swings_gt_3pct']:<3} | >5%: {metrics['swings_gt_5pct']:<3} (Potential Trades)")
+
         # Create DataFrame from results
         res_df = pd.DataFrame(results)
         
-        # Save results
-        json_path = OUTPUT_DIR / "listing_metrics.json"
-        csv_path = OUTPUT_DIR / "listing_metrics.csv"
+        print("\n📊 POTENTIAL TRADES (Volatility Swings):")
+        print("-" * 60)
+        print(f"Avg 'Swings > 3%' per token: {res_df['swings_gt_3pct'].mean():.1f}")
+        print(f"Avg 'Swings > 5%' per token: {res_df['swings_gt_5pct'].mean():.1f}")
+        print("-" * 60)
         
-        res_df.to_json(json_path, orient='records', indent=2)
-        res_df.to_csv(csv_path, index=False)
-        
-        print(f"\n[DONE] Saved metrics to {json_path}")
-        
-        if not res_df.empty:
-            print("\n📊 SUMMARY STATISTICS (First 1 Hour):")
-            print("-" * 50)
-            print(f"Average Pump 1H:      {res_df['max_pump_1h_pct'].mean():.2f}%")
-            print(f"Average Dip from ATH: {res_df['first_dip_drawdown_pct'].mean():.2f}%")
-            print(f"Avg Time to ATH:      {res_df['time_to_ath_s'].mean() / 60:.1f} minutes")
-            print(f"Avg Buy Pressure:     {res_df['buy_vol_ratio'].mean():.2f}")
-            print("-" * 50)
-            
-            print("\nTOP 5 PUMPS:")
-            print(res_df.sort_values('max_pump_1h_pct', ascending=False)[['symbol', 'max_pump_1h_pct', 'time_to_ath_s']].head(5))
+        top_volatile = res_df.sort_values('swings_gt_3pct', ascending=False).head(10)
+        print("\nTOP 10 VOLATILE TOKENS (Most Opportunities):")
+        print(top_volatile[['symbol', 'swings_gt_3pct', 'swings_gt_5pct', 'max_pump_1h_pct']])
         
     except Exception as e:
         print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
     finally:
-        if conn:
-            conn.close()
+        if conn: conn.close()
 
 if __name__ == "__main__":
     main()
