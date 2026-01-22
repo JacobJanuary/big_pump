@@ -25,27 +25,16 @@ parent_dir = current_dir.parent
 sys.path.append(str(parent_dir / 'scripts_v3'))
 sys.path.append(str(parent_dir / 'config'))
 
-import settings
+from pump_analysis_lib import get_db_connection
+import warnings
+
+# Suppress pandas/sql alchemy warning
+warnings.filterwarnings('ignore', category=UserWarning, module='pandas')
 
 OUTPUT_DIR = current_dir / "analysis_results"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-def get_db_engine():
-    """Create SQLAlchemy engine using project settings."""
-    # Use settings directly - they are already loaded from .env by settings.py
-    user = settings.DB_USER
-    password = settings.DB_PASSWORD
-    host = settings.DB_HOST
-    port = settings.DB_PORT
-    dbname = settings.DB_NAME
-    
-    # URL encode password to handle special characters safely
-    from urllib.parse import quote_plus
-    if password:
-        password = quote_plus(password)
-    
-    # Construct connection string
-    return create_engine(f"postgresql+psycopg://{user}:{password}@{host}:{port}/{dbname}")
+# removed get_db_engine since we use pump_analysis_lib
 
 def calculate_metrics(df, symbol):
     """Calculate key listing metrics from DataFrame."""
@@ -120,13 +109,14 @@ def calculate_metrics(df, symbol):
 def main():
     print("🚀 Analyzing Bybit Listings (1s Data)")
     
+    conn = None
     try:
-        engine = get_db_engine()
+        conn = get_db_connection()
         
         # Get all listings
         listings_df = pd.read_sql(
             "SELECT id, symbol, listing_date FROM bybit_trade.listings WHERE data_fetched = TRUE", 
-            engine
+            conn
         )
         
         print(f"Found {len(listings_df)} listings with data.")
@@ -137,7 +127,7 @@ def main():
             lid = row['id']
             symbol = row['symbol']
             
-            # Use engine for pandas read_sql
+            # Use conn for pandas read_sql (will trigger warning but work)
             query = f"""
                 SELECT timestamp_s, open_price, high_price, low_price, close_price, 
                        volume, buy_volume, sell_volume, trade_count
@@ -146,7 +136,7 @@ def main():
                 ORDER BY timestamp_s ASC
             """
             
-            df = pd.read_sql(query, engine)
+            df = pd.read_sql(query, conn)
             
             if df.empty:
                 print(f"⚠️ {symbol}: No data")
@@ -190,8 +180,6 @@ def main():
         print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
-
-if __name__ == "__main__":
-    from dotenv import load_dotenv
-    load_dotenv()
-    main()
+    finally:
+        if conn:
+            conn.close()
