@@ -72,6 +72,9 @@ def pure_momentum_24h(df: pd.DataFrame, symbol: str,
     
     start_time = df.index[0]
     
+    # Pre-calculate accumulators for VWAP/Delta if possible, 
+    # but strictly we can just slice the DF when needed since breakdowns are rare.
+    
     for t, row in df.iterrows():
         # Prices for this second
         close_price = row['close_price']
@@ -94,16 +97,13 @@ def pure_momentum_24h(df: pd.DataFrame, symbol: str,
             if high_price > current_trade.max_price_seen:
                 current_trade.max_price_seen = high_price
                 
-            # Trailing Stop Check (Use LOW price to see if we got wicked out)
+            # Trailing Stop Check (Use LOW price)
             stop_price = current_trade.max_price_seen * (1.0 - trailing_stop_pct)
             
-            # If Low dipped below Stop, we exit at Stop Price (or Open if gap down, but 1s is granular)
-            # worst case: exit at stop_price. 
-            # Note: In real life, slippage happens. We assume fill at stop_price.
             if low_price <= stop_price:
                 # EXIT
                 current_trade.exit_time = t
-                current_trade.exit_price = stop_price # Assume fill at trigger
+                current_trade.exit_price = stop_price 
                 current_trade.exit_reason = f"Trailing Stop (-{trailing_stop_pct:.0%})"
                 current_trade.pnl_pct = (current_trade.exit_price - current_trade.entry_price) / current_trade.entry_price * 100
                 current_trade.duration_s = int((t - current_trade.entry_time).total_seconds())
@@ -113,37 +113,64 @@ def pure_momentum_24h(df: pd.DataFrame, symbol: str,
                 in_trade = False
                 current_trade = None
                 
-                # Set Cooldown (e.g., 5 minutes or 300s) to avoid whipsaw
-                # volatility means we might enter again instantly and die.
+                # Cooldown 15m
                 cooldown_until = t + pd.Timedelta(minutes=15)
                 continue 
                 
         # 4. Entry Logic (If not in trade)
         if not in_trade:
-            # Condition A: Initial Pump (First 60s)
             time_since_start = (t - start_time).total_seconds()
-            
             buy_signal = False
-            entry_price = close_price # Default entry at close of signal candle
+            entry_price = close_price 
             
+            # Condition A: Initial Pump (First 60s) - AGGRESSIVE, NO FILTERS
             if time_since_start <= 60:
-                # Check for +2% from open
                 open_price = df.iloc[0]['open_price']
                 if (close_price - open_price) / open_price * 100 >= pump_pct:
                     buy_signal = True
-            else:
-                # Condition B: Breakout Re-Entry
-                # Enter if Close passes the Session High (confirmed breakout)
-                # To be safer, maybe ensure we aren't just hugging the high.
-                # Logic: We want to catch the run above the previous peak.
-                if close_price >= session_high and close_price > df.iloc[0]['open_price']:
-                     buy_signal = True
+            
+            # Condition B: Breakout Re-Entry - CONSERVATIVE, WITH FILTERS
+            # Enter if Close passes Session High AND Checks Pass
+            elif close_price >= session_high and close_price > df.iloc[0]['open_price']:
+                
+                # FILTER: Check last 2 hours
+                # We need volume/delta data. 
+                # Slice last 2 hours (7200 seconds)
+                lookback = t - pd.Timedelta(hours=2)
+                if lookback < start_time:
+                    lookback = start_time
+                
+                # Optimized: We assume rows are ordered by time.
+                # using slicing on index if unique, but index is timestamp.
+                # df.loc[lookback:t] includes current row.
+                recent_data = df.loc[lookback:t]
+                
+                if not recent_data.empty:
+                    # Metric 1: Delta Ratio
+                    buy_vol = recent_data['buy_volume'].sum()
+                    sell_vol = recent_data['sell_volume'].sum()
+                    delta_ratio = buy_vol / sell_vol if sell_vol > 0 else 1.0 # default to neutral
+                    
+                    # Metric 2: VWAP (Volume Weighted Average Price) of last 2h
+                    # VWAP = Sum(Price * Vol) / Sum(Vol)
+                    total_vol = recent_data['volume'].sum()
+                    if total_vol > 0:
+                        vwap = (recent_data['close_price'] * recent_data['volume']).sum() / total_vol
+                    else:
+                        vwap = close_price # fallback
+                    
+                    # CHECKS based on "Analysis Results":
+                    # Winners have Delta > 1.2, Losers < 0.84. Threshold: 1.0
+                    # Winners have Positive Slope. Price > VWAP is a good proxy for uptrend.
+                    
+                    if delta_ratio >= 1.0 and close_price > vwap:
+                        buy_signal = True
+                        # print(f"  [{symbol}] Re-Entry approved at {t}: Delta={delta_ratio:.2f}, P={close_price:.4f} > VWAP={vwap:.4f}")
             
             if buy_signal:
                 in_trade = True
                 current_trade = Trade(symbol, t, entry_price)
-                current_trade.max_price_seen = high_price # Can be high of this candle too
-                # Update session high if needed
+                current_trade.max_price_seen = high_price
                 if high_price > session_high:
                     session_high = high_price
 
