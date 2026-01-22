@@ -1,0 +1,140 @@
+[
+  {
+    "symbol": "SKR",
+    "pair": "SKRUSDT",
+    "listing_date": "2026-01-21",
+    "status": "found"
+  },
+  {
+    "symbol": "ELSA",
+    "pair": "ELSAUSDT",
+    "listing_date": "2026-01-20",
+    "status": "found"
+  },
+  {
+    "symbol": "FOGO",
+    "pair": "FOGOUSDT",
+    "listing_date": "2026-01-15",
+    "status": "found"
+  },
+  {
+    "symbol": "LIT",
+    "pair": "LITUSDT",
+    "listing_date": "2026-01-15",
+    "status": "found"
+  },
+  {
+    "symbol": "BREV",
+    "pair": "BREVUSDT",
+    "listing_date": "2026-01-06",
+    "status": "found"
+  },
+  {
+    "symbol": "WHITEWHALE",
+    "pair": "WHITEWHALEUSDT",
+    "listing_date": "2026-01-06",
+    "status": "found"
+  },
+  {
+    "symbol": "ZKP",
+    "pair": "ZKPUSDT",
+    "listing_date": "2025-12-19",
+    "status": "found"
+  },
+  {
+    "symbol": "VOOI",
+    "pair": "VOOIUSDT",
+    "listing_date": "2025-12-18",
+    "status": "found"
+  },
+  {
+    "symbol": "SCOR",
+    "pair": "SCORUSDT",
+    "listing_date": "2025-12-17",
+    "status": "found"
+  },
+  {
+    "symbol": "ALMANAK",
+    "pair": "ALMANAKUSDT",
+    "listing_date": "2025-12-11",
+    "status": "found"
+  },
+  {
+    "symbol": "NIGHT",
+    "pair": "NIGHTUSDT",
+    "listing_date": "2025-12-09",
+    "status": "found"
+  },
+  {
+    "symbol": "WET",
+    "pair": "WETUSDT",
+    "listing_date": "2025-12-09",
+    "status": "found"
+  },
+  {
+    "symbol": "STABLE",
+    "pair": "STABLEUSDT",
+    "listing_date": "2025-12-08",
+    "status": "found"
+  },
+  {
+    "symbol": "GAIB",
+    "pair": "GAIBUSDT",
+    "listing_date": "2025-11-19",
+    "status": "found"
+  },
+  {
+    "symbol": "PIEVERSE",
+    "pair": "PIEVERSEUSDT",
+    "listing_date": "2025-11-14",
+    "status": "found"
+  },
+  {
+    "symbol": "CC",
+    "pair": "CCUSDT",
+    "listing_date": "2025-11-10",
+    "status": "found"
+  },
+  {
+    "symbol": "LITKEY",
+    "pair": "LITKEYUSDT",
+    "listing_date": "2025-11-06",
+    "status": "found"
+  },
+  {
+    "symbol": "MMT",
+    "pair": "MMTUSDT",
+    "listing_date": "2025-11-04",
+    "status": "found"
+  },
+  {
+    "symbol": "EAT",
+    "pair": "EATUSDT",
+    "listing_date": "2025-10-29",
+    "status": "found"
+  },
+  {
+    "symbol": "COMMON",
+    "pair": "COMMONUSDT",
+    "listing_date": "2025-10-27",
+    "status": "found"
+  },
+  {
+    "symbol": "SYND",
+    "pair": "SYNDUSDT",
+    "listing_date": "2025-10-27",
+    "status": "found"
+  },
+  {
+    "symbol": "MET",
+    "pair": "METUSDT",
+    "listing_date": "2025-10-23",
+    "status": "found"
+  },
+  {
+    "symbol": "MONPRO",
+    "pair": "MONPROUSDT",
+    "listing_date": "2025-10-21",
+    "status": "found"
+  }
+]

@@ -1,0 +1,1748 @@
+[
+  {
+    "symbol": "0G",
+    "pair": "0GUSDT",
+    "listing_date": "2025-09-23",
+    "status": "found"
+  },
+  {
+    "symbol": "2Z",
+    "pair": "2ZUSDT",
+    "listing_date": "2025-10-02",
+    "status": "found"
+  },
+  {
+    "symbol": "A8",
+    "pair": "A8USDT",
+    "listing_date": "2024-07-17",
+    "status": "found"
+  },
+  {
+    "symbol": "AAPLX",
+    "pair": "AAPLXUSDT",
+    "listing_date": "2025-07-01",
+    "status": "found"
+  },
+  {
+    "symbol": "AARK",
+    "pair": "AARKUSDT",
+    "listing_date": "2024-06-10",
+    "status": "found"
+  },
+  {
+    "symbol": "ACS",
+    "pair": "ACSUSDT",
+    "listing_date": "2023-02-15",
+    "status": "found"
+  },
+  {
+    "symbol": "AI16Z",
+    "pair": "AI16ZUSDT",
+    "listing_date": "2025-01-06",
+    "status": "found"
+  },
+  {
+    "symbol": "AIOZ",
+    "pair": "AIOZUSDT",
+    "listing_date": "2024-01-03",
+    "status": "found"
+  },
+  {
+    "symbol": "AIXBT",
+    "pair": "AIXBTUSDT",
+    "listing_date": "2025-01-10",
+    "status": "found"
+  },
+  {
+    "symbol": "ALCH",
+    "pair": "ALCHUSDT",
+    "listing_date": "2024-12-26",
+    "status": "found"
+  },
+  {
+    "symbol": "ALMANAK",
+    "pair": "ALMANAKUSDT",
+    "listing_date": "2025-12-11",
+    "status": "found"
+  },
+  {
+    "symbol": "AMI",
+    "pair": "AMIUSDT",
+    "listing_date": "2025-03-26",
+    "status": "found"
+  },
+  {
+    "symbol": "AMZNX",
+    "pair": "AMZNXUSDT",
+    "listing_date": "2025-07-07",
+    "status": "found"
+  },
+  {
+    "symbol": "ANIME",
+    "pair": "ANIMEUSDT",
+    "listing_date": "2025-01-23",
+    "status": "found"
+  },
+  {
+    "symbol": "AO",
+    "pair": "AOUSDT",
+    "listing_date": "2025-05-29",
+    "status": "found"
+  },
+  {
+    "symbol": "APTR",
+    "pair": "APTRUSDT",
+    "listing_date": "2024-05-31",
+    "status": "found"
+  },
+  {
+    "symbol": "ART",
+    "pair": "ARTUSDT",
+    "listing_date": "2025-09-09",
+    "status": "found"
+  },
+  {
+    "symbol": "ASRR",
+    "pair": "ASRRUSDT",
+    "listing_date": "2025-05-30",
+    "status": "found"
+  },
+  {
+    "symbol": "ASTER",
+    "pair": "ASTERUSDT",
+    "listing_date": "2025-09-21",
+    "status": "found"
+  },
+  {
+    "symbol": "ATH",
+    "pair": "ATHUSDT",
+    "listing_date": "2024-06-12",
+    "status": "found"
+  },
+  {
+    "symbol": "AURORA",
+    "pair": "AURORAUSDT",
+    "listing_date": "2024-06-07",
+    "status": "found"
+  },
+  {
+    "symbol": "AURY",
+    "pair": "AURYUSDT",
+    "listing_date": "2024-03-19",
+    "status": "found"
+  },
+  {
+    "symbol": "AVAIL",
+    "pair": "AVAILUSDT",
+    "listing_date": "2024-07-23",
+    "status": "found"
+  },
+  {
+    "symbol": "AVL",
+    "pair": "AVLUSDT",
+    "listing_date": "2025-02-12",
+    "status": "found"
+  },
+  {
+    "symbol": "AVNT",
+    "pair": "AVNTUSDT",
+    "listing_date": "2025-09-09",
+    "status": "found"
+  },
+  {
+    "symbol": "B3",
+    "pair": "B3USDT",
+    "listing_date": "2025-02-10",
+    "status": "found"
+  },
+  {
+    "symbol": "BABY1",
+    "pair": "BABY1USDT",
+    "listing_date": "2025-04-10",
+    "status": "found"
+  },
+  {
+    "symbol": "BAN",
+    "pair": "BANUSDT",
+    "listing_date": "2024-11-18",
+    "status": "found"
+  },
+  {
+    "symbol": "BARD",
+    "pair": "BARDUSDT",
+    "listing_date": "2025-09-18",
+    "status": "found"
+  },
+  {
+    "symbol": "BB",
+    "pair": "BBUSDT",
+    "listing_date": "2024-05-13",
+    "status": "found"
+  },
+  {
+    "symbol": "BBQ",
+    "pair": "BBQUSDT",
+    "listing_date": "2024-11-04",
+    "status": "found"
+  },
+  {
+    "symbol": "BCUT",
+    "pair": "BCUTUSDT",
+    "listing_date": "2024-02-20",
+    "status": "found"
+  },
+  {
+    "symbol": "BDXN",
+    "pair": "BDXNUSDT",
+    "listing_date": "2025-06-03",
+    "status": "found"
+  },
+  {
+    "symbol": "BLAST",
+    "pair": "BLASTUSDT",
+    "listing_date": "2024-06-26",
+    "status": "found"
+  },
+  {
+    "symbol": "BMT",
+    "pair": "BMTUSDT",
+    "listing_date": "2025-03-11",
+    "status": "found"
+  },
+  {
+    "symbol": "BOMB",
+    "pair": "BOMBUSDT",
+    "listing_date": "2025-06-17",
+    "status": "found"
+  },
+  {
+    "symbol": "BR",
+    "pair": "BRUSDT",
+    "listing_date": "2025-03-20",
+    "status": "found"
+  },
+  {
+    "symbol": "BRETT",
+    "pair": "BRETTUSDT",
+    "listing_date": "2024-04-18",
+    "status": "found"
+  },
+  {
+    "symbol": "BREV",
+    "pair": "BREVUSDT",
+    "listing_date": "2026-01-06",
+    "status": "found"
+  },
+  {
+    "symbol": "BUBBLE",
+    "pair": "BUBBLEUSDT",
+    "listing_date": "2024-05-14",
+    "status": "found"
+  },
+  {
+    "symbol": "CAMP",
+    "pair": "CAMPUSDT",
+    "listing_date": "2025-08-27",
+    "status": "found"
+  },
+  {
+    "symbol": "CARV",
+    "pair": "CARVUSDT",
+    "listing_date": "2024-10-10",
+    "status": "found"
+  },
+  {
+    "symbol": "CATBNB",
+    "pair": "CATBNBUSDT",
+    "listing_date": "2024-12-17",
+    "status": "found"
+  },
+  {
+    "symbol": "CATI",
+    "pair": "CATIUSDT",
+    "listing_date": "2024-09-20",
+    "status": "found"
+  },
+  {
+    "symbol": "CATS",
+    "pair": "CATSUSDT",
+    "listing_date": "2024-10-08",
+    "status": "found"
+  },
+  {
+    "symbol": "CBK",
+    "pair": "CBKUSDT",
+    "listing_date": "2023-12-11",
+    "status": "found"
+  },
+  {
+    "symbol": "CC",
+    "pair": "CCUSDT",
+    "listing_date": "2025-11-10",
+    "status": "found"
+  },
+  {
+    "symbol": "CFG",
+    "pair": "CFGUSDT",
+    "listing_date": "2025-08-26",
+    "status": "found"
+  },
+  {
+    "symbol": "CHILLGUY",
+    "pair": "CHILLGUYUSDT",
+    "listing_date": "2024-11-26",
+    "status": "found"
+  },
+  {
+    "symbol": "CMETH",
+    "pair": "CMETHUSDT",
+    "listing_date": "2024-11-15",
+    "status": "found"
+  },
+  {
+    "symbol": "COA",
+    "pair": "COAUSDT",
+    "listing_date": "2025-07-23",
+    "status": "found"
+  },
+  {
+    "symbol": "COINX",
+    "pair": "COINXUSDT",
+    "listing_date": "2025-06-30",
+    "status": "found"
+  },
+  {
+    "symbol": "COMMON",
+    "pair": "COMMONUSDT",
+    "listing_date": "2025-10-27",
+    "status": "found"
+  },
+  {
+    "symbol": "COOK",
+    "pair": "COOKUSDT",
+    "listing_date": "2024-10-29",
+    "status": "found"
+  },
+  {
+    "symbol": "CORN",
+    "pair": "CORNUSDT",
+    "listing_date": "2025-03-28",
+    "status": "found"
+  },
+  {
+    "symbol": "CPOOL",
+    "pair": "CPOOLUSDT",
+    "listing_date": "2024-02-21",
+    "status": "found"
+  },
+  {
+    "symbol": "CRCLX",
+    "pair": "CRCLXUSDT",
+    "listing_date": "2025-07-01",
+    "status": "found"
+  },
+  {
+    "symbol": "CSPR",
+    "pair": "CSPRUSDT",
+    "listing_date": "2024-02-22",
+    "status": "found"
+  },
+  {
+    "symbol": "CTA",
+    "pair": "CTAUSDT",
+    "listing_date": "2024-05-14",
+    "status": "found"
+  },
+  {
+    "symbol": "CUDIS",
+    "pair": "CUDISUSDT",
+    "listing_date": "2025-06-05",
+    "status": "found"
+  },
+  {
+    "symbol": "DAPP",
+    "pair": "DAPPUSDT",
+    "listing_date": "2024-09-27",
+    "status": "found"
+  },
+  {
+    "symbol": "DEEP",
+    "pair": "DEEPUSDT",
+    "listing_date": "2024-10-14",
+    "status": "found"
+  },
+  {
+    "symbol": "DEFI",
+    "pair": "DEFIUSDT",
+    "listing_date": "2024-01-31",
+    "status": "found"
+  },
+  {
+    "symbol": "DEGEN",
+    "pair": "DEGENUSDT",
+    "listing_date": "2024-03-28",
+    "status": "found"
+  },
+  {
+    "symbol": "DIAM",
+    "pair": "DIAMUSDT",
+    "listing_date": "2025-02-12",
+    "status": "found"
+  },
+  {
+    "symbol": "DOGS",
+    "pair": "DOGSUSDT",
+    "listing_date": "2024-08-26",
+    "status": "found"
+  },
+  {
+    "symbol": "DOLO",
+    "pair": "DOLOUSDT",
+    "listing_date": "2025-04-24",
+    "status": "found"
+  },
+  {
+    "symbol": "DOOD",
+    "pair": "DOODUSDT",
+    "listing_date": "2025-05-09",
+    "status": "found"
+  },
+  {
+    "symbol": "DOP1",
+    "pair": "DOP1USDT",
+    "listing_date": "2024-07-05",
+    "status": "found"
+  },
+  {
+    "symbol": "DRIFT",
+    "pair": "DRIFTUSDT",
+    "listing_date": "2024-05-16",
+    "status": "found"
+  },
+  {
+    "symbol": "DYM",
+    "pair": "DYMUSDT",
+    "listing_date": "2024-02-06",
+    "status": "found"
+  },
+  {
+    "symbol": "EAT",
+    "pair": "EATUSDT",
+    "listing_date": "2025-10-29",
+    "status": "found"
+  },
+  {
+    "symbol": "ELDE",
+    "pair": "ELDEUSDT",
+    "listing_date": "2025-05-27",
+    "status": "found"
+  },
+  {
+    "symbol": "ELIX",
+    "pair": "ELIXUSDT",
+    "listing_date": "2024-05-30",
+    "status": "found"
+  },
+  {
+    "symbol": "ELSA",
+    "pair": "ELSAUSDT",
+    "listing_date": "2026-01-20",
+    "status": "found"
+  },
+  {
+    "symbol": "ELX",
+    "pair": "ELXUSDT",
+    "listing_date": "2025-03-07",
+    "status": "found"
+  },
+  {
+    "symbol": "ENA",
+    "pair": "ENAUSDT",
+    "listing_date": "2024-04-02",
+    "status": "found"
+  },
+  {
+    "symbol": "ENSO",
+    "pair": "ENSOUSDT",
+    "listing_date": "2025-10-14",
+    "status": "found"
+  },
+  {
+    "symbol": "EPT",
+    "pair": "EPTUSDT",
+    "listing_date": "2025-04-21",
+    "status": "found"
+  },
+  {
+    "symbol": "ERA",
+    "pair": "ERAUSDT",
+    "listing_date": "2025-07-17",
+    "status": "found"
+  },
+  {
+    "symbol": "ES",
+    "pair": "ESUSDT",
+    "listing_date": "2025-07-16",
+    "status": "found"
+  },
+  {
+    "symbol": "ESE",
+    "pair": "ESEUSDT",
+    "listing_date": "2024-04-10",
+    "status": "found"
+  },
+  {
+    "symbol": "ETHFI",
+    "pair": "ETHFIUSDT",
+    "listing_date": "2024-03-18",
+    "status": "found"
+  },
+  {
+    "symbol": "EXVG",
+    "pair": "EXVGUSDT",
+    "listing_date": "2024-04-24",
+    "status": "found"
+  },
+  {
+    "symbol": "FET",
+    "pair": "FETUSDT",
+    "listing_date": "2023-10-03",
+    "status": "found"
+  },
+  {
+    "symbol": "FF",
+    "pair": "FFUSDT",
+    "listing_date": "2025-09-29",
+    "status": "found"
+  },
+  {
+    "symbol": "FHE",
+    "pair": "FHEUSDT",
+    "listing_date": "2025-04-10",
+    "status": "found"
+  },
+  {
+    "symbol": "FIGHT",
+    "pair": null,
+    "listing_date": null,
+    "status": "not_found"
+  },
+  {
+    "symbol": "FLIP",
+    "pair": "FLIPUSDT",
+    "listing_date": "2023-11-23",
+    "status": "found"
+  },
+  {
+    "symbol": "FLOCK",
+    "pair": "FLOCKUSDT",
+    "listing_date": "2024-12-31",
+    "status": "found"
+  },
+  {
+    "symbol": "FLT",
+    "pair": "FLTUSDT",
+    "listing_date": "2024-03-20",
+    "status": "found"
+  },
+  {
+    "symbol": "FLUID",
+    "pair": "FLUIDUSDT",
+    "listing_date": "2024-12-18",
+    "status": "found"
+  },
+  {
+    "symbol": "FOGO",
+    "pair": "FOGOUSDT",
+    "listing_date": "2026-01-15",
+    "status": "found"
+  },
+  {
+    "symbol": "FOXY",
+    "pair": "FOXYUSDT",
+    "listing_date": "2024-04-12",
+    "status": "found"
+  },
+  {
+    "symbol": "FRAG",
+    "pair": "FRAGUSDT",
+    "listing_date": "2025-07-01",
+    "status": "found"
+  },
+  {
+    "symbol": "FUEL",
+    "pair": "FUELUSDT",
+    "listing_date": "2024-12-19",
+    "status": "found"
+  },
+  {
+    "symbol": "G3",
+    "pair": "G3USDT",
+    "listing_date": "2024-04-09",
+    "status": "found"
+  },
+  {
+    "symbol": "G7",
+    "pair": "G7USDT",
+    "listing_date": "2025-02-12",
+    "status": "found"
+  },
+  {
+    "symbol": "GAIB",
+    "pair": "GAIBUSDT",
+    "listing_date": "2025-11-19",
+    "status": "found"
+  },
+  {
+    "symbol": "GALAXIS",
+    "pair": "GALAXISUSDT",
+    "listing_date": "2024-05-08",
+    "status": "found"
+  },
+  {
+    "symbol": "GAME",
+    "pair": "GAMEUSDT",
+    "listing_date": "2025-01-10",
+    "status": "found"
+  },
+  {
+    "symbol": "GG",
+    "pair": "GGUSDT",
+    "listing_date": "2023-12-29",
+    "status": "found"
+  },
+  {
+    "symbol": "GOOGLX",
+    "pair": "GOOGLXUSDT",
+    "listing_date": "2025-07-07",
+    "status": "found"
+  },
+  {
+    "symbol": "GPS",
+    "pair": "GPSUSDT",
+    "listing_date": "2025-01-16",
+    "status": "found"
+  },
+  {
+    "symbol": "GRAPE",
+    "pair": "GRAPEUSDT",
+    "listing_date": "2023-12-21",
+    "status": "found"
+  },
+  {
+    "symbol": "GRASS",
+    "pair": "GRASSUSDT",
+    "listing_date": "2024-10-28",
+    "status": "found"
+  },
+  {
+    "symbol": "HAEDAL",
+    "pair": "HAEDALUSDT",
+    "listing_date": "2025-04-29",
+    "status": "found"
+  },
+  {
+    "symbol": "HLG",
+    "pair": "HLGUSDT",
+    "listing_date": "2024-05-23",
+    "status": "found"
+  },
+  {
+    "symbol": "HMSTR",
+    "pair": "HMSTRUSDT",
+    "listing_date": "2024-09-26",
+    "status": "found"
+  },
+  {
+    "symbol": "HOLO",
+    "pair": "HOLOUSDT",
+    "listing_date": "2025-09-11",
+    "status": "found"
+  },
+  {
+    "symbol": "HOME",
+    "pair": "HOMEUSDT",
+    "listing_date": "2025-06-10",
+    "status": "found"
+  },
+  {
+    "symbol": "HOODX",
+    "pair": "HOODXUSDT",
+    "listing_date": "2025-07-02",
+    "status": "found"
+  },
+  {
+    "symbol": "HUMA",
+    "pair": "HUMAUSDT",
+    "listing_date": "2025-05-26",
+    "status": "found"
+  },
+  {
+    "symbol": "HYPER",
+    "pair": "HYPERUSDT",
+    "listing_date": "2025-04-22",
+    "status": "found"
+  },
+  {
+    "symbol": "ICNT",
+    "pair": "ICNTUSDT",
+    "listing_date": "2025-07-03",
+    "status": "found"
+  },
+  {
+    "symbol": "IMU",
+    "pair": null,
+    "listing_date": null,
+    "status": "not_found"
+  },
+  {
+    "symbol": "INIT",
+    "pair": "INITUSDT",
+    "listing_date": "2025-04-24",
+    "status": "found"
+  },
+  {
+    "symbol": "INTX",
+    "pair": "INTXUSDT",
+    "listing_date": "2024-05-31",
+    "status": "found"
+  },
+  {
+    "symbol": "IO",
+    "pair": "IOUSDT",
+    "listing_date": "2024-06-11",
+    "status": "found"
+  },
+  {
+    "symbol": "IP",
+    "pair": "IPUSDT",
+    "listing_date": "2025-02-13",
+    "status": "found"
+  },
+  {
+    "symbol": "IRL",
+    "pair": "IRLUSDT",
+    "listing_date": "2023-12-19",
+    "status": "found"
+  },
+  {
+    "symbol": "KCS",
+    "pair": "KCSUSDT",
+    "listing_date": "2023-11-30",
+    "status": "found"
+  },
+  {
+    "symbol": "KILO",
+    "pair": "KILOUSDT",
+    "listing_date": "2025-03-27",
+    "status": "found"
+  },
+  {
+    "symbol": "L3",
+    "pair": "L3USDT",
+    "listing_date": "2024-07-30",
+    "status": "found"
+  },
+  {
+    "symbol": "LA",
+    "pair": "LAUSDT",
+    "listing_date": "2025-06-04",
+    "status": "found"
+  },
+  {
+    "symbol": "LAI",
+    "pair": "LAIUSDT",
+    "listing_date": "2024-04-26",
+    "status": "found"
+  },
+  {
+    "symbol": "LAVA",
+    "pair": "LAVAUSDT",
+    "listing_date": "2025-01-09",
+    "status": "found"
+  },
+  {
+    "symbol": "LAYER",
+    "pair": "LAYERUSDT",
+    "listing_date": "2025-02-11",
+    "status": "found"
+  },
+  {
+    "symbol": "LFT",
+    "pair": "LFTUSDT",
+    "listing_date": "2024-05-14",
+    "status": "found"
+  },
+  {
+    "symbol": "LIT",
+    "pair": "LITUSDT",
+    "listing_date": "2026-01-15",
+    "status": "found"
+  },
+  {
+    "symbol": "LITKEY",
+    "pair": "LITKEYUSDT",
+    "listing_date": "2025-11-06",
+    "status": "found"
+  },
+  {
+    "symbol": "LL",
+    "pair": "LLUSDT",
+    "listing_date": "2024-04-24",
+    "status": "found"
+  },
+  {
+    "symbol": "LUNAI",
+    "pair": "LUNAIUSDT",
+    "listing_date": "2024-12-17",
+    "status": "found"
+  },
+  {
+    "symbol": "MAJOR",
+    "pair": "MAJORUSDT",
+    "listing_date": "2024-11-28",
+    "status": "found"
+  },
+  {
+    "symbol": "MAK",
+    "pair": "MAKUSDT",
+    "listing_date": "2024-09-05",
+    "status": "found"
+  },
+  {
+    "symbol": "MANTA",
+    "pair": "MANTAUSDT",
+    "listing_date": "2024-01-17",
+    "status": "found"
+  },
+  {
+    "symbol": "MASA",
+    "pair": "MASAUSDT",
+    "listing_date": "2024-04-10",
+    "status": "found"
+  },
+  {
+    "symbol": "MAVIA",
+    "pair": "MAVIAUSDT",
+    "listing_date": "2024-02-06",
+    "status": "found"
+  },
+  {
+    "symbol": "MBX",
+    "pair": "MBXUSDT",
+    "listing_date": "2023-03-31",
+    "status": "found"
+  },
+  {
+    "symbol": "MCDX",
+    "pair": "MCDXUSDT",
+    "listing_date": "2025-07-08",
+    "status": "found"
+  },
+  {
+    "symbol": "MCG",
+    "pair": "MCGUSDT",
+    "listing_date": "2024-06-28",
+    "status": "found"
+  },
+  {
+    "symbol": "ME",
+    "pair": "MEUSDT",
+    "listing_date": "2024-12-10",
+    "status": "found"
+  },
+  {
+    "symbol": "MEMEFI",
+    "pair": "MEMEFIUSDT",
+    "listing_date": "2024-11-22",
+    "status": "found"
+  },
+  {
+    "symbol": "MERL",
+    "pair": "MERLUSDT",
+    "listing_date": "2024-04-19",
+    "status": "found"
+  },
+  {
+    "symbol": "MET",
+    "pair": "METUSDT",
+    "listing_date": "2025-10-23",
+    "status": "found"
+  },
+  {
+    "symbol": "METAX",
+    "pair": "METAXUSDT",
+    "listing_date": "2025-07-02",
+    "status": "found"
+  },
+  {
+    "symbol": "MEW",
+    "pair": "MEWUSDT",
+    "listing_date": "2024-04-19",
+    "status": "found"
+  },
+  {
+    "symbol": "MILK",
+    "pair": "MILKUSDT",
+    "listing_date": "2025-04-29",
+    "status": "found"
+  },
+  {
+    "symbol": "MINU",
+    "pair": "MINUUSDT",
+    "listing_date": "2024-02-06",
+    "status": "found"
+  },
+  {
+    "symbol": "MMT",
+    "pair": "MMTUSDT",
+    "listing_date": "2025-11-04",
+    "status": "found"
+  },
+  {
+    "symbol": "MNRY",
+    "pair": "MNRYUSDT",
+    "listing_date": "2024-12-18",
+    "status": "found"
+  },
+  {
+    "symbol": "MOCA",
+    "pair": "MOCAUSDT",
+    "listing_date": "2024-07-11",
+    "status": "found"
+  },
+  {
+    "symbol": "MOG",
+    "pair": "MOGUSDT",
+    "listing_date": "2024-06-04",
+    "status": "found"
+  },
+  {
+    "symbol": "MOJO",
+    "pair": "MOJOUSDT",
+    "listing_date": "2024-04-08",
+    "status": "found"
+  },
+  {
+    "symbol": "MON",
+    "pair": "MONUSDT",
+    "listing_date": "2024-05-27",
+    "status": "found"
+  },
+  {
+    "symbol": "MONPRO",
+    "pair": "MONPROUSDT",
+    "listing_date": "2025-10-21",
+    "status": "found"
+  },
+  {
+    "symbol": "MOVE",
+    "pair": "MOVEUSDT",
+    "listing_date": "2024-12-09",
+    "status": "found"
+  },
+  {
+    "symbol": "MOZ",
+    "pair": "MOZUSDT",
+    "listing_date": "2024-12-10",
+    "status": "found"
+  },
+  {
+    "symbol": "MSTAR",
+    "pair": "MSTARUSDT",
+    "listing_date": "2024-04-17",
+    "status": "found"
+  },
+  {
+    "symbol": "MVL",
+    "pair": "MVLUSDT",
+    "listing_date": "2023-04-28",
+    "status": "found"
+  },
+  {
+    "symbol": "MYRIA",
+    "pair": "MYRIAUSDT",
+    "listing_date": "2023-12-14",
+    "status": "found"
+  },
+  {
+    "symbol": "MYRO",
+    "pair": "MYROUSDT",
+    "listing_date": "2024-01-18",
+    "status": "found"
+  },
+  {
+    "symbol": "N3",
+    "pair": "N3USDT",
+    "listing_date": "2025-01-22",
+    "status": "found"
+  },
+  {
+    "symbol": "NAKA",
+    "pair": "NAKAUSDT",
+    "listing_date": "2024-03-22",
+    "status": "found"
+  },
+  {
+    "symbol": "NAVX",
+    "pair": "NAVXUSDT",
+    "listing_date": "2024-10-07",
+    "status": "found"
+  },
+  {
+    "symbol": "NEIRO",
+    "pair": "NEIROUSDT",
+    "listing_date": "2024-08-21",
+    "status": "found"
+  },
+  {
+    "symbol": "NEWT",
+    "pair": "NEWTUSDT",
+    "listing_date": "2025-06-24",
+    "status": "found"
+  },
+  {
+    "symbol": "NIGHT",
+    "pair": "NIGHTUSDT",
+    "listing_date": "2025-12-09",
+    "status": "found"
+  },
+  {
+    "symbol": "NLK",
+    "pair": "NLKUSDT",
+    "listing_date": "2024-05-16",
+    "status": "found"
+  },
+  {
+    "symbol": "NOT",
+    "pair": "NOTUSDT",
+    "listing_date": "2024-05-16",
+    "status": "found"
+  },
+  {
+    "symbol": "NS",
+    "pair": "NSUSDT",
+    "listing_date": "2024-11-14",
+    "status": "found"
+  },
+  {
+    "symbol": "NUTS",
+    "pair": "NUTSUSDT",
+    "listing_date": "2024-05-20",
+    "status": "found"
+  },
+  {
+    "symbol": "NVDAX",
+    "pair": "NVDAXUSDT",
+    "listing_date": "2025-06-30",
+    "status": "found"
+  },
+  {
+    "symbol": "NXPC",
+    "pair": "NXPCUSDT",
+    "listing_date": "2025-05-15",
+    "status": "found"
+  },
+  {
+    "symbol": "NYAN",
+    "pair": "NYANUSDT",
+    "listing_date": "2024-05-21",
+    "status": "found"
+  },
+  {
+    "symbol": "OBOL",
+    "pair": "OBOLUSDT",
+    "listing_date": "2025-05-07",
+    "status": "found"
+  },
+  {
+    "symbol": "OBT",
+    "pair": "OBTUSDT",
+    "listing_date": "2025-01-20",
+    "status": "found"
+  },
+  {
+    "symbol": "ODOS",
+    "pair": "ODOSUSDT",
+    "listing_date": "2024-12-20",
+    "status": "found"
+  },
+  {
+    "symbol": "OIK",
+    "pair": "OIKUSDT",
+    "listing_date": "2025-03-12",
+    "status": "found"
+  },
+  {
+    "symbol": "OL",
+    "pair": "OLUSDT",
+    "listing_date": "2024-11-19",
+    "status": "found"
+  },
+  {
+    "symbol": "OM",
+    "pair": "OMUSDT",
+    "listing_date": "2025-02-13",
+    "status": "found"
+  },
+  {
+    "symbol": "ONDO",
+    "pair": "ONDOUSDT",
+    "listing_date": "2024-01-18",
+    "status": "found"
+  },
+  {
+    "symbol": "ORDER",
+    "pair": "ORDERUSDT",
+    "listing_date": "2024-08-26",
+    "status": "found"
+  },
+  {
+    "symbol": "PAAL",
+    "pair": "PAALUSDT",
+    "listing_date": "2024-11-29",
+    "status": "found"
+  },
+  {
+    "symbol": "PARTI",
+    "pair": "PARTIUSDT",
+    "listing_date": "2025-03-25",
+    "status": "found"
+  },
+  {
+    "symbol": "PAWS",
+    "pair": "PAWSUSDT",
+    "listing_date": "2025-04-16",
+    "status": "found"
+  },
+  {
+    "symbol": "PBUX",
+    "pair": "PBUXUSDT",
+    "listing_date": "2024-04-23",
+    "status": "found"
+  },
+  {
+    "symbol": "PELL",
+    "pair": "PELLUSDT",
+    "listing_date": "2025-03-13",
+    "status": "found"
+  },
+  {
+    "symbol": "PENGU",
+    "pair": "PENGUUSDT",
+    "listing_date": "2024-12-17",
+    "status": "found"
+  },
+  {
+    "symbol": "PFVS",
+    "pair": "PFVSUSDT",
+    "listing_date": "2025-05-27",
+    "status": "found"
+  },
+  {
+    "symbol": "PIEVERSE",
+    "pair": "PIEVERSEUSDT",
+    "listing_date": "2025-11-14",
+    "status": "found"
+  },
+  {
+    "symbol": "PINEYE",
+    "pair": "PINEYEUSDT",
+    "listing_date": "2025-01-27",
+    "status": "found"
+  },
+  {
+    "symbol": "PIXFI",
+    "pair": "PIXFIUSDT",
+    "listing_date": "2024-07-18",
+    "status": "found"
+  },
+  {
+    "symbol": "PLUME",
+    "pair": "PLUMEUSDT",
+    "listing_date": "2025-01-21",
+    "status": "found"
+  },
+  {
+    "symbol": "PONKE",
+    "pair": "PONKEUSDT",
+    "listing_date": "2024-05-10",
+    "status": "found"
+  },
+  {
+    "symbol": "PORTALS",
+    "pair": "PORTALSUSDT",
+    "listing_date": "2025-09-16",
+    "status": "found"
+  },
+  {
+    "symbol": "PRCL",
+    "pair": "PRCLUSDT",
+    "listing_date": "2024-04-16",
+    "status": "found"
+  },
+  {
+    "symbol": "PROVE",
+    "pair": "PROVEUSDT",
+    "listing_date": "2025-09-08",
+    "status": "found"
+  },
+  {
+    "symbol": "PTC",
+    "pair": "PTCUSDT",
+    "listing_date": "2024-07-02",
+    "status": "found"
+  },
+  {
+    "symbol": "PUFF",
+    "pair": "PUFFUSDT",
+    "listing_date": "2024-10-18",
+    "status": "found"
+  },
+  {
+    "symbol": "PUFFER",
+    "pair": "PUFFERUSDT",
+    "listing_date": "2024-10-14",
+    "status": "found"
+  },
+  {
+    "symbol": "PUMPBTC",
+    "pair": "PUMPBTCUSDT",
+    "listing_date": "2025-06-03",
+    "status": "found"
+  },
+  {
+    "symbol": "PYBOBO",
+    "pair": null,
+    "listing_date": null,
+    "status": "not_found"
+  },
+  {
+    "symbol": "RECALL",
+    "pair": "RECALLUSDT",
+    "listing_date": "2025-10-15",
+    "status": "found"
+  },
+  {
+    "symbol": "RESOLV",
+    "pair": "RESOLVUSDT",
+    "listing_date": "2025-06-10",
+    "status": "found"
+  },
+  {
+    "symbol": "RLUSD",
+    "pair": "RLUSDUSDT",
+    "listing_date": "2025-09-26",
+    "status": "found"
+  },
+  {
+    "symbol": "ROAM",
+    "pair": "ROAMUSDT",
+    "listing_date": "2025-03-06",
+    "status": "found"
+  },
+  {
+    "symbol": "ROOT",
+    "pair": "ROOTUSDT",
+    "listing_date": "2023-11-20",
+    "status": "found"
+  },
+  {
+    "symbol": "RUBY",
+    "pair": "RUBYUSDT",
+    "listing_date": "2024-06-03",
+    "status": "found"
+  },
+  {
+    "symbol": "SCA",
+    "pair": "SCAUSDT",
+    "listing_date": "2024-03-07",
+    "status": "found"
+  },
+  {
+    "symbol": "SCOR",
+    "pair": "SCORUSDT",
+    "listing_date": "2025-12-17",
+    "status": "found"
+  },
+  {
+    "symbol": "SCR",
+    "pair": "SCRUSDT",
+    "listing_date": "2024-10-22",
+    "status": "found"
+  },
+  {
+    "symbol": "SEND",
+    "pair": "SENDUSDT",
+    "listing_date": "2024-12-12",
+    "status": "found"
+  },
+  {
+    "symbol": "SENT",
+    "pair": null,
+    "listing_date": null,
+    "status": "not_found"
+  },
+  {
+    "symbol": "SERAPH",
+    "pair": "SERAPHUSDT",
+    "listing_date": "2025-01-06",
+    "status": "found"
+  },
+  {
+    "symbol": "SHARK",
+    "pair": "SHARKUSDT",
+    "listing_date": "2024-04-16",
+    "status": "found"
+  },
+  {
+    "symbol": "SIGN",
+    "pair": "SIGNUSDT",
+    "listing_date": "2025-04-28",
+    "status": "found"
+  },
+  {
+    "symbol": "SKATE",
+    "pair": "SKATEUSDT",
+    "listing_date": "2025-06-09",
+    "status": "found"
+  },
+  {
+    "symbol": "SKR",
+    "pair": "SKRUSDT",
+    "listing_date": "2026-01-21",
+    "status": "found"
+  },
+  {
+    "symbol": "SMILE",
+    "pair": "SMILEUSDT",
+    "listing_date": "2024-11-06",
+    "status": "found"
+  },
+  {
+    "symbol": "SOCIAL",
+    "pair": "SOCIALUSDT",
+    "listing_date": "2024-09-24",
+    "status": "found"
+  },
+  {
+    "symbol": "SOLV",
+    "pair": "SOLVUSDT",
+    "listing_date": "2025-01-17",
+    "status": "found"
+  },
+  {
+    "symbol": "SOMI",
+    "pair": "SOMIUSDT",
+    "listing_date": "2025-09-02",
+    "status": "found"
+  },
+  {
+    "symbol": "SONIC",
+    "pair": "SONICUSDT",
+    "listing_date": "2025-01-07",
+    "status": "found"
+  },
+  {
+    "symbol": "SOSO",
+    "pair": "SOSOUSDT",
+    "listing_date": "2025-01-24",
+    "status": "found"
+  },
+  {
+    "symbol": "SPEC",
+    "pair": "SPECUSDT",
+    "listing_date": "2024-05-06",
+    "status": "found"
+  },
+  {
+    "symbol": "SPK",
+    "pair": "SPKUSDT",
+    "listing_date": "2025-06-17",
+    "status": "found"
+  },
+  {
+    "symbol": "SPX",
+    "pair": "SPXUSDT",
+    "listing_date": "2024-11-21",
+    "status": "found"
+  },
+  {
+    "symbol": "SQD",
+    "pair": "SQDUSDT",
+    "listing_date": "2024-05-17",
+    "status": "found"
+  },
+  {
+    "symbol": "SQT",
+    "pair": "SQTUSDT",
+    "listing_date": "2024-02-22",
+    "status": "found"
+  },
+  {
+    "symbol": "STABLE",
+    "pair": "STABLEUSDT",
+    "listing_date": "2025-12-08",
+    "status": "found"
+  },
+  {
+    "symbol": "STOP",
+    "pair": "STOPUSDT",
+    "listing_date": "2024-11-18",
+    "status": "found"
+  },
+  {
+    "symbol": "STREAM",
+    "pair": "STREAMUSDT",
+    "listing_date": "2024-12-17",
+    "status": "found"
+  },
+  {
+    "symbol": "SUNDOG",
+    "pair": "SUNDOGUSDT",
+    "listing_date": "2024-09-11",
+    "status": "found"
+  },
+  {
+    "symbol": "SUPRA",
+    "pair": "SUPRAUSDT",
+    "listing_date": "2024-11-27",
+    "status": "found"
+  },
+  {
+    "symbol": "SVL",
+    "pair": "SVLUSDT",
+    "listing_date": "2024-04-29",
+    "status": "found"
+  },
+  {
+    "symbol": "SWELL",
+    "pair": "SWELLUSDT",
+    "listing_date": "2024-11-07",
+    "status": "found"
+  },
+  {
+    "symbol": "SXT",
+    "pair": "SXTUSDT",
+    "listing_date": "2025-05-08",
+    "status": "found"
+  },
+  {
+    "symbol": "SYND",
+    "pair": "SYNDUSDT",
+    "listing_date": "2025-10-27",
+    "status": "found"
+  },
+  {
+    "symbol": "TA",
+    "pair": "TAUSDT",
+    "listing_date": "2025-07-21",
+    "status": "found"
+  },
+  {
+    "symbol": "TAC",
+    "pair": "TACUSDT",
+    "listing_date": "2025-07-15",
+    "status": "found"
+  },
+  {
+    "symbol": "TAI",
+    "pair": "TAIUSDT",
+    "listing_date": "2024-05-02",
+    "status": "found"
+  },
+  {
+    "symbol": "TAIKO",
+    "pair": "TAIKOUSDT",
+    "listing_date": "2024-06-05",
+    "status": "found"
+  },
+  {
+    "symbol": "TGT",
+    "pair": "TGTUSDT",
+    "listing_date": "2025-05-21",
+    "status": "found"
+  },
+  {
+    "symbol": "THRUST",
+    "pair": "THRUSTUSDT",
+    "listing_date": "2024-11-27",
+    "status": "found"
+  },
+  {
+    "symbol": "TOWNS",
+    "pair": "TOWNSUSDT",
+    "listing_date": "2025-08-05",
+    "status": "found"
+  },
+  {
+    "symbol": "TREE",
+    "pair": "TREEUSDT",
+    "listing_date": "2025-07-29",
+    "status": "found"
+  },
+  {
+    "symbol": "TRUMP",
+    "pair": "TRUMPUSDT",
+    "listing_date": "2025-01-18",
+    "status": "found"
+  },
+  {
+    "symbol": "TSLAX",
+    "pair": "TSLAXUSDT",
+    "listing_date": "2025-07-08",
+    "status": "found"
+  },
+  {
+    "symbol": "TST",
+    "pair": "TSTUSDT",
+    "listing_date": "2024-06-27",
+    "status": "found"
+  },
+  {
+    "symbol": "TUNA",
+    "pair": "TUNAUSDT",
+    "listing_date": "2025-07-30",
+    "status": "found"
+  },
+  {
+    "symbol": "ULTI",
+    "pair": "ULTIUSDT",
+    "listing_date": "2024-06-06",
+    "status": "found"
+  },
+  {
+    "symbol": "USD1",
+    "pair": "USD1USDT",
+    "listing_date": "2025-07-09",
+    "status": "found"
+  },
+  {
+    "symbol": "UXLINK",
+    "pair": "UXLINKUSDT",
+    "listing_date": "2024-07-18",
+    "status": "found"
+  },
+  {
+    "symbol": "VANA",
+    "pair": "VANAUSDT",
+    "listing_date": "2024-12-16",
+    "status": "found"
+  },
+  {
+    "symbol": "VENOM",
+    "pair": "VENOMUSDT",
+    "listing_date": "2024-03-25",
+    "status": "found"
+  },
+  {
+    "symbol": "VIC",
+    "pair": "VICUSDT",
+    "listing_date": "2024-01-09",
+    "status": "found"
+  },
+  {
+    "symbol": "VIRTUAL",
+    "pair": "VIRTUALUSDT",
+    "listing_date": "2024-11-20",
+    "status": "found"
+  },
+  {
+    "symbol": "VOOI",
+    "pair": "VOOIUSDT",
+    "listing_date": "2025-12-18",
+    "status": "found"
+  },
+  {
+    "symbol": "VRTX",
+    "pair": "VRTXUSDT",
+    "listing_date": "2023-11-20",
+    "status": "found"
+  },
+  {
+    "symbol": "WAL",
+    "pair": "WALUSDT",
+    "listing_date": "2025-03-27",
+    "status": "found"
+  },
+  {
+    "symbol": "WELL",
+    "pair": "WELLUSDT",
+    "listing_date": "2024-07-03",
+    "status": "found"
+  },
+  {
+    "symbol": "WEN",
+    "pair": "WENUSDT",
+    "listing_date": "2024-03-27",
+    "status": "found"
+  },
+  {
+    "symbol": "WET",
+    "pair": "WETUSDT",
+    "listing_date": "2025-12-09",
+    "status": "found"
+  },
+  {
+    "symbol": "WHITEWHALE",
+    "pair": "WHITEWHALEUSDT",
+    "listing_date": "2026-01-06",
+    "status": "found"
+  },
+  {
+    "symbol": "WLFI",
+    "pair": "WLFIUSDT",
+    "listing_date": "2025-09-01",
+    "status": "found"
+  },
+  {
+    "symbol": "XAI",
+    "pair": "XAIUSDT",
+    "listing_date": "2024-01-09",
+    "status": "found"
+  },
+  {
+    "symbol": "XAN",
+    "pair": "XANUSDT",
+    "listing_date": "2025-09-29",
+    "status": "found"
+  },
+  {
+    "symbol": "XAR",
+    "pair": "XARUSDT",
+    "listing_date": "2024-04-03",
+    "status": "found"
+  },
+  {
+    "symbol": "XION",
+    "pair": "XIONUSDT",
+    "listing_date": "2024-12-05",
+    "status": "found"
+  },
+  {
+    "symbol": "XO",
+    "pair": "XOUSDT",
+    "listing_date": "2025-06-26",
+    "status": "found"
+  },
+  {
+    "symbol": "XPL",
+    "pair": "XPLUSDT",
+    "listing_date": "2025-09-25",
+    "status": "found"
+  },
+  {
+    "symbol": "XTER",
+    "pair": "XTERUSDT",
+    "listing_date": "2025-01-08",
+    "status": "found"
+  },
+  {
+    "symbol": "XZK",
+    "pair": "XZKUSDT",
+    "listing_date": "2024-06-18",
+    "status": "found"
+  },
+  {
+    "symbol": "YB",
+    "pair": "YBUSDT",
+    "listing_date": "2025-10-15",
+    "status": "found"
+  },
+  {
+    "symbol": "ZBT",
+    "pair": "ZBTUSDT",
+    "listing_date": "2025-10-17",
+    "status": "found"
+  },
+  {
+    "symbol": "ZEND",
+    "pair": "ZENDUSDT",
+    "listing_date": "2024-03-14",
+    "status": "found"
+  },
+  {
+    "symbol": "ZENT",
+    "pair": "ZENTUSDT",
+    "listing_date": "2024-04-30",
+    "status": "found"
+  },
+  {
+    "symbol": "ZEREBRO",
+    "pair": "ZEREBROUSDT",
+    "listing_date": "2024-12-11",
+    "status": "found"
+  },
+  {
+    "symbol": "ZERO",
+    "pair": "ZEROUSDT",
+    "listing_date": "2024-05-06",
+    "status": "found"
+  },
+  {
+    "symbol": "ZETA",
+    "pair": "ZETAUSDT",
+    "listing_date": "2024-01-31",
+    "status": "found"
+  },
+  {
+    "symbol": "ZEX",
+    "pair": "ZEXUSDT",
+    "listing_date": "2024-06-27",
+    "status": "found"
+  },
+  {
+    "symbol": "ZIG",
+    "pair": "ZIGUSDT",
+    "listing_date": "2023-12-08",
+    "status": "found"
+  },
+  {
+    "symbol": "ZK",
+    "pair": "ZKUSDT",
+    "listing_date": "2024-03-19",
+    "status": "found"
+  },
+  {
+    "symbol": "ZKC",
+    "pair": "ZKCUSDT",
+    "listing_date": "2025-09-15",
+    "status": "found"
+  },
+  {
+    "symbol": "ZKJ",
+    "pair": "ZKJUSDT",
+    "listing_date": "2024-06-13",
+    "status": "found"
+  },
+  {
+    "symbol": "ZKL",
+    "pair": "ZKLUSDT",
+    "listing_date": "2024-07-22",
+    "status": "found"
+  },
+  {
+    "symbol": "ZKP",
+    "pair": "ZKPUSDT",
+    "listing_date": "2025-12-19",
+    "status": "found"
+  },
+  {
+    "symbol": "ZORA",
+    "pair": "ZORAUSDT",
+    "listing_date": "2025-04-23",
+    "status": "found"
+  },
+  {
+    "symbol": "ZRC",
+    "pair": "ZRCUSDT",
+    "listing_date": "2024-11-25",
+    "status": "found"
+  },
+  {
+    "symbol": "ZRO",
+    "pair": "ZROUSDT",
+    "listing_date": "2024-06-20",
+    "status": "found"
+  }
+]
