@@ -155,46 +155,45 @@ def aggressive_entry(
                  (final_price - entry_price)/entry_price*100, "EOS",
                  int((df.index[-1] - entry_time).total_seconds()))]
 
-def momentum_entry(
+def pure_momentum_entry(
     df: pd.DataFrame,
     symbol: str,
-    pump_pct: float = 1.0,     # Buy if price up 1%
-    sm_coef_thr: float = 0.2,  # Positive smart money
-    hold_seconds: int = 120,    # Hold longer for pumps
+    pump_pct: float = 2.0,     # Higher threshold (2%)
+    hold_seconds: int = 60,
     trailing_stop_pct: float = 0.05,
 ) -> list[Trade]:
-    """Momentum buy strategy for pumps."""
+    """Pure Price Momentum (Catch the God Candles).
+    Ignore Smart Money. Just buy if price rips up.
+    """
     trades: list[Trade] = []
     
-    # 1. Condition: Price Up + Smart Money
-    start = start_minute_metrics(df)
-    sm = smart_money_coef(df.iloc[:60])
+    # 1. Condition: Price Up > X% in first minute (checking dynamically)
+    # We check the first 30 seconds for the trigger
+    check_window = df.iloc[:30] # First 30s
+    if check_window.empty: return []
     
-    if start["pct_change"] < pump_pct or sm < sm_coef_thr:
-        return trades
-        
-    # 2. Entry (simulated at 10s mark to let initial noise pass, or immediately)
-    # Let's enter at 10s mark if condition met in first 60s (hindsight backtest)
-    # Ideally we check these condition continuously, but for this start-analysis script
-    # we are checking "Start Minute Properties" -> "Trade Outcome".
+    start_price = check_window.iloc[0]['open_price']
     
-    entry_time = df.index[0] + pd.Timedelta(seconds=10)
-    # Find closest time
-    idx_loc = df.index.searchsorted(entry_time)
-    if idx_loc >= len(df): return trades
+    entry_time = None
+    entry_price = 0
     
-    entry_row = df.iloc[idx_loc]
-    entry_price = entry_row['close_price']
-    entry_time = entry_row.name
-    
+    for cur_time, row in check_window.iterrows():
+        change = (row['close_price'] - start_price) / start_price * 100
+        if change >= pump_pct:
+            entry_time = cur_time
+            entry_price = row['close_price']
+            break
+            
+    if entry_time is None:
+        return []
+
     # 3. Exit logic
     highest = entry_price
-    start_idx = idx_loc
+    # Slice dataframe from entry onwards
+    trade_df = df.loc[entry_time:].iloc[1:] # Candles after entry
     
-    for i in range(start_idx + 1, len(df)):
-        cur_time = df.index[i]
-        cur_price = df.iloc[i]['close_price']
-        
+    for cur_time, row in trade_df.iterrows():
+        cur_price = row['close_price']
         highest = max(highest, cur_price)
         
         # Trailing stop
@@ -209,7 +208,11 @@ def momentum_entry(
                          (cur_price - entry_price)/entry_price*100, "Hold Time",
                          int((cur_time - entry_time).total_seconds()))]
                          
-    return []
+    # EOS
+    final_price = df.iloc[-1]["close_price"]
+    return [Trade(symbol, entry_time, entry_price, df.index[-1], final_price,
+                 (final_price - entry_price)/entry_price*100, "EOS",
+                 int((df.index[-1] - entry_time).total_seconds()))]
 
 # ----------------------------------------------------------------------
 # 4️⃣  Main driver
@@ -235,14 +238,18 @@ def main():
             if df.empty or len(df) < 60:
                 continue
             
-            # Run BOTH strategies
-            t_dip = aggressive_entry(df, symbol)
-            for t in t_dip: t.exit_reason = f"DIP: {t.exit_reason}"
+            # Run strategies
+            t_mom_sm = momentum_entry(df, symbol) # Old one with SM
+            for t in t_mom_sm: t.exit_reason = f"MOM_SM: {t.exit_reason}"
             
-            t_mom = momentum_entry(df, symbol)
-            for t in t_mom: t.exit_reason = f"MOM: {t.exit_reason}"
+            t_pure = pure_momentum_entry(df, symbol) # New one
+            for t in t_pure: t.exit_reason = f"PURE: {t.exit_reason}"
             
-            trades = t_dip + t_mom
+            # Use Pure if available (it likely overlaps, so pick Pure for display or both)
+            # Simplification: Just collect all uniquely to see what triggers
+            # We will just list them.
+            
+            trades = t_mom_sm + t_pure
             all_trades.extend(trades)
             
             summary.append(
