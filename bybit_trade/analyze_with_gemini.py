@@ -40,58 +40,66 @@ DATA_FILE = Path(__file__).parent.parent / 'analysis_results' / 'llm_market_data
 
 PROMPT = """
 ROLE: Expert Quantitative Analyst & Crypto Market Maker.
-TASK: Analyze the attached 1-minute candle data for recent Bybit Listings to reverse-engineer the "Winning Algorithm".
+TASK: Analyze the attached 1-minute candle data to reverse-engineer the "Winning Algorithm" with a focus on EXITs and RE-ENTRIES.
 
 CONTEXT:
-- You are provided with normalized trading data (~24h) for multiple tokens.
-- Some are labeled "WINNER" (Massive gains, e.g. SKR +300%, ZKP +80%).
-- Some are labeled "LOSER" (Pump & Bleed, Bull Traps).
-- Legend: 
-  - TimeOffset: Minutes since listing.
-  - Price: Normalized (1.0 = Listing Open).
-  - DeltaRatio = BuyVolume / SellVolume.
+- Normalized data (1.0 = Listing Open).
+- "WINNER" = Massive gains (e.g. SKR +300%).
+- "LOSER" = Pump & Bleed.
+- Column: DeltaRatio = BuyVol / SellVol.
 
 OBJECTIVE:
-Find the *hidden structural differences* between Winners and Losers in the first 4 hours.
-Focus specifically on the "Re-Accumulation Phase" (usually min 60 to min 240) where "Smart Money" positions itself before the second pump.
+1.  **Identify Entry Triggers** (as before: Accumulation Phasing, Delta Spikes).
+2.  **OPTIMIZE EXITS & FREQUENCY:** (New Focus).
+    - Compare "Diamond Hands" (Buy & Hold until trend break) vs "Scalping" (Sell pumps, re-buy dips).
+    - Analyze the Winner charts: Do they pump in a straight line or are there deep pullbacks offering multiple entries?
 
 ANALYSIS GUIDELINES (Chain of Thought):
 
-1. **Phase 1: The Initial Dump/Volatility (0-60 min)**
-   - Do Winners drop differently than Losers? 
-   - Look at Volume Decay: Do Winners see volume dry up faster?
+1.  **Phase 1-2 (Entry):**
+    - Confirm previous findings: Does DeltaRatio > 1.0 predict the pump?
+    - Define the *exact* moment of entry (Trigger).
 
-2. **Phase 2: The Silent Accumulation (60-240 min)**
-   - Compare DeltaRatio (Buy/Sell Vol). 
-   - Hypothesize: Do Winners have DeltaRatio > 1.0 continuously while price is flat/down? (Limit orders absorbing sells).
-   - Hypothesize: Do Losers have DeltaRatio < 0.9 (Distribution)?
-   
-3. **Phase 3: The Breakout Trigger**
-   - What specifically signals the start of the "God Candle"? 
-   - Is it a break of VWAP? A spike in Delta?
+2.  **Phase 3: EXECUTION STRATEGY (The new part):**
+    - **Single vs Multi-Entry:** 
+      - If we sell at +15%, do we miss the +300% move? 
+      - Or does the price offer re-entry at the breakout level?
+      - CALCULATION: Look at SKR and ZKP. Would a "Sell at +20%, Re-buy at -5% pullback" strategy outperform pure Holding?
+    - **Trailing Stop:**
+      - How deep are the "shakeouts" on the way up? 
+      - If we use a tight 5% Trailing Stop, do we get shaken out before the God Candle?
+      - Recommend an optimal *dynamic* Trailing Stop (e.g., based on ATR or VWAP).
 
-OUTPUT FORMAT (Strict):
+3.  **Phase 4: INVOLIDATION SPEED:**
+    - When a "Loser" fails, does it happen instantly (1-min candle dump) or slowly?
+    - Do we need a "Panic Sell" rule if Delta drops below 0.5 instantly?
 
-## 1. DATA INSIGHTS
-- "Winners Avg Delta (Hour 2-4): X.XX" vs "Losers Avg Delta: Y.YY"
-- "Winners Volatility Profile: [Description]"
+OUTPUT FORMAT:
 
-## 2. THE ALGORITHM (Python-Ready Logic)
-Define exact conditions for a bot.
-- **ENTRY_CONDITION**: 
-  - IF time > 60 mins 
-  - AND Price < X (drawdown limit)
-  - AND DeltaRatio (last 1h) > Y.YY (Critical filter!)
-  - AND Price crosses above [Level: VWAP / Session High]
+## 1. WINNER STRUCTURE
+- "Winners usually pump X% then retrace Y%."
+- "The God Candle usually lasts Z minutes."
+
+## 2. STRATEGY COMPARISON
+- "Buy & Hold" Score: [1-10]
+- "Active Scalping" Score: [1-10]
+- Recommendation: [Choose one]
+
+## 3. THE ALGORITHM (Updated)
+Define functions for a Python bot.
+
+- **check_entry(candle)**:
+  - (Include Delta, VWAP conditions)
   
-- **INVALIDATION (Cut Loss)**:
-  - IF DeltaRatio drops below Z.ZZ...
+- **check_exit(current_pnl, duration)**:
+  - **TAKE_PROFIT**: Should we sell half at +X%?
+  - **TRAILING_STOP**: Define the formula (e.g. `High - (3 * ATR)`).
+  - **PANIC_SELL**: If Delta < 0.5 AND Price < Entry...
+  
+- **check_re_entry(exit_price)**:
+  - If we sold, when do we buy back? (e.g. "Bounce off VWAP with Delta > 1").
 
-## 3. TRAP IDENTIFICATION
-- How to spot a "Fake Winner" (a loser that triggered entry rules but failed)?
-- Give one specific rule to filter these out.
-
-Think deeply. Don't give generic advice ("buy low"). Give math.
+Be precise. Quantify the "Shakeout Tolerance" (how much drawdown must we survive to catch the 300% pump?).
 Here is the data:
 """
 
