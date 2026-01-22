@@ -155,7 +155,7 @@ def main():
             
             # Using 1s data for precision
             df = pd.read_sql(
-                f"SELECT timestamp_s, close_price, high_price, low_price, volume, buy_volume, sell_volume FROM bybit_trade.candles_1s WHERE listing_id = {lid} ORDER BY timestamp_s ASC",
+                f"SELECT timestamp_s, open_price, close_price, high_price, low_price, volume, buy_volume, sell_volume FROM bybit_trade.candles_1s WHERE listing_id = {lid} ORDER BY timestamp_s ASC",
                 conn
             )
             
