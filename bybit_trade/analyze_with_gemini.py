@@ -130,6 +130,12 @@ def main():
         print("="*80 + "\n")
         print(response.text)
         
+        # Save to file
+        out_path = Path(__file__).parent.parent / 'analysis_results' / 'gemini_strategy.md'
+        with open(out_path, 'w') as f:
+            f.write(response.text)
+        print(f"\n✅ Strategy saved to: {out_path}")
+        
     except Exception as e:
         print(f"\n❌ API Error: {e}")
         if "404" in str(e) or "not found" in str(e).lower():
