@@ -155,6 +155,58 @@ def aggressive_entry(
                  (final_price - entry_price)/entry_price*100, "EOS",
                  int((df.index[-1] - entry_time).total_seconds()))]
 
+def momentum_entry(
+    df: pd.DataFrame,
+    symbol: str,
+    pump_pct: float = 1.0,     # Buy if price up 1%
+    sm_coef_thr: float = 0.2,  # Positive smart money
+    hold_seconds: int = 120,    # Hold longer for pumps
+    trailing_stop_pct: float = 0.05,
+) -> list[Trade]:
+    """Momentum buy strategy for pumps."""
+    trades: list[Trade] = []
+    
+    # 1. Condition: Price Up + Smart Money
+    start = start_minute_metrics(df)
+    sm = smart_money_coef(df.iloc[:60])
+    
+    if start["pct_change"] < pump_pct or sm < sm_coef_thr:
+        return trades
+        
+    # 2. Entry (simulated at 10s mark to let initial noise pass, or immediately)
+    entry_time = df.index[0] + pd.Timedelta(seconds=10)
+    # Find closest time
+    idx_loc = df.index.searchsorted(entry_time)
+    if idx_loc >= len(df): return trades
+    
+    entry_row = df.iloc[idx_loc]
+    entry_price = entry_row['close_price']
+    entry_time = entry_row.name
+    
+    # 3. Exit logic
+    highest = entry_price
+    start_idx = idx_loc
+    
+    for i in range(start_idx + 1, len(df)):
+        cur_time = df.index[i]
+        cur_price = df.iloc[i]['close_price']
+        
+        highest = max(highest, cur_price)
+        
+        # Trailing stop
+        if cur_price < highest * (1 - trailing_stop_pct):
+            return [Trade(symbol, entry_time, entry_price, cur_time, cur_price,
+                         (cur_price - entry_price)/entry_price*100, "Trailing Stop",
+                         int((cur_time - entry_time).total_seconds()))]
+                         
+        # Time exit
+        if (cur_time - entry_time).total_seconds() >= hold_seconds:
+            return [Trade(symbol, entry_time, entry_price, cur_time, cur_price,
+                         (cur_price - entry_price)/entry_price*100, "Hold Time",
+                         int((cur_time - entry_time).total_seconds()))]
+                         
+    return []
+
 def pure_momentum_entry(
     df: pd.DataFrame,
     symbol: str,
