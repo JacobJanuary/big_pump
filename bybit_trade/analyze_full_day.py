@@ -65,79 +65,87 @@ def pure_momentum_24h(df: pd.DataFrame, symbol: str,
     trades = []
     in_trade = False
     current_trade = None
+    cooldown_until = None  # Timestamp to wait until before re-entering
     
     # Session State
     session_high = df.iloc[0]['open_price']
     
-    # We iterate through the ENTIRE dataframe for signals
-    # However, for performance, we can just loop once.
-    
     start_time = df.index[0]
     
     for t, row in df.iterrows():
-        cur_price = row['close_price']
+        # Prices for this second
+        close_price = row['close_price']
+        low_price = row['low_price']
+        high_price = row['high_price']
         
-        # 1. Update Session High
-        if cur_price > session_high:
-            session_high = cur_price
+        # 1. Update Session High (using High of candle)
+        if high_price > session_high:
+            session_high = high_price
             
-        # 2. Manage Existing Trade
+        # 2. Cooldown Check
+        if cooldown_until and t < cooldown_until:
+            continue
+        if cooldown_until and t >= cooldown_until:
+            cooldown_until = None
+            
+        # 3. Manage Existing Trade
         if in_trade:
             # Update Trade High
-            if cur_price > current_trade.max_price_seen:
-                current_trade.max_price_seen = cur_price
+            if high_price > current_trade.max_price_seen:
+                current_trade.max_price_seen = high_price
                 
-            # Trailing Stop Check
+            # Trailing Stop Check (Use LOW price to see if we got wicked out)
             stop_price = current_trade.max_price_seen * (1.0 - trailing_stop_pct)
             
-            if cur_price <= stop_price:
+            # If Low dipped below Stop, we exit at Stop Price (or Open if gap down, but 1s is granular)
+            # worst case: exit at stop_price. 
+            # Note: In real life, slippage happens. We assume fill at stop_price.
+            if low_price <= stop_price:
                 # EXIT
                 current_trade.exit_time = t
-                current_trade.exit_price = cur_price
+                current_trade.exit_price = stop_price # Assume fill at trigger
                 current_trade.exit_reason = f"Trailing Stop (-{trailing_stop_pct:.0%})"
-                current_trade.pnl_pct = (cur_price - current_trade.entry_price) / current_trade.entry_price * 100
+                current_trade.pnl_pct = (current_trade.exit_price - current_trade.entry_price) / current_trade.entry_price * 100
                 current_trade.duration_s = int((t - current_trade.entry_time).total_seconds())
                 current_trade.max_pnl_seen = (current_trade.max_price_seen - current_trade.entry_price) / current_trade.entry_price * 100
                 
                 trades.append(current_trade)
                 in_trade = False
                 current_trade = None
-                continue # Don't re-enter on the same candle
                 
-        # 3. Entry Logic (If not in trade)
+                # Set Cooldown (e.g., 5 minutes or 300s) to avoid whipsaw
+                # volatility means we might enter again instantly and die.
+                cooldown_until = t + pd.Timedelta(minutes=15)
+                continue 
+                
+        # 4. Entry Logic (If not in trade)
         if not in_trade:
             # Condition A: Initial Pump (First 60s)
             time_since_start = (t - start_time).total_seconds()
-            is_start_window = time_since_start <= 60
             
             buy_signal = False
+            entry_price = close_price # Default entry at close of signal candle
             
-            if is_start_window:
+            if time_since_start <= 60:
                 # Check for +2% from open
                 open_price = df.iloc[0]['open_price']
-                if (cur_price - open_price) / open_price * 100 >= pump_pct:
+                if (close_price - open_price) / open_price * 100 >= pump_pct:
                     buy_signal = True
-                    
             else:
-                # Condition B: Breakout Re-Entry (Price > Session High)
-                # We need to be careful not to buy the *exact* same high that stopped us out unless it breaks higher.
-                # Logic: If Current Close > Previous Session High (implies breakout)
-                # But we just updated session_high above. 
-                # Let's verify if this candle *made* the new high.
-                if cur_price >= session_high and cur_price > df.iloc[0]['open_price']: # Ensure it's not just the start price
-                     # To avoid buying top of every candle, maybe require % clearance? 
-                     # For now, simplistic Breakout of Session High.
-                     # But we must ensure we didn't JUST exit. 
-                     # In this loop logic, exit happens first, so we won't re-enter same tick usually unless low then high.
+                # Condition B: Breakout Re-Entry
+                # Enter if Close passes the Session High (confirmed breakout)
+                # To be safer, maybe ensure we aren't just hugging the high.
+                # Logic: We want to catch the run above the previous peak.
+                if close_price >= session_high and close_price > df.iloc[0]['open_price']:
                      buy_signal = True
             
             if buy_signal:
                 in_trade = True
-                current_trade = Trade(symbol, t, cur_price)
-                current_trade.max_price_seen = cur_price
-                # Update session high if this entry is the new high
-                if cur_price > session_high:
-                    session_high = cur_price
+                current_trade = Trade(symbol, t, entry_price)
+                current_trade.max_price_seen = high_price # Can be high of this candle too
+                # Update session high if needed
+                if high_price > session_high:
+                    session_high = high_price
 
     # End of session handling
     if in_trade:
