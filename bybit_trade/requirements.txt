@@ -4,3 +4,4 @@ python-dotenv
 pandas
 numpy
 sqlalchemy
+pandas_ta

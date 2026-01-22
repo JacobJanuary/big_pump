@@ -19,95 +19,203 @@ sys.path.append(str(parent_dir / 'config'))
 
 from pump_analysis_lib import get_db_connection
 
-@dataclass
-class Trade:
-    symbol: str
-    entry_time: pd.Timestamp
-    entry_price: float
-    exit_time: pd.Timestamp = None
-    exit_price: float = None
-    pnl_pct: float = 0.0
-    exit_reason: str = ""
-    duration_s: int = 0
+# ... imports ...
+import pandas_ta as ta # Ensure pandas_ta is in requirements
 
-class Backtester:
-    def __init__(self, conn):
-        self.conn = conn
-        self.listings = self._load_listings()
-        self.results: List[Trade] = []
+# --- INDICATORS ---
+def add_indicators(df):
+    """Add technical indicators for strategies."""
+    # RSI
+    df['rsi'] = ta.rsi(df['close_price'], length=14)
+    
+    # Bollinger Bands
+    bb = ta.bbands(df['close_price'], length=20, std=2)
+    if bb is not None:
+        df['bb_upper'] = bb['BBU_20_2.0']
+        df['bb_lower'] = bb['BBL_20_2.0']
         
-    def _load_listings(self):
-        """Load listings meta data."""
-        return pd.read_sql(
-            "SELECT id, symbol, listing_date FROM bybit_trade.listings WHERE data_fetched = TRUE", 
-            self.conn
-        )
-        
-    def _load_data(self, listing_id: int) -> pd.DataFrame:
-        """Load 1s data for a listing."""
-        query = """
-            SELECT 
-                timestamp_s, open_price, high_price, low_price, close_price, 
-                volume, buy_volume, sell_volume
-            FROM bybit_trade.candles_1s
-            WHERE listing_id = %s
-            ORDER BY timestamp_s ASC
-        """
-        df = pd.read_sql(query, self.conn, params=(listing_id,))
-        if not df.empty:
-            df['timestamp'] = pd.to_datetime(df['timestamp_s'], unit='s')
-            df.set_index('timestamp', inplace=True)
-            
-            # Calculate basic indicators
-            df['vwap'] = (df['volume'] * df['close_price']).cumsum() / df['volume'].cumsum()
-            df['cum_buy'] = df['buy_volume'].cumsum()
-            df['cum_sell'] = df['sell_volume'].cumsum()
-            df['delta_ratio'] = df['cum_buy'] / df['cum_sell']
-            
-        return df
-
-    def run_strategy(self, strategy_func: Callable, **kwargs):
-        """Run a strategy function on all listings."""
-        print(f"🔄 Running Strategy: {strategy_func.__name__}...")
-        self.results = []
-        
-        for _, row in self.listings.iterrows():
-            lid = row['id']
-            symbol = row['symbol']
-            
-            df = self._load_data(lid)
-            if df.empty or len(df) < 60:
-                continue
-                
-            trade = strategy_func(df, symbol, **kwargs)
-            if trade:
-                self.results.append(trade)
-                print(f"  ✓ Trade on {symbol}: {trade.pnl_pct:.2f}% ({trade.exit_reason})")
-        
-        self._print_summary()
-        
-    def _print_summary(self):
-        if not self.results:
-            print("No trades executed.")
-            return
-            
-        df = pd.DataFrame([t.__dict__ for t in self.results])
-        total_pnl = df['pnl_pct'].sum()
-        win_rate = (df['pnl_pct'] > 0).mean() * 100
-        
-        print("\n📊 BACKTEST RESULTS")
-        print("-" * 40)
-        print(f"Total Trades: {len(df)}")
-        print(f"Win Rate:     {win_rate:.1f}%")
-        print(f"Total PnL:    {total_pnl:.2f}%")
-        print(f"Avg PnL:      {df['pnl_pct'].mean():.2f}%")
-        print(f"Best Trade:   {df['pnl_pct'].max():.2f}% ({df.loc[df['pnl_pct'].idxmax(), 'symbol']})")
-        print(f"Worst Trade:  {df['pnl_pct'].min():.2f}% ({df.loc[df['pnl_pct'].idxmin(), 'symbol']})")
-        print("-" * 40)
+    # EMA
+    df['ema_short'] = ta.ema(df['close_price'], length=9)
+    df['ema_long'] = ta.ema(df['close_price'], length=21)
+    
+    # Volume Spikes
+    df['vol_ma'] = df['volume'].rolling(window=60).mean() # 1 min avg volume
+    df['vol_spike'] = df['volume'] / df['vol_ma']
+    
+    return df
 
 # --- STRATEGIES ---
 
-def strategy_opening_breakout(df: pd.DataFrame, symbol: str, wait_seconds=300, breakout_multiplier=1.01):
+def strategy_trend_momentum(df: pd.DataFrame, symbol: str, **kwargs):
+    """
+    Strategy 1: Momentum / Trend Following.
+    Buy when price breaks above 5-min High with Volume.
+    Hold with Trailing Stop.
+    Best for: SKR, ZKP (Big pumps).
+    """
+    trades = []
+    
+    # Parameters
+    lookback = kwargs.get('lookback', 300) # 5 mins
+    vol_thresh = kwargs.get('vol_thresh', 3.0)
+    trailing_stop_pct = kwargs.get('trailing_stop', 0.05) # 5% trailing
+    
+    # Skip initial lookback
+    if len(df) < lookback: return []
+    
+    # Rolling high
+    df['rolling_high'] = df['high_price'].rolling(window=lookback).max().shift(1)
+    
+    position = None
+    highest_price = 0
+    
+    for i in range(lookback, len(df)):
+        row = df.iloc[i]
+        
+        # ENTRY
+        if position is None:
+            # Breakout + Volume Spike
+            if row['close_price'] > row['rolling_high'] and row['vol_spike'] > vol_thresh:
+                position = {
+                    'entry_time': df.index[i],
+                    'entry_price': row['close_price'],
+                    'symbol': symbol,
+                    'type': 'Momentum'
+                }
+                highest_price = row['close_price']
+                
+        # EXIT (Trailing Stop)
+        elif position:
+            highest_price = max(highest_price, row['high_price'])
+            stop_price = highest_price * (1 - trailing_stop_pct)
+            
+            if row['low_price'] < stop_price:
+                # Stopped out
+                exit_price = stop_price
+                pnl = (exit_price - position['entry_price']) / position['entry_price'] * 100
+                trades.append(Trade(
+                    symbol=symbol,
+                    entry_time=position['entry_time'],
+                    entry_price=position['entry_price'],
+                    exit_time=df.index[i],
+                    exit_price=exit_price,
+                    pnl_pct=pnl,
+                    exit_reason="Trailing Stop",
+                    duration_s=(df.index[i] - position['entry_time']).total_seconds()
+                ))
+                position = None
+                
+    return trades
+
+def strategy_mean_reversion(df: pd.DataFrame, symbol: str, **kwargs):
+    """
+    Strategy 2: Mean Reversion / Scalping.
+    Buy when RSI < 30 and Price < Lower BB.
+    Sell when RSI > 70 or Price > Upper BB.
+    Best for: WET, ELSA (Choppy/Volatile).
+    """
+    trades = []
+    position = None
+    
+    for i in range(20, len(df)):
+        row = df.iloc[i]
+        
+        # Need indicators
+        if pd.isna(row['bb_lower']) or pd.isna(row['rsi']): continue
+        
+        # ENTRY: Oversold
+        if position is None:
+            if row['rsi'] < 30 and row['close_price'] < row['bb_lower']:
+                position = {
+                    'entry_time': df.index[i],
+                    'entry_price': row['close_price']
+                }
+                
+        # EXIT: Overbought or TP
+        elif position:
+            pnl_current = (row['close_price'] - position['entry_price']) / position['entry_price'] * 100
+            
+            # PnL Targets
+            if pnl_current > 5 or row['rsi'] > 70: # Take profit quickly
+                trades.append(Trade(
+                    symbol=symbol,
+                    entry_time=position['entry_time'],
+                    entry_price=position['entry_price'],
+                    exit_time=df.index[i],
+                    exit_price=row['close_price'],
+                    pnl_pct=pnl_current,
+                    exit_reason="Scalp Target",
+                    duration_s=(df.index[i] - position['entry_time']).total_seconds()
+                ))
+                position = None
+            elif pnl_current < -5: # Stop loss
+                trades.append(Trade(
+                    symbol=symbol,
+                    entry_time=position['entry_time'],
+                    entry_price=position['entry_price'],
+                    exit_time=df.index[i],
+                    exit_price=row['close_price'],
+                    pnl_pct=pnl_current,
+                    exit_reason="Stop Loss",
+                    duration_s=(df.index[i] - position['entry_time']).total_seconds()
+                ))
+                position = None
+                
+    return trades
+
+class Backtester:
+    # ... (previous init/load methods) ...
+
+    def run_all_strategies(self):
+        """Run multiple strategies comparison."""
+        strategies = [
+            (strategy_trend_momentum, {'lookback': 300, 'vol_thresh': 3.0, 'trailing_stop': 0.05}),
+            (strategy_trend_momentum, {'lookback': 60, 'vol_thresh': 2.0, 'trailing_stop': 0.03}), # Aggressive Trend
+            (strategy_mean_reversion, {}),
+        ]
+        
+        overall_report = []
+        
+        for strat_func, params in strategies:
+            strat_name = f"{strat_func.__name__}_{params.get('lookback', '')}"
+            print(f"\n🧪 Testing {strat_name}...")
+            
+            all_trades = []
+            
+            for _, row in self.listings.iterrows():
+                lid = row['id']
+                symbol = row['symbol']
+                
+                df = self._load_data(lid)
+                if df.empty or len(df) < 300: continue
+                
+                # Add indicators
+                df = add_indicators(df)
+                
+                # Run strategy
+                # Note: changed run_strategy return type to list of trades
+                trades = strat_func(df, symbol, **params)
+                all_trades.extend(trades)
+                
+            # Calcs
+            if not all_trades:
+                print("  No trades.")
+                continue
+                
+            df_res = pd.DataFrame([t.__dict__ for t in all_trades])
+            total_pnl = df_res['pnl_pct'].sum()
+            win_rate = (df_res['pnl_pct'] > 0).mean() * 100
+            
+            print(f"  Trades: {len(df_res)} | Win Rate: {win_rate:.1f}% | Total PnL: {total_pnl:.2f}%")
+            overall_report.append({
+                'strategy': strat_name,
+                'trades': len(df_res),
+                'win_rate': win_rate,
+                'total_pnl': total_pnl
+            })
+            
+        return overall_report
+
     """
     Wait 5 minutes. If price breaks the High of the first 5 mins -> Buy.
     Stop Loss: Low of first 5 mins.
@@ -171,8 +279,15 @@ def main():
         conn = get_db_connection()
         bt = Backtester(conn)
         
-        # Test Strategy 1: Opening Breakout (5 min wait)
-        bt.run_strategy(strategy_opening_breakout, wait_seconds=300)
+        # Run Comprehensive Backtest
+        print("🚀 Starting Super-Trader Strategy Comparison...")
+        reports = bt.run_all_strategies()
+        
+        print("\n🏆 FINAL LEADERBOARD")
+        print("Strategy              | Trades | Win Rate | Total PnL")
+        print("-" * 60)
+        for r in sorted(reports, key=lambda x: x['total_pnl'], reverse=True):
+            print(f"{r['strategy']:<21} | {r['trades']:<6} | {r['win_rate']:>7.1f}% | {r['total_pnl']:>8.2f}%")
         
     finally:
         if 'conn' in locals():
