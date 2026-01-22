@@ -3,3 +3,4 @@ psycopg
 python-dotenv
 pandas
 numpy
+sqlalchemy
