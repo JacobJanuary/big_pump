@@ -105,7 +105,7 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
     active_trade = None
     
     # Configuration
-    VOL_THRESHOLD = 4.0 # V9: Aggressive filtering (was 2.0)
+    VOL_THRESHOLD = 2.0 # Revert to Optimization Winner (V8)
     DELTA_BUY = 1.2
     DELTA_REENTRY = 1.5
     DELTA_PANIC = 0.6
