@@ -105,7 +105,7 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
     active_trade = None
     
     # Configuration
-    VOL_THRESHOLD = 2.0 # Optimized V8
+    VOL_THRESHOLD = 4.0 # V9: Aggressive filtering (was 2.0)
     DELTA_BUY = 1.2
     DELTA_REENTRY = 1.5
     DELTA_PANIC = 0.6
@@ -115,12 +115,17 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
     # State
     panic_counter = 0 # Count consecutive low delta candles
     cooldown_until = None
+    consecutive_losses = 0 # Circuit breaker state
     
     start_time = df.index[0]
     
     # Warmup
     for t, row in df.iloc[60:].iterrows():
         
+        # Circuit Breaker: Stop trading if 3 losses in a row
+        if consecutive_losses >= 3:
+            break # Stop processing this symbol entirely
+            
         # Cooldown check
         if cooldown_until and t < cooldown_until:
             continue
@@ -180,10 +185,14 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
                 remaining_pnl = (active_trade.exit_price - active_trade.entry_price) / active_trade.entry_price * 100 * active_trade.size_pct
                 active_trade.realized_pnl += remaining_pnl
                 
-                # Check outcome for cooldown
-                total_trade_pnl = active_trade.realized_pnl 
-                if total_trade_pnl < 0:
-                    cooldown_until = t + pd.Timedelta(minutes=15) # Pulse check
+                # Update Circuit Breaker (V9: Smart Reset)
+                # Only reset if we actually made decent profit (> 1.5%)
+                # This prevents +0.06% wins from keeping a zombie alive
+                if active_trade.realized_pnl > 1.5:
+                    consecutive_losses = 0 
+                else:
+                    consecutive_losses += 1
+                    cooldown_until = t + pd.Timedelta(minutes=15)
                 
                 active_trade.size_pct = 0.0 
                 trades.append(active_trade)
