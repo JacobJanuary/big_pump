@@ -183,17 +183,164 @@ def generate_report():
     # The original function expects to load all signals itself, so we cannot directly reuse it.
     # Instead, we replicate the final sections here.
 
-    # --- Capital simulation and statistics (same as original) ---
-    # This part is lengthy; you can copy the logic from financial_report_10x.py if needed.
-    # For now, we will just save the collected trades to JSON.
-    output_data = {
-        'filtered_signal_ids': filtered_ids,
-        'trades': all_trades,
-        'signals_by_day': dict(signals_by_day)
-    }
+    # --- Capital Simulation & Reporting ---
+    # Adapted from financial_report_10x.py
+    
+    print("\n" + "=" * 100)
+    print("💰 СИМУЛЯЦИЯ КАПИТАЛА")
+    print("=" * 100)
+    
+    balance = 0
+    min_balance = 0  # Max drawdown (required capital)
+    POSITION_SIZE = 100 # From original script default
+    
+    daily_stats = []
+    current_date = None
+    day_trades = []
+    
+    # Sort trades by exit time
+    all_trades.sort(key=lambda t: t['exit_ts'])
+    
+    for trade in all_trades:
+        # Exit date
+        trade_date = date.fromtimestamp(trade['exit_ts'])
+        
+        # New Day?
+        if current_date != trade_date:
+            if current_date is not None:
+                # Save previous day stats
+                day_profit = sum(t['pnl_usd'] for t in day_trades if t['pnl_usd'] > 0)
+                day_loss = sum(t['pnl_usd'] for t in day_trades if t['pnl_usd'] < 0)
+                day_net = day_profit + day_loss
+                unique_signals = len(set(t['signal_id'] for t in day_trades))
+                
+                daily_stats.append({
+                    'date': current_date,
+                    'signals': unique_signals,
+                    'trades': len(day_trades),
+                    'profit': day_profit,
+                    'loss': day_loss,
+                    'net': day_net,
+                    'balance': balance
+                })
+            
+            current_date = trade_date
+            day_trades = []
+        
+        # Simulation
+        balance -= POSITION_SIZE
+        min_balance = min(min_balance, balance)
+        
+        balance += POSITION_SIZE + trade['pnl_usd']
+        
+        day_trades.append(trade)
+    
+    # Last Day
+    if day_trades:
+        day_profit = sum(t['pnl_usd'] for t in day_trades if t['pnl_usd'] > 0)
+        day_loss = sum(t['pnl_usd'] for t in day_trades if t['pnl_usd'] < 0)
+        day_net = day_profit + day_loss
+        unique_signals = len(set(t['signal_id'] for t in day_trades))
+        
+        daily_stats.append({
+            'date': current_date,
+            'signals': unique_signals,
+            'trades': len(day_trades),
+            'profit': day_profit,
+            'loss': day_loss,
+            'net': day_net,
+            'balance': balance
+        })
+    
+    # Print Daily Report
+    print("\n📅 ЕЖЕДНЕВНЫЙ ОТЧЁТ")
+    print("-" * 100)
+    print(f"{'Дата':<12} {'Сигналов':<10} {'Сделок':<8} {'Профит $':<12} {'Убыток $':<12} {'Нетто $':<12} {'Баланс $'}")
+    print("-" * 100)
+    
+    for day in daily_stats:
+        print(f"{str(day['date']):<12} {day['signals']:<10} {day['trades']:<8} "
+              f"{day['profit']:>+10.2f}  {day['loss']:>+10.2f}  {day['net']:>+10.2f}  {day['balance']:>+10.2f}")
+    
+    # Summary
+    total_profit = sum(d['profit'] for d in daily_stats)
+    total_loss = sum(d['loss'] for d in daily_stats)
+    total_net = total_profit + total_loss
+    
+    print("\n" + "=" * 100)
+    print("📈 ИТОГИ")
+    print("=" * 100)
+    print(f"   Всего сделок: {len(all_trades)}")
+    print(f"   Прибыльных: {sum(1 for t in all_trades if t['pnl_usd'] > 0)}")
+    print(f"   Убыточных: {sum(1 for t in all_trades if t['pnl_usd'] <= 0)}")
+    print(f"")
+    print(f"   💵 Общий профит: ${total_profit:,.2f}")
+    print(f"   💸 Общий убыток: ${total_loss:,.2f}")
+    print(f"   💰 Чистая прибыль: ${total_net:,.2f}")
+    print(f"")
+    print(f"   📊 Требуемый капитал (max просадка): ${abs(min_balance):,.2f}")
+    print(f"   📈 Финальный баланс: ${balance:,.2f}")
+    print(f"   🎯 ROI: {(balance / abs(min_balance) * 100) if min_balance != 0 else 0:.1f}%")
+    
+    # Stats
+    print("\n" + "-" * 100)
+    print("📊 СТАТИСТИКА СДЕЛОК")
+    print("-" * 100)
+    
+    winning_trades = [t for t in all_trades if t['pnl_usd'] > 0]
+    losing_trades = [t for t in all_trades if t['pnl_usd'] <= 0]
+    
+    if winning_trades:
+        avg_win = statistics.mean([t['pnl_usd'] for t in winning_trades])
+        max_win = max([t['pnl_usd'] for t in winning_trades])
+        print(f"   Средний профит: ${avg_win:.2f}")
+        print(f"   Макс профит: ${max_win:.2f}")
+    
+    if losing_trades:
+        avg_loss = statistics.mean([t['pnl_usd'] for t in losing_trades])
+        max_loss = min([t['pnl_usd'] for t in losing_trades])
+        print(f"   Средний убыток: ${avg_loss:.2f}")
+        print(f"   Макс убыток: ${max_loss:.2f}")
+    
+    # Exit Reasons
+    print("\n   По причинам выхода:")
+    exit_reasons = defaultdict(list)
+    for t in all_trades:
+        exit_reasons[t['exit_reason']].append(t['pnl_usd'])
+    
+    for reason, pnls in exit_reasons.items():
+        avg_pnl = statistics.mean(pnls)
+        count = len(pnls)
+        total = sum(pnls)
+        print(f"      {reason}: {count} сделок, среднее ${avg_pnl:.2f}, всего ${total:.2f}")
+
+    # JSON Output
     REPORT_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     with open(REPORT_OUTPUT, 'w') as f:
-        json.dump(output_data, f, indent=2)
+        json.dump({
+            'summary': {
+                'total_trades': len(all_trades),
+                'total_profit': total_profit,
+                'total_loss': total_loss,
+                'net_profit': total_net,
+                'required_capital': abs(min_balance),
+                'final_balance': balance,
+                'roi_pct': (balance / abs(min_balance) * 100) if min_balance != 0 else 0
+            },
+            'daily_stats': [
+                {
+                    'date': str(d['date']),
+                    'signals': d['signals'],
+                    'trades': d['trades'],
+                    'profit': d['profit'],
+                    'loss': d['loss'],
+                    'net': d['net'],
+                    'balance': d['balance']
+                }
+                for d in daily_stats
+            ],
+            'trades': all_trades
+        }, f, indent=2)
     print(f"\n📁 Report saved to {REPORT_OUTPUT}")
 
 if __name__ == "__main__":
