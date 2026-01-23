@@ -53,7 +53,7 @@ SL_BY_LEVERAGE = {
 ALL_SIGNALS_DATA = {}
 
 def load_all_data():
-    """Загрузить все данные."""
+    """Загрузить все данные и хранить как кортежи для экономии памяти."""
     global ALL_SIGNALS_DATA
     
     print("📥 Загрузка данных...")
@@ -69,6 +69,7 @@ def load_all_data():
         
         for i, (signal_id, pair_symbol) in enumerate(signals):
             with conn.cursor() as cur:
+                # 0:second_ts, 1:close_price, 2:delta, 3:buy_volume, 4:large_buy, 5:large_sell
                 cur.execute("""
                     SELECT second_ts, close_price, delta, buy_volume,
                            large_buy_count, large_sell_count
@@ -78,19 +79,27 @@ def load_all_data():
                 """, (signal_id,))
                 rows = cur.fetchall()
             
+            # Store raw rows (tuples) directly to save memory
+            # Convert decimal/etc to float if needed, but psycopg might already return correct types 
+            # (or we cast on usage to be safe/lazy)
+            # Casting upfront saves checking later and is slightly more memory than keeping raw object references 
+            # if they are distinct, but float is standard.
+            
+            # Let's compress to a list of tuples with floats
+            optimized_bars = []
+            for r in rows:
+                optimized_bars.append((
+                   r[0],           # 0: ts
+                   float(r[1]),    # 1: price
+                   float(r[2]),    # 2: delta
+                   float(r[3]),    # 3: buy_vol
+                   r[4],           # 4: large_buy
+                   r[5]            # 5: large_sell
+                ))
+
             ALL_SIGNALS_DATA[signal_id] = {
                 'pair_symbol': pair_symbol,
-                'bars': [
-                    {
-                        'ts': r[0],
-                        'price': float(r[1]),
-                        'delta': float(r[2]),
-                        'buy_vol': float(r[3]),
-                        'large_buy': r[4],
-                        'large_sell': r[5]
-                    }
-                    for r in rows
-                ]
+                'bars': optimized_bars
             }
             
             if (i + 1) % 30 == 0:
@@ -98,34 +107,34 @@ def load_all_data():
     
     print(f"✅ Загружено {len(ALL_SIGNALS_DATA)} сигналов")
 
-def get_rolling_delta(bars: List[dict], idx: int, window: int) -> float:
+def get_rolling_delta(bars: List[tuple], idx: int, window: int) -> float:
     """Вычислить rolling delta."""
     if idx < 1 or window <= 0:
         return 0
     
-    current_ts = bars[idx]['ts']
+    current_ts = bars[idx][0] # ts
     window_start = current_ts - window
     
-    delta_sum = 0
+    delta_sum = 0.0
     for j in range(idx, -1, -1):
-        if bars[j]['ts'] < window_start:
+        if bars[j][0] < window_start:
             break
-        delta_sum += bars[j]['delta']
+        delta_sum += bars[j][2] # delta
     
     return delta_sum
 
-def get_avg_delta(bars: List[dict], idx: int, lookback: int = 100) -> float:
+def get_avg_delta(bars: List[tuple], idx: int, lookback: int = 100) -> float:
     """Вычислить среднюю абсолютную delta."""
     if idx < lookback:
         lookback = idx
     if lookback < 1:
         return 0
     
-    deltas = [abs(bars[i]['delta']) for i in range(idx - lookback, idx)]
+    deltas = [abs(bars[i][2]) for i in range(idx - lookback, idx)]
     return statistics.mean(deltas) if deltas else 0
 
 def run_strategy(
-    bars: List[dict],
+    bars: List[tuple],
     sl_pct: float,
     delta_window: int,
     threshold_mult: float,
@@ -142,16 +151,20 @@ def run_strategy(
     
     trades = []
     in_position = True
-    entry_price = bars[0]['price']
+    entry_price = bars[0][1] # price
     max_price = entry_price
     last_exit_ts = 0
     
     for idx, bar in enumerate(bars):
-        price = bar['price']
-        ts = bar['ts']
+        ts = bar[0]
+        price = bar[1]
         
         if in_position:
-            max_price = max(max_price, price)
+            # Optimization: fast path check? No, need processing
+            if price > max_price:
+                max_price = price
+            
+            # Drawdown logic
             pnl_from_entry = (price - entry_price) / entry_price * 100
             drawdown_from_max = (max_price - price) / max_price * 100
             
@@ -199,7 +212,8 @@ def run_strategy(
                 drop_pct = (max_price - price) / max_price * 100
                 
                 if drop_pct >= BASE_REENTRY_DROP:
-                    if bar['delta'] > 0 and bar['large_buy'] > bar['large_sell']:
+                    # bar[2] = delta, bar[4] = large_buy, bar[5] = large_sell
+                    if bar[2] > 0 and bar[4] > bar[5]:
                         in_position = True
                         entry_price = price
                         max_price = price
@@ -208,7 +222,7 @@ def run_strategy(
     
     # Закрытие
     if in_position and bars:
-        final_price = bars[-1]['price']
+        final_price = bars[-1][1]
         pnl = (final_price - entry_price) / entry_price * 100
         leveraged_pnl = pnl * leverage - (COMMISSION_PCT * 2 * leverage)
         trades.append({'pnl': leveraged_pnl, 'reason': 'TIMEOUT'})
