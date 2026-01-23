@@ -102,18 +102,26 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
     active_trade = None
     
     # Configuration
-    VOL_THRESHOLD = 2.0
+    VOL_THRESHOLD = 3.0 # Increased from 2.0 to filter noise
     DELTA_BUY = 1.2
     DELTA_REENTRY = 1.5
     DELTA_PANIC = 0.6
     ATR_MULT = 3.0
     TP_PCT = 0.30
     
+    # State
+    panic_counter = 0 # Count consecutive low delta candles
+    cooldown_until = None
+    
     start_time = df.index[0]
     
     # Warmup
     for t, row in df.iloc[10:].iterrows():
         
+        # Cooldown check
+        if cooldown_until and t < cooldown_until:
+            continue
+            
         # 1. Manage Active Trade
         if active_trade:
             # Update High
@@ -126,36 +134,34 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
             exit_reason = ""
             current_atr = row['atr_sma'] if not np.isnan(row['atr_sma']) else (row['high_price'] - row['low_price'])
             
-            # A. Panic Sell (Invalidation)
-            if row['close_price'] < active_trade.entry_price and row['delta_ratio'] < DELTA_PANIC:
+            # A. Panic Sell (Invalidation) - CONFIRMED
+            # Only panic if Delta < 0.6 for 3 consecutive candles while Price < Entry
+            if row['delta_ratio'] < DELTA_PANIC:
+                panic_counter += 1
+            else:
+                panic_counter = 0
+                
+            if row['close_price'] < active_trade.entry_price and panic_counter >= 3:
                 should_exit = True
-                exit_reason = "Panic: Delta < 0.6"
+                exit_reason = "Panic: Delta < 0.6 (3x)"
                 
             # B. Partial Take Profit
             elif not active_trade.tp_hit and current_pnl_pct >= TP_PCT:
                 # Sell 50%
                 active_trade.tp_hit = True
-                # Realized PnL from this chunk: 0.5 * 30% = 15% (normalized points)
-                # Formula: realized += current_gain_pct * size_sold
                 active_trade.realized_pnl += current_pnl_pct * 100 * 0.5
                 active_trade.size_pct = 0.5
-                # Don't exit fully, just log it (in real bot we'd send order)
-                # But for backtest stats, we keep 'active_trade' alive
             
             # C. Dynamic ATR Trailing Stop
-            # Stop Price = High - 3*ATR
             stop_price = active_trade.highest_price - (current_atr * ATR_MULT)
             
             if row['low_price'] < stop_price:
-                # We hit the stop
                 should_exit = True
                 exit_reason = f"ATR Stop (Hit {stop_price:.4f})"
-                # If we gap down, we exit at close (proxy) or stop price
-                exit_price = min(row['close_price'], stop_price) # Conservative
+                exit_price = min(row['close_price'], stop_price) 
             
             if should_exit:
                 active_trade.exit_time = t
-                # If exit_price not set above
                 if 'exit_price' not in locals(): exit_price = row['close_price']
                 
                 active_trade.exit_price = exit_price
@@ -164,10 +170,16 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
                 # Close remaining position
                 remaining_pnl = (active_trade.exit_price - active_trade.entry_price) / active_trade.entry_price * 100 * active_trade.size_pct
                 active_trade.realized_pnl += remaining_pnl
-                active_trade.size_pct = 0.0 # Closed
                 
+                # Check outcome for cooldown
+                total_trade_pnl = active_trade.realized_pnl 
+                if total_trade_pnl < 0:
+                    cooldown_until = t + pd.Timedelta(minutes=15) # Pulse check
+                
+                active_trade.size_pct = 0.0 
                 trades.append(active_trade)
                 active_trade = None
+                panic_counter = 0 # Reset
                 continue
         
         # 2. Entry Logic (If no active trade)
@@ -185,7 +197,6 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
             last_exit_price = trades[-1].exit_price if trades else 999999
             
             # A. Fresh Entry (Standard)
-            # Maybe restrict time to 60m+? AI said "Re-Accumulation Phase (60-240m)"
             time_m = (t - start_time).total_seconds() / 60
             if 60 <= time_m <= 300:
                 if vol_ok and delta_ok and px_vwap_ok:
@@ -193,9 +204,9 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
                     entry_reason = "Standard Entry"
             
             # B. Re-Entry (Pyramid / Recovery)
-            # Logic: Price Breaks Last Exit && Strong Delta
-            elif trades and row['close_price'] > last_exit_price:
-                 if row['delta_ratio'] > DELTA_REENTRY:
+            # Re-Entry must clean the level clearly (+1%)
+            elif trades and row['close_price'] > (last_exit_price * 1.01):
+                 if row['delta_ratio'] > DELTA_REENTRY and vol_ok: # Require volume for re-entry too
                      is_entry = True
                      entry_reason = "Re-Entry Breakout"
             
