@@ -95,6 +95,13 @@ def load_data_1m(conn, listing_id: int) -> pd.DataFrame:
     # Delta Trend (60m SMA)
     df_1m['delta_sma_60'] = df_1m['delta_ratio'].rolling(60).mean()
     
+    # RSI (14)
+    delta = df_1m['close_price'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    rs = gain / loss
+    df_1m['rsi'] = 100 - (100 / (1 + rs))
+    
     # Listing Open
     df_1m['listing_open'] = df_1m.iloc[0]['open_price']
     
@@ -105,12 +112,18 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
     active_trade = None
     
     # Configuration
-    VOL_THRESHOLD = 2.0 # Revert to Optimization Winner (V8)
+    VOL_THRESHOLD = 2.0 
     DELTA_BUY = 1.2
     DELTA_REENTRY = 1.5
     DELTA_PANIC = 0.6
-    ATR_MULT = 3.5 # Looser stop
-    TP_PCT = 0.20 # Balanced Take Profit
+    ATR_MULT = 3.5 
+    TP_PCT = 0.20 
+    
+    # V11 - Smart Risk Management
+    HARD_STOP_PCT = 0.06      # Max loss 6% (No questions asked)
+    TRAIL_TRIGGER_PCT = 0.06  # If profit > 6%, move stop to Breakeven
+    MAX_CANDLE_PCT = 0.08     # Don't buy if candle > 8% (FOMO protection)
+    MAX_RSI = 82              # Don't buy extreme overbought
     
     # State
     panic_counter = 0 # Count consecutive low delta candles
@@ -142,37 +155,46 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
             exit_reason = ""
             current_atr = row['atr_sma'] if not np.isnan(row['atr_sma']) else (row['high_price'] - row['low_price'])
             
-            # A. Panic Sell (Invalidation) - CONFIRMED
-            # Only panic if Delta < 0.6 for 3 consecutive candles while Price < Entry
-            if row['delta_ratio'] < DELTA_PANIC:
+            # A. Hard Stop (Safety Net)
+            if row['low_price'] < active_trade.entry_price * (1 - HARD_STOP_PCT):
+                should_exit = True
+                exit_reason = f"Hard Stop (-{HARD_STOP_PCT*100}%)"
+                exit_price = active_trade.entry_price * (1 - HARD_STOP_PCT)
+
+            # B. Panic Sell (Invalidation)
+            elif row['delta_ratio'] < DELTA_PANIC:
                 panic_counter += 1
+                if row['close_price'] < active_trade.entry_price and panic_counter >= 3:
+                    should_exit = True
+                    exit_reason = "Panic: Delta < 0.6 (3x)"
             else:
                 panic_counter = 0
                 
-            if row['close_price'] < active_trade.entry_price and panic_counter >= 3:
-                should_exit = True
-                exit_reason = "Panic: Delta < 0.6 (3x)"
-                
-            # B. Partial Take Profit
-            elif not active_trade.tp_hit and current_pnl_pct >= TP_PCT:
+            # C. Partial Take Profit
+            if not should_exit and not active_trade.tp_hit and current_pnl_pct >= TP_PCT:
                 # Sell 50%
                 active_trade.tp_hit = True
                 active_trade.realized_pnl += current_pnl_pct * 100 * 0.5
                 active_trade.size_pct = 0.5
             
-            # C. Dynamic Stop (ATR or Breakeven)
-            if active_trade.tp_hit:
-                # BREAKEVEN STOP: If we hit TP, move stop to Entry to secure win
-                stop_price = max(active_trade.entry_price * 1.005, active_trade.highest_price - (current_atr * ATR_MULT))
-            else:
-                # Standard ATR Stop
-                stop_price = active_trade.highest_price - (current_atr * ATR_MULT)
-            
-            if row['low_price'] < stop_price:
-                # We hit the stop
-                should_exit = True
-                exit_reason = f"Stop Hit ({stop_price:.4f})" if active_trade.tp_hit else f"ATR Stop ({stop_price:.4f})"
-                exit_price = min(row['close_price'], stop_price) 
+            # D. Dynamic Stop (ATR or Smart Trail)
+            if not should_exit:
+                if active_trade.tp_hit:
+                    # If TP hit, Breakeven or Trail
+                    stop_price = max(active_trade.entry_price * 1.005, active_trade.highest_price - (current_atr * ATR_MULT))
+                elif current_pnl_pct > TRAIL_TRIGGER_PCT:
+                    # V11: Early Trail - Secure the bag
+                    # If > 6% profit, Stop at Entry + 1%
+                    base_stop = active_trade.entry_price * 1.01
+                    stop_price = max(base_stop, active_trade.highest_price - (current_atr * ATR_MULT))
+                else:
+                    # Standard ATR Stop
+                    stop_price = active_trade.highest_price - (current_atr * ATR_MULT)
+                
+                if row['low_price'] < stop_price:
+                    should_exit = True
+                    exit_reason = f"Stop Hit ({stop_price:.4f})" if active_trade.tp_hit else f"ATR Stop ({stop_price:.4f})"
+                    exit_price = min(row['close_price'], stop_price) 
             
             if should_exit:
                 active_trade.exit_time = t
@@ -219,20 +241,25 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
             # Prevents catching knives on dead coins
             drawdown_ok = row['close_price'] > (0.8 * row['listing_open'])
             
+            # V11 Entry Filters
+            candle_pct = (row['close_price'] - row['open_price']) / row['open_price']
+            candle_size_ok = candle_pct < MAX_CANDLE_PCT
+            rsi_ok = row['rsi'] < MAX_RSI
+            
             # Last closed trade for Re-Entry logic
             last_exit_price = trades[-1].exit_price if trades else 999999
             
             # A. Fresh Entry (Standard)
             time_m = (t - start_time).total_seconds() / 60
             if 60 <= time_m <= 300:
-                if vol_ok and delta_ok and px_vwap_ok and drawdown_ok and delta_trend_ok:
+                if vol_ok and delta_ok and px_vwap_ok and drawdown_ok and delta_trend_ok and candle_size_ok and rsi_ok:
                     is_entry = True
                     entry_reason = "Standard Entry"
             
             # B. Re-Entry (Pyramid / Recovery)
             # Re-Entry must clean the level clearly (+1%)
             elif trades and row['close_price'] > (last_exit_price * 1.01):
-                 if row['delta_ratio'] > DELTA_REENTRY and vol_ok and delta_trend_ok: # Require volume for re-entry too
+                 if row['delta_ratio'] > DELTA_REENTRY and vol_ok and delta_trend_ok and candle_size_ok: # Require volume for re-entry too
                      is_entry = True
                      entry_reason = "Re-Entry Breakout"
             
