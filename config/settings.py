@@ -16,9 +16,9 @@ load_dotenv(BASE_DIR / '.env')
 DATABASE = {
     'dbname': os.getenv('DB_NAME', 'fox_crypto_new'),
     'user': os.getenv('DB_USER', 'elcrypto'),
-    'password': os.getenv('DB_PASSWORD', 'LohNeMamont@!21'),
+    'password': os.getenv('DB_PASSWORD') or None,  # None allows .pgpass usage
     'host': os.getenv('DB_HOST', 'localhost'),
-    'port': os.getenv('DB_PORT', '5435')
+    'port': os.getenv('DB_PORT', '5432')
 }
 
 # Individual DB parameters (for asyncpg compatibility)

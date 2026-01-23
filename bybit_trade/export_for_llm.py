@@ -58,8 +58,9 @@ def load_and_resample(conn, listing_id):
     df['timestamp'] = pd.to_datetime(df['timestamp_s'], unit='s')
     df.set_index('timestamp', inplace=True)
     
-    # Resample to 5 min
-    df_5m = df.resample('5min').agg({
+    # Resample to 1 min (or keep as is since source is 1s, but we aggregate to reduce noise slightly if needed, 
+    # but 1s to 1min is standard).
+    df_1m = df.resample('1min').agg({
         'open_price': 'first',
         'high_price': 'max',
         'low_price': 'min',
@@ -70,10 +71,9 @@ def load_and_resample(conn, listing_id):
     })
     
     # Calculate Delta Ratio per candle
-    # avoid div by zero
-    df_5m['delta_ratio'] = df_5m['buy_volume'] / df_5m['sell_volume'].replace(0, 1)
+    df_1m['delta_ratio'] = df_1m['buy_volume'] / df_1m['sell_volume'].replace(0, 1)
     
-    return df_5m
+    return df_1m
 
 def main():
     conn = get_db_connection()
@@ -86,7 +86,7 @@ def main():
         )
         
         output_lines.append("DATASET: Bybit Spot Listings (First 24h)")
-        output_lines.append("INTERVAL: 5 Minutes")
+        output_lines.append("INTERVAL: 1 Minute")
         output_lines.append("COLUMNS: TimeOffset(m), Open, High, Low, Close, Volume, DeltaRatio")
         output_lines.append("-" * 50)
         
