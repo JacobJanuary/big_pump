@@ -1,5 +1,6 @@
 """
 Оптимизация COMBINED_A_B с учётом кредитного плеча.
+MEMORY SAFE VERSION: Process signals sequentially/parallel, keeping memory low.
 
 Параметры для оптимизации:
 - delta_window
@@ -8,13 +9,15 @@
 - leverage (1x, 5x, 10x)
 """
 import sys
+import os
 from pathlib import Path
 from datetime import datetime
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from multiprocessing import Pool
 import itertools
 import json
 import statistics
+import time
 
 current_dir = Path(__file__).resolve().parent
 sys.path.append(str(current_dir))
@@ -25,7 +28,7 @@ from pump_analysis_lib import get_db_connection
 
 COMMISSION_PCT = 0.04
 
-# Фиксированные параметры (лучшие из предыдущей оптимизации)
+# Фиксированные параметры
 BASE_ACTIVATION = 10.0
 BASE_CALLBACK = 4.0
 BASE_REENTRY_DROP = 5.0
@@ -36,90 +39,43 @@ PARAM_GRID = {
     'delta_window': [10, 20, 30, 60, 120],
     'threshold_mult': [1.0, 1.5, 2.0, 2.5, 3.0],
     'leverage': [1, 5, 10],
-    # SL зависит от leverage:
-    # 1x: можем использовать любой SL
-    # 5x: max SL = 18% (20% = ликвидация с буфером)
-    # 10x: max SL = 8% (10% = ликвидация с буфером)
 }
 
 # SL варианты для каждого leverage
 SL_BY_LEVERAGE = {
     1: [5, 7, 10, 15, 20],
-    5: [3, 4, 5, 7, 10, 15],  # умножать на leverage при расчёте
-    10: [2, 3, 4, 5, 7, 8],    # max 8% для 10x
+    5: [3, 4, 5, 7, 10, 15],
+    10: [2, 3, 4, 5, 7, 8],
 }
 
-# ============== ГЛОБАЛЬНЫЕ ДАННЫЕ ==============
-ALL_SIGNALS_DATA = {}
-
-def load_all_data():
-    """Загрузить все данные и хранить как кортежи для экономии памяти."""
-    global ALL_SIGNALS_DATA
-    
-    print("📥 Загрузка данных...")
-    
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT DISTINCT signal_analysis_id, pair_symbol
-                FROM web.agg_trades_1s
-                ORDER BY signal_analysis_id
-            """)
-            signals = cur.fetchall()
-        
-        for i, (signal_id, pair_symbol) in enumerate(signals):
-            with conn.cursor() as cur:
-                # 0:second_ts, 1:close_price, 2:delta, 3:buy_volume, 4:large_buy, 5:large_sell
-                cur.execute("""
-                    SELECT second_ts, close_price, delta, buy_volume,
-                           large_buy_count, large_sell_count
-                    FROM web.agg_trades_1s
-                    WHERE signal_analysis_id = %s
-                    ORDER BY second_ts
-                """, (signal_id,))
-                rows = cur.fetchall()
-            
-            # Store raw rows (tuples) directly to save memory
-            # Convert decimal/etc to float if needed, but psycopg might already return correct types 
-            # (or we cast on usage to be safe/lazy)
-            # Casting upfront saves checking later and is slightly more memory than keeping raw object references 
-            # if they are distinct, but float is standard.
-            
-            # Let's compress to a list of tuples with floats
-            optimized_bars = []
-            for r in rows:
-                optimized_bars.append((
-                   r[0],           # 0: ts
-                   float(r[1]),    # 1: price
-                   float(r[2]),    # 2: delta
-                   float(r[3]),    # 3: buy_vol
-                   r[4],           # 4: large_buy
-                   r[5]            # 5: large_sell
-                ))
-
-            ALL_SIGNALS_DATA[signal_id] = {
-                'pair_symbol': pair_symbol,
-                'bars': optimized_bars
-            }
-            
-            if (i + 1) % 30 == 0:
-                print(f"   {i + 1}/{len(signals)}", flush=True)
-    
-    print(f"✅ Загружено {len(ALL_SIGNALS_DATA)} сигналов")
+# Generate all parameter combinations once with IDs
+PARAM_COMBINATIONS = {}
+combo_id = 0
+for leverage in PARAM_GRID['leverage']:
+    for sl in SL_BY_LEVERAGE[leverage]:
+        for delta_window in PARAM_GRID['delta_window']:
+            for threshold in PARAM_GRID['threshold_mult']:
+                PARAM_COMBINATIONS[combo_id] = {
+                    'leverage': leverage,
+                    'sl_pct': sl,
+                    'delta_window': delta_window,
+                    'threshold_mult': threshold
+                }
+                combo_id += 1
 
 def get_rolling_delta(bars: List[tuple], idx: int, window: int) -> float:
     """Вычислить rolling delta."""
     if idx < 1 or window <= 0:
-        return 0
+        return 0.0
     
-    current_ts = bars[idx][0] # ts
+    current_ts = bars[idx][0]
     window_start = current_ts - window
     
     delta_sum = 0.0
     for j in range(idx, -1, -1):
         if bars[j][0] < window_start:
             break
-        delta_sum += bars[j][2] # delta
+        delta_sum += bars[j][2]
     
     return delta_sum
 
@@ -128,10 +84,17 @@ def get_avg_delta(bars: List[tuple], idx: int, lookback: int = 100) -> float:
     if idx < lookback:
         lookback = idx
     if lookback < 1:
-        return 0
+        return 0.0
     
-    deltas = [abs(bars[i][2]) for i in range(idx - lookback, idx)]
-    return statistics.mean(deltas) if deltas else 0
+    total_abs_delta = 0.0
+    count = 0
+    start = idx - lookback
+    
+    for i in range(start, idx):
+        total_abs_delta += abs(bars[i][2])
+        count += 1
+        
+    return total_abs_delta / count if count > 0 else 0.0
 
 def run_strategy(
     bars: List[tuple],
@@ -139,235 +102,206 @@ def run_strategy(
     delta_window: int,
     threshold_mult: float,
     leverage: int
-) -> Tuple[float, int, int]:
+) -> float:
     """
-    Запустить COMBINED_A_B стратегию.
-    
-    Returns:
-        (total_pnl_with_leverage, wins, losses)
+    Запустить стратегию на одном наборе свечей.
+    Returns: PnL
     """
-    if not bars or len(bars) < 100:
-        return 0.0, 0, 0
+    if not bars:
+        return 0.0
     
-    trades = []
-    in_position = True
-    entry_price = bars[0][1] # price
+    entry_price = bars[0][1]
     max_price = entry_price
     last_exit_ts = 0
+    in_position = True
+    total_pnl = 0.0
     
+    comm_cost = COMMISSION_PCT * 2 * leverage
+
     for idx, bar in enumerate(bars):
         ts = bar[0]
         price = bar[1]
         
         if in_position:
-            # Optimization: fast path check? No, need processing
             if price > max_price:
                 max_price = price
             
-            # Drawdown logic
             pnl_from_entry = (price - entry_price) / entry_price * 100
             drawdown_from_max = (max_price - price) / max_price * 100
             
-            # SL (без leverage - это % движения цены)
+            # SL
             if pnl_from_entry <= -sl_pct:
-                # PnL с учётом leverage
-                leveraged_pnl = pnl_from_entry * leverage - (COMMISSION_PCT * 2 * leverage)
-                trades.append({'pnl': leveraged_pnl, 'reason': 'SL'})
+                total_pnl += (pnl_from_entry * leverage - comm_cost)
                 in_position = False
                 last_exit_ts = ts
                 continue
             
             # Trailing
-            trailing_triggered = (pnl_from_entry >= BASE_ACTIVATION and 
-                                  drawdown_from_max >= BASE_CALLBACK)
-            
-            if trailing_triggered:
-                should_exit = True
-                
+            if (pnl_from_entry >= BASE_ACTIVATION and drawdown_from_max >= BASE_CALLBACK):
                 rolling_delta = get_rolling_delta(bars, idx, delta_window)
                 avg_delta = get_avg_delta(bars, idx)
-                
-                # Фильтр A: не выходим при сильном momentum
                 threshold = avg_delta * threshold_mult
-                if rolling_delta > threshold:
-                    should_exit = False
                 
-                # Фильтр B: требуем negative delta
-                if should_exit and rolling_delta >= 0:
-                    should_exit = False
-                
-                if should_exit:
-                    leveraged_pnl = pnl_from_entry * leverage - (COMMISSION_PCT * 2 * leverage)
-                    trades.append({'pnl': leveraged_pnl, 'reason': 'TRAIL'})
+                # Filter A (Momentum) + Filter B (Negative Delta)
+                if not (rolling_delta > threshold) and not (rolling_delta >= 0):
+                    total_pnl += (pnl_from_entry * leverage - comm_cost)
                     in_position = False
                     last_exit_ts = ts
-                    max_price = price
+                    max_price = price 
         
         else:
-            # Перезаход
-            if ts - last_exit_ts < BASE_COOLDOWN:
-                continue
-            
-            if price < max_price:
-                drop_pct = (max_price - price) / max_price * 100
-                
-                if drop_pct >= BASE_REENTRY_DROP:
-                    # bar[2] = delta, bar[4] = large_buy, bar[5] = large_sell
-                    if bar[2] > 0 and bar[4] > bar[5]:
-                        in_position = True
-                        entry_price = price
-                        max_price = price
-            else:
-                max_price = price
+            # Reentry
+            if ts - last_exit_ts >= BASE_COOLDOWN:
+                if price < max_price:
+                    drop_pct = (max_price - price) / max_price * 100
+                    if drop_pct >= BASE_REENTRY_DROP:
+                        if bar[2] > 0 and bar[4] > bar[5]:
+                            in_position = True
+                            entry_price = price
+                            max_price = price
+                else:
+                    max_price = price 
     
-    # Закрытие
-    if in_position and bars:
+    # Close at end
+    if in_position:
         final_price = bars[-1][1]
         pnl = (final_price - entry_price) / entry_price * 100
-        leveraged_pnl = pnl * leverage - (COMMISSION_PCT * 2 * leverage)
-        trades.append({'pnl': leveraged_pnl, 'reason': 'TIMEOUT'})
-    
-    total_pnl = sum(t['pnl'] for t in trades)
-    wins = sum(1 for t in trades if t['pnl'] > 0)
-    losses = sum(1 for t in trades if t['pnl'] <= 0)
-    
-    return total_pnl, wins, losses
+        total_pnl += (pnl * leverage - comm_cost)
+        
+    return total_pnl
 
-def evaluate_params(params: dict) -> dict:
-    """Оценить параметры."""
-    total_pnl = 0
-    total_wins = 0
-    total_losses = 0
+def process_signal_all_params(signal_id):
+    """
+    Worker Function:
+    1. Load data for ONE signal
+    2. Run ALL parameter combinations
+    3. Return dict { param_id: pnl }
+    """
+    bars = []
+    # Retry logic for DB connection
+    for attempt in range(3):
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT second_ts, close_price, delta, large_buy_count, large_sell_count
+                        FROM web.agg_trades_1s
+                        WHERE signal_analysis_id = %s
+                        ORDER BY second_ts
+                    """, (signal_id,))
+                    rows = cur.fetchall()
+                    
+                    for r in rows:
+                        bars.append((
+                            r[0],           # 0: ts
+                            float(r[1]),    # 1: price
+                            float(r[2]),    # 2: delta
+                            0.0,            # 3: unused
+                            r[3],           # 4: large_buy
+                            r[4]            # 5: large_sell
+                        ))
+            break # Success
+        except Exception as e:
+            if attempt == 2:
+                print(f"Error loading signal {signal_id}: {e}")
+                return None
+            time.sleep(1)
+
+    if len(bars) < 100:
+        return {}
+
+    results = {}
     
-    for signal_id, data in ALL_SIGNALS_DATA.items():
-        pnl, wins, losses = run_strategy(
-            bars=data['bars'],
-            sl_pct=params['sl_pct'],
-            delta_window=params['delta_window'],
-            threshold_mult=params['threshold_mult'],
-            leverage=params['leverage']
+    # Run all combos
+    for pid, params in PARAM_COMBINATIONS.items():
+        pnl = run_strategy(
+            bars, 
+            params['sl_pct'], 
+            params['delta_window'], 
+            params['threshold_mult'], 
+            params['leverage']
         )
-        total_pnl += pnl
-        total_wins += wins
-        total_losses += losses
-    
-    total_trades = total_wins + total_losses
-    win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0
-    
-    return {
-        'params': params,
-        'total_pnl': total_pnl,
-        'win_rate': win_rate,
-        'total_trades': total_trades
-    }
+        results[pid] = pnl
+        
+    return results
 
-def worker_evaluate(params_tuple):
-    """Worker для multiprocessing."""
-    params = {
-        'leverage': params_tuple[0],
-        'sl_pct': params_tuple[1],
-        'delta_window': params_tuple[2],
-        'threshold_mult': params_tuple[3]
-    }
-    return evaluate_params(params)
+def get_all_signal_ids():
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT signal_analysis_id FROM web.agg_trades_1s ORDER BY signal_analysis_id")
+                return [r[0] for r in cur.fetchall()]
+    except Exception as e:
+        print(f"Failed to get signal IDs: {e}")
+        return []
 
-def run_optimization(workers: int = 12):
-    """Запустить оптимизацию."""
-    print("🚀 Оптимизация COMBINED_A_B с Leverage")
+def run_optimization(workers: int = 6):
+    print("🚀 Оптимизация COMBINED_A_B (Memory Safe)")
     print(f"   Воркеров: {workers}")
-    print("-" * 90)
+    print(f"   Комбинаций параметров: {len(PARAM_COMBINATIONS)}")
     
-    load_all_data()
+    signal_ids = get_all_signal_ids()
+    if not signal_ids:
+        print("❌ Не удалось получить список сигналов (или пусто). Проверьте БД.")
+        return
+
+    print(f"   Сигналов для обработки: {len(signal_ids)}")
+    print("-" * 60)
     
-    # Генерируем комбинации
-    all_combinations = []
-    for leverage in PARAM_GRID['leverage']:
-        for sl in SL_BY_LEVERAGE[leverage]:
-            for delta_window in PARAM_GRID['delta_window']:
-                for threshold in PARAM_GRID['threshold_mult']:
-                    all_combinations.append((leverage, sl, delta_window, threshold))
+    aggregated_results = {pid: 0.0 for pid in PARAM_COMBINATIONS}
     
-    print(f"   Комбинаций: {len(all_combinations)}")
-    print("-" * 90)
-    
+    processed = 0
     start_time = datetime.now()
     
-    results = []
     with Pool(processes=workers) as pool:
-        for i, result in enumerate(pool.imap_unordered(worker_evaluate, all_combinations)):
-            results.append(result)
+        for signal_results in pool.imap_unordered(process_signal_all_params, signal_ids):
+            processed += 1
+            if signal_results:
+                for pid, pnl in signal_results.items():
+                    aggregated_results[pid] += pnl
             
-            if (i + 1) % 100 == 0 or i == len(all_combinations) - 1:
-                elapsed = (datetime.now() - start_time).total_seconds()
-                eta = elapsed / (i + 1) * (len(all_combinations) - i - 1)
-                print(f"   Прогресс: {i + 1}/{len(all_combinations)} | ETA: {int(eta)}s", flush=True)
-    
+            if processed % 10 == 0:
+                print(f"   Processed {processed}/{len(signal_ids)} signals...", end='\r')
+
     elapsed = (datetime.now() - start_time).total_seconds()
+    print(f"\n✅ Done in {elapsed:.1f}s")
     
-    # Группируем по leverage
-    for lev in [1, 5, 10]:
-        lev_results = [r for r in results if r['params']['leverage'] == lev]
-        lev_results.sort(key=lambda x: x['total_pnl'], reverse=True)
+    # Prepare results
+    final_list = []
+    for pid, total_pnl in aggregated_results.items():
+        params = PARAM_COMBINATIONS[pid]
+        final_list.append({
+            'params': params,
+            'total_pnl': total_pnl,
+        })
         
-        print(f"\n{'='*90}")
-        print(f"📊 LEVERAGE {lev}x - ТОП 5")
-        print("="*90)
-        print(f"{'#':<3} {'SL%':<6} {'Window':<8} {'Threshold':<10} {'PnL %':<14} {'WinRate':<10} {'Trades'}")
-        print("-"*90)
-        
-        for i, res in enumerate(lev_results[:5], 1):
-            p = res['params']
-            print(f"{i:<3} {p['sl_pct']:<6} {p['delta_window']:<8} {p['threshold_mult']:<10} "
-                  f"{res['total_pnl']:>+12.2f}% {res['win_rate']:>8.1f}% {res['total_trades']:>6}")
+    final_list.sort(key=lambda x: x['total_pnl'], reverse=True)
     
-    # Общий топ
-    results.sort(key=lambda x: x['total_pnl'], reverse=True)
-    
+    # Print Top Results
     print(f"\n{'='*90}")
-    print("🏆 АБСОЛЮТНЫЙ ТОП-10 (все leverage)")
+    print("🏆 АБСОЛЮТНЫЙ ТОП-10 (по Total PnL)")
     print("="*90)
-    print(f"{'#':<3} {'Lev':<5} {'SL%':<6} {'Window':<8} {'Threshold':<10} {'PnL %':<14} {'WinRate':<10} {'Trades'}")
+    print(f"{'#':<3} {'Lev':<5} {'SL%':<6} {'Window':<8} {'Threshold':<10} {'Total PnL %':<14}")
     print("-"*90)
     
-    for i, res in enumerate(results[:10], 1):
+    for i, res in enumerate(final_list[:10], 1):
         p = res['params']
         print(f"{i:<3} {p['leverage']:<5}x {p['sl_pct']:<6} {p['delta_window']:<8} {p['threshold_mult']:<10} "
-              f"{res['total_pnl']:>+12.2f}% {res['win_rate']:>8.1f}% {res['total_trades']:>6}")
-    
-    # Сохраняем
-    output_file = Path(__file__).parent.parent / "reports" / "optimization_combined_leverage.json"
+              f"{res['total_pnl']:>+12.2f}%")
+
+    # Save
+    report_dir = Path(__file__).parent.parent / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    output_file = report_dir / "optimization_combined_leverage_safe.json"
     
     with open(output_file, 'w') as f:
-        json.dump({
-            'timestamp': datetime.now().isoformat(),
-            'elapsed_seconds': elapsed,
-            'all_results': results
-        }, f, indent=2)
-    
-    print(f"\n📁 Результаты: {output_file}")
-    print(f"⏱️ Время: {elapsed:.1f} сек")
-    
-    # Лучший для каждого leverage
-    print("\n" + "="*90)
-    print("📌 ЛУЧШИЕ ПАРАМЕТРЫ ДЛЯ КАЖДОГО LEVERAGE:")
-    print("="*90)
-    
-    for lev in [1, 5, 10]:
-        best = max([r for r in results if r['params']['leverage'] == lev], 
-                   key=lambda x: x['total_pnl'])
-        p = best['params']
-        print(f"\n   {lev}x LEVERAGE:")
-        print(f"      SL: {p['sl_pct']}%")
-        print(f"      delta_window: {p['delta_window']} сек")
-        print(f"      threshold_mult: {p['threshold_mult']}")
-        print(f"      PnL: {best['total_pnl']:+.2f}%")
-        print(f"      Win Rate: {best['win_rate']:.1f}%")
+        json.dump(final_list, f, indent=2)
+    print(f"\nSaved to {output_file}")
 
 if __name__ == "__main__":
     import argparse
-    
     parser = argparse.ArgumentParser()
-    parser.add_argument('--workers', type=int, default=12)
+    parser.add_argument('--workers', type=int, default=6) 
     args = parser.parse_args()
     
     run_optimization(workers=args.workers)
