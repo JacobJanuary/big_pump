@@ -107,7 +107,7 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
     DELTA_REENTRY = 1.5
     DELTA_PANIC = 0.6
     ATR_MULT = 3.0
-    TP_PCT = 0.15 # Lower TP to 15% to trigger Breakeven Stop sooner
+    TP_PCT = 0.30 # Restore Big Win target
     
     # State
     panic_counter = 0 # Count consecutive low delta candles
@@ -199,13 +199,17 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
             delta_ok = row['delta_ratio'] > DELTA_BUY
             px_vwap_ok = row['close_price'] > row['vwap']
             
+            # Drawdown Filter: Price must be > 0.8 * Listing Open
+            # Prevents catching knives on dead coins
+            drawdown_ok = row['close_price'] > (0.8 * row['listing_open'])
+            
             # Last closed trade for Re-Entry logic
             last_exit_price = trades[-1].exit_price if trades else 999999
             
             # A. Fresh Entry (Standard)
             time_m = (t - start_time).total_seconds() / 60
             if 60 <= time_m <= 300:
-                if vol_ok and delta_ok and px_vwap_ok:
+                if vol_ok and delta_ok and px_vwap_ok and drawdown_ok:
                     is_entry = True
                     entry_reason = "Standard Entry"
             
