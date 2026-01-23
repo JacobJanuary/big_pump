@@ -92,6 +92,9 @@ def load_data_1m(conn, listing_id: int) -> pd.DataFrame:
     # Smooth ATR
     df_1m['atr_sma'] = df_1m['atr'].rolling(5).mean()
     
+    # Delta Trend (60m SMA)
+    df_1m['delta_sma_60'] = df_1m['delta_ratio'].rolling(60).mean()
+    
     # Listing Open
     df_1m['listing_open'] = df_1m.iloc[0]['open_price']
     
@@ -116,7 +119,7 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
     start_time = df.index[0]
     
     # Warmup
-    for t, row in df.iloc[10:].iterrows():
+    for t, row in df.iloc[60:].iterrows():
         
         # Cooldown check
         if cooldown_until and t < cooldown_until:
@@ -199,6 +202,10 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
             delta_ok = row['delta_ratio'] > DELTA_BUY
             px_vwap_ok = row['close_price'] > row['vwap']
             
+            # Delta Trend Filter (Gemini Phase 2)
+            # Accumulation means Avg Delta > 1.0 over last hour
+            delta_trend_ok = row['delta_sma_60'] > 1.0
+            
             # Drawdown Filter: Price must be > 0.8 * Listing Open
             # Prevents catching knives on dead coins
             drawdown_ok = row['close_price'] > (0.8 * row['listing_open'])
@@ -209,14 +216,14 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
             # A. Fresh Entry (Standard)
             time_m = (t - start_time).total_seconds() / 60
             if 60 <= time_m <= 300:
-                if vol_ok and delta_ok and px_vwap_ok and drawdown_ok:
+                if vol_ok and delta_ok and px_vwap_ok and drawdown_ok and delta_trend_ok:
                     is_entry = True
                     entry_reason = "Standard Entry"
             
             # B. Re-Entry (Pyramid / Recovery)
             # Re-Entry must clean the level clearly (+1%)
             elif trades and row['close_price'] > (last_exit_price * 1.01):
-                 if row['delta_ratio'] > DELTA_REENTRY and vol_ok: # Require volume for re-entry too
+                 if row['delta_ratio'] > DELTA_REENTRY and vol_ok and delta_trend_ok: # Require volume for re-entry too
                      is_entry = True
                      entry_reason = "Re-Entry Breakout"
             
