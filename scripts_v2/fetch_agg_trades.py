@@ -172,6 +172,24 @@ def insert_trades(conn, signal_id: int, pair_symbol: str, trades: list):
     
     return len(trades)
 
+def process_signal(sig):
+    """
+    Обработать один сигнал (для multiprocessing).
+    Возвращает (signal_id, trades_list) или (signal_id, None) при ошибке.
+    """
+    signal_id = sig['id']
+    symbol = sig['pair_symbol']
+    signal_ts = sig['signal_timestamp']
+    
+    # Вычисляем временное окно (48ч после сигнала)
+    if signal_ts.tzinfo is None:
+        signal_ts = signal_ts.replace(tzinfo=timezone.utc)
+    
+    start_ms = int(signal_ts.timestamp() * 1000)
+    end_ms = int((signal_ts + timedelta(hours=48)).timestamp() * 1000)
+    
+    # Определяем нужные даты
+    dates = get_required_dates(signal_ts)
     
     # Создаем временную директорию
     TEMP_DIR = DATA_DIR / "temp_processing"
