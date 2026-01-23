@@ -105,12 +105,12 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
     active_trade = None
     
     # Configuration
-    VOL_THRESHOLD = 2.5 # Reduced from 5.0 (V3 missed SKR) to catch the pump
+    VOL_THRESHOLD = 2.0 # Optimized V8
     DELTA_BUY = 1.2
     DELTA_REENTRY = 1.5
     DELTA_PANIC = 0.6
-    ATR_MULT = 3.0
-    TP_PCT = 0.30 # Restore Big Win target
+    ATR_MULT = 3.5 # Looser stop
+    TP_PCT = 0.20 # Balanced Take Profit
     
     # State
     panic_counter = 0 # Count consecutive low delta candles
