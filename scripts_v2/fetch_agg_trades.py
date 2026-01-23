@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 from collections import defaultdict
 import requests
 import hashlib
+import secrets
 
 # Add scripts directory to path
 current_dir = Path(__file__).resolve().parent
@@ -171,37 +172,73 @@ def insert_trades(conn, signal_id: int, pair_symbol: str, trades: list):
     
     return len(trades)
 
-def process_signal(sig):
-    """
-    Обработать один сигнал (для multiprocessing).
-    Возвращает (signal_id, trades_list) или (signal_id, None) при ошибке.
-    """
-    signal_id = sig['id']
-    symbol = sig['pair_symbol']
-    signal_ts = sig['signal_timestamp']
     
-    # Вычисляем временное окно (48ч после сигнала)
-    if signal_ts.tzinfo is None:
-        signal_ts = signal_ts.replace(tzinfo=timezone.utc)
+    # Создаем временную директорию
+    TEMP_DIR = DATA_DIR / "temp_processing"
+    TEMP_DIR.mkdir(parents=True, exist_ok=True)
     
-    start_ms = int(signal_ts.timestamp() * 1000)
-    end_ms = int((signal_ts + timedelta(hours=48)).timestamp() * 1000)
+    # Генерируем уникальное имя для временного файла
+    temp_filename = f"{signal_id}_{start_ms}_{secrets.token_hex(4)}.tsv.gz"
+    temp_path = TEMP_DIR / temp_filename
+
+    # Скачиваем файлы и пишем сразу в TSV (gz)
+    # Используем gzip для экономии места и IO
+    import gzip
     
-    # Определяем нужные даты
-    dates = get_required_dates(signal_ts)
+    has_trades = False
     
-    # Скачиваем файлы
-    all_trades = []
-    for date in dates:
-        zip_path = download_daily_file(symbol, date)
-        if zip_path:
-            trades = extract_and_filter_trades(zip_path, start_ms, end_ms)
-            all_trades.extend(trades)
-    
-    if not all_trades:
+    try:
+        with gzip.open(temp_path, 'wt', encoding='utf-8') as tsv_out:
+            for date in dates:
+                zip_path = download_daily_file(symbol, date)
+                if zip_path:
+                    # Читаем ZIP и фильтруем без загрузки всего в RAM
+                    # (Прямой стриминг из ZIP в GZ занял бы меньше памяти)
+                    trades = extract_and_filter_trades(zip_path, start_ms, end_ms)
+                    
+                    if trades:
+                        has_trades = True
+                        for t in trades:
+                            # signal_id, pair_symbol, agg_trade_id, price, quantity, transact_time, is_buyer_maker
+                            tsv_out.write(f"{signal_id}\t{symbol}\t{t['agg_trade_id']}\t{t['price']}\t{t['quantity']}\t{t['transact_time']}\t{t['is_buyer_maker']}\n")
+                            
+        if not has_trades:
+            if temp_path.exists():
+                os.remove(temp_path)
+            return (signal_id, symbol, None)
+            
+        return (signal_id, symbol, str(temp_path))
+        
+    except Exception as e:
+        print(f"Error processing {symbol}: {e}")
+        if temp_path.exists():
+            os.remove(temp_path)
         return (signal_id, symbol, None)
+
+def insert_trades_from_file(conn, file_path):
+    """Вставить трейды из временного файла."""
+    import gzip
     
-    return (signal_id, symbol, all_trades)
+    if not file_path or not os.path.exists(file_path):
+        return 0
+        
+    inserted = 0
+    try:
+        with gzip.open(file_path, 'rt', encoding='utf-8') as f:
+            with conn.cursor() as cur:
+                with cur.copy("COPY web.agg_trades (signal_analysis_id, pair_symbol, agg_trade_id, price, quantity, transact_time, is_buyer_maker) FROM STDIN") as copy:
+                    while data := f.read(65536):
+                        copy.write(data)
+                        # Estimate count? No easy way with COPY FROM STDIN without counting lines first.
+                        # We'll just trust COPY.
+        
+        # Удаляем файл после успешной загрузки
+        os.remove(file_path)
+        return 1 # Возвращаем 1 как "успех" (количество строк неизвестно без чтения)
+        
+    except Exception as e:
+        print(f"Error inserting from {file_path}: {e}")
+        return 0
 
 def fetch_agg_trades(limit=None, dry_run=False, workers=12):
     """
@@ -209,9 +246,16 @@ def fetch_agg_trades(limit=None, dry_run=False, workers=12):
     """
     from multiprocessing import Pool
     
+    # Чистим temp
+    TEMP_DIR = DATA_DIR / "temp_processing"
+    if TEMP_DIR.exists():
+        import shutil
+        shutil.rmtree(TEMP_DIR)
+    
     print("🚀 Загрузка AggTrades (Daily Dumps) - 48ч окно")
     print(f"   Директория: {DATA_DIR}")
     print(f"   Воркеров: {workers}")
+    print(f"   Temp Dir: {TEMP_DIR}")
     print("-" * 60)
     
     DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -227,38 +271,43 @@ def fetch_agg_trades(limit=None, dry_run=False, workers=12):
             print(f"Найдено сигналов для обработки: {len(signals)}")
             print("-" * 60)
             
-            total_trades = 0
             processed = 0
             failed = 0
             
             # Параллельная загрузка
             with Pool(processes=workers) as pool:
-                results = pool.map(process_signal, signals)
-            
-            # Вставляем результаты в БД последовательно
-            for i, (signal_id, symbol, trades) in enumerate(results, 1):
-                if trades is None:
-                    print(f"[{i}/{len(signals)}] {symbol} - ⚠️ Нет данных")
-                    failed += 1
-                    continue
-                
-                if not dry_run:
-                    inserted = insert_trades(conn, signal_id, symbol, trades)
-                    conn.commit()
-                    total_trades += inserted
-                    print(f"[{i}/{len(signals)}] {symbol} - ✅ {inserted:,} трейдов")
-                else:
-                    print(f"[{i}/{len(signals)}] {symbol} - [DRY RUN] {len(trades):,} трейдов")
-                
-                processed += 1
+                # Используем imap_unordered для потоковой обработки по мере завершения
+                for i, (signal_id, symbol, result_path) in enumerate(pool.imap_unordered(process_signal, signals), 1):
+                    
+                    if result_path is None:
+                        # print(f"[{i}/{len(signals)}] {symbol} - ⚠️ Нет данных", end='\r')
+                        failed += 1
+                        continue
+                    
+                    if not dry_run:
+                        # В Main Process: загружаем файл в БД
+                        insert_trades_from_file(conn, result_path)
+                        conn.commit()
+                        print(f"[{i}/{len(signals)}] {symbol} - ✅ Загружено")
+                    else:
+                        print(f"[{i}/{len(signals)}] {symbol} - [DRY RUN] Файл сохранен: {result_path}")
+                        # В dry-run не удаляем файл или удаляем? Удалим чтобы мусор не копить.
+                        if os.path.exists(result_path):
+                            os.remove(result_path)
+                    
+                    processed += 1
             
             print("\n" + "=" * 60)
             print(f"📊 Итого:")
             print(f"   Обработано сигналов: {processed}")
             print(f"   Пропущено: {failed}")
-            print(f"   Загружено трейдов: {total_trades:,}")
             
     except Exception as e:
+        try:
+             # Освобождаем пул если была критическая ошибка
+             pool.terminate()
+        except:
+             pass
         print(f"❌ Ошибка: {e}")
         import traceback
         traceback.print_exc()
