@@ -102,12 +102,12 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
     active_trade = None
     
     # Configuration
-    VOL_THRESHOLD = 5.0 # Increased to 5.0 (Only massive breakouts)
+    VOL_THRESHOLD = 2.5 # Reduced from 5.0 (V3 missed SKR) to catch the pump
     DELTA_BUY = 1.2
     DELTA_REENTRY = 1.5
     DELTA_PANIC = 0.6
     ATR_MULT = 3.0
-    TP_PCT = 0.30
+    TP_PCT = 0.15 # Lower TP to 15% to trigger Breakeven Stop sooner
     
     # State
     panic_counter = 0 # Count consecutive low delta candles
