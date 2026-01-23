@@ -102,7 +102,7 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
     active_trade = None
     
     # Configuration
-    VOL_THRESHOLD = 3.0 # Increased from 2.0 to filter noise
+    VOL_THRESHOLD = 5.0 # Increased to 5.0 (Only massive breakouts)
     DELTA_BUY = 1.2
     DELTA_REENTRY = 1.5
     DELTA_PANIC = 0.6
@@ -152,12 +152,18 @@ def run_hybrid_strategy(df: pd.DataFrame, symbol: str) -> list[TradePosition]:
                 active_trade.realized_pnl += current_pnl_pct * 100 * 0.5
                 active_trade.size_pct = 0.5
             
-            # C. Dynamic ATR Trailing Stop
-            stop_price = active_trade.highest_price - (current_atr * ATR_MULT)
+            # C. Dynamic Stop (ATR or Breakeven)
+            if active_trade.tp_hit:
+                # BREAKEVEN STOP: If we hit TP, move stop to Entry to secure win
+                stop_price = max(active_trade.entry_price * 1.005, active_trade.highest_price - (current_atr * ATR_MULT))
+            else:
+                # Standard ATR Stop
+                stop_price = active_trade.highest_price - (current_atr * ATR_MULT)
             
             if row['low_price'] < stop_price:
+                # We hit the stop
                 should_exit = True
-                exit_reason = f"ATR Stop (Hit {stop_price:.4f})"
+                exit_reason = f"Stop Hit ({stop_price:.4f})" if active_trade.tp_hit else f"ATR Stop ({stop_price:.4f})"
                 exit_price = min(row['close_price'], stop_price) 
             
             if should_exit:
