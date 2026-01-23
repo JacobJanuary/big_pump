@@ -57,11 +57,43 @@ def apply_best_parameters():
         print(f"❌ Failed to load optimization results: {e}")
 
 def get_signal_ids_filtered() -> list:
-    """Return list of signal_analysis_id that satisfy the filters from pump_analysis_lib."""
+    """Return list of web.signal_analysis.id that resolve from filtered signals."""
     try:
         with get_db_connection() as conn:
-            signals = fetch_signals(conn)
-            return [s['id'] for s in signals]
+            # 1. FAS Filtered Signals
+            raw_signals = fetch_signals(conn)
+            if not raw_signals:
+                return []
+            
+            # 2. Web Signal Analysis Map
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, pair_symbol, signal_timestamp FROM web.signal_analysis")
+                web_signals = cur.fetchall()
+            
+            web_map = {}
+            for wid, sym, ts in web_signals:
+                if ts.tzinfo is None:
+                    # Assume UTC if naive, as fetch_signals usually returns aware
+                    from datetime import timezone
+                    ts = ts.replace(tzinfo=timezone.utc)
+                web_map[(sym, ts)] = wid
+            
+            # 3. Match
+            matched_ids = []
+            for s in raw_signals:
+                sym = s['pair_symbol']
+                ts = s['timestamp']
+                
+                if ts.tzinfo is None:
+                    from datetime import timezone
+                    ts = ts.replace(tzinfo=timezone.utc)
+                
+                if (sym, ts) in web_map:
+                    matched_ids.append(web_map[(sym, ts)])
+                    
+            print(f"✅ Filtered signals: {len(raw_signals)} (Found in Web DB: {len(matched_ids)})")
+            return matched_ids
+
     except Exception as e:
         print(f"Failed to fetch filtered signals: {e}")
         return []

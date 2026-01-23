@@ -179,13 +179,64 @@ def process_signal_all_params(signal_id: int):
     return results
 
 def get_filtered_signal_ids() -> List[int]:
-    """Return list of signal_analysis_id that satisfy filters from pump_analysis_lib."""
+    """
+    Return list of web.signal_analysis.id that satisfy filters from pump_analysis_lib.
+    
+    CRITICAL FIX: fetch_signals returns fas_v2.scoring_history.id.
+    We need web.signal_analysis.id to query web.agg_trades_1s.
+    We map them by (pair_symbol, timestamp).
+    """
     try:
         with get_db_connection() as conn:
-            signals = fetch_signals(conn)
-            return [s['id'] for s in signals]
+            # 1. Get filtered signals from Source (FAS system)
+            # This applies filters like Score > 118, Patterns, Exchange, etc.
+            raw_signals = fetch_signals(conn)
+            
+            if not raw_signals:
+                return []
+                
+            # 2. Extract Keys for Mapping (Symbol, Timestamp)
+            # Note: Timestamps in DB are usually consistent, but better to be safe.
+            # We construct a list of conditions or use a temporary table approach?
+            # Easiest: Fetch ALL IDs from web.signal_analysis and filter in Python
+            # because mapping 1-by-1 is slow, and IN (...) with pairs is tricky in standard SQL.
+            
+            # Optimization: Fetch all web.signal_analysis (id, symbol, timestamp)
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, pair_symbol, signal_timestamp FROM web.signal_analysis")
+                web_signals = cur.fetchall()
+            
+            # Create Lookup Map: (symbol, timestamp) -> web.id
+            # Timestamp from PG might differ slightly in tzinfo, so we normalize.
+            web_map = {}
+            for wid, sym, ts in web_signals:
+                # Ensure UTC
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=datetime.timezone.utc) if hasattr(datetime, "timezone") else ts
+                web_map[(sym, ts)] = wid
+            
+            # 3. Match
+            matched_ids = []
+            for s in raw_signals:
+                sym = s['pair_symbol']
+                ts = s['timestamp']
+                
+                # Normalize source timestamp
+                if ts.tzinfo is None:
+                    from datetime import timezone
+                    ts = ts.replace(tzinfo=timezone.utc)
+                
+                # Try exact match
+                if (sym, ts) in web_map:
+                    matched_ids.append(web_map[(sym, ts)])
+            
+            print(f"   Filtering check: FAS Signals {len(raw_signals)} -> Web Matches {len(matched_ids)}")
+            return matched_ids
+
     except Exception as e:
         print(f"Failed to fetch filtered signals: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 def run_optimization(workers: int = 6):
