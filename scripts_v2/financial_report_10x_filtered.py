@@ -111,7 +111,18 @@ def load_bars_for_signal(conn, signal_id: int):
             (signal_id,)
         )
         rows = cur.fetchall()
-        return [(r[0], float(r[1]), float(r[2]), 0.0, r[3], r[4]) for r in rows]
+        rows = cur.fetchall()
+        # Convert to dicts as expected by financial_report_10x.run_strategy_detailed
+        return [
+            {
+                'ts': r[0],
+                'price': float(r[1]),
+                'delta': float(r[2]),
+                'large_buy': r[3],
+                'large_sell': r[4]
+            }
+            for r in rows
+        ]
 
 def generate_report():
     apply_best_parameters()
