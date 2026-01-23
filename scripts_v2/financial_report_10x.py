@@ -24,8 +24,8 @@ from pump_analysis_lib import get_db_connection
 # ============== ПАРАМЕТРЫ СТРАТЕГИИ ==============
 
 LEVERAGE = 10
-SL_PCT = 7.0
-DELTA_WINDOW = 20
+SL_PCT = 5.0
+DELTA_WINDOW = 10
 THRESHOLD_MULT = 1.0
 
 # Базовые параметры
