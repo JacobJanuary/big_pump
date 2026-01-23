@@ -16,7 +16,7 @@ from datetime import datetime
 
 # Add current directory to path
 sys.path.append(str(Path(__file__).resolve().parent))
-from pump_analysis_lib import get_db_connection
+from pump_analysis_lib import get_db_connection, EXCHANGE_FILTER, EXCHANGE_IDS
 
 # Full Parameter Ranges (as requested)
 SCORE_RANGE = range(100, 260, 10)       # 16 steps
@@ -27,7 +27,16 @@ OI_DELTA_RANGE = range(0, 41, 1)        # 41 steps
 def load_all_signals(conn):
     """Load relevant signal data"""
     print("Loading all signals into memory...")
-    query = """
+    print(f"Filtering by Exchange: {EXCHANGE_FILTER}")
+    
+    # Exchange filter logic
+    exchange_condition = ""
+    if EXCHANGE_FILTER == 'BINANCE':
+        exchange_condition = f"AND tp.exchange_id = {EXCHANGE_IDS['BINANCE']}"
+    elif EXCHANGE_FILTER == 'BYBIT':
+        exchange_condition = f"AND tp.exchange_id = {EXCHANGE_IDS['BYBIT']}"
+        
+    query = f"""
         SELECT 
             w.total_score as score,
             COALESCE(i.rsi, 0) as rsi,
@@ -35,6 +44,7 @@ def load_all_signals(conn):
             COALESCE(i.oi_delta_pct, 0) as oi_delta_pct,
             w.is_win
         FROM web.signal_analysis w
+        JOIN public.trading_pairs tp ON w.trading_pair_id = tp.id
         LEFT JOIN fas_v2.scoring_history sh ON w.trading_pair_id = sh.trading_pair_id 
             AND w.signal_timestamp = sh.timestamp
         LEFT JOIN fas_v2.sh_indicators shi ON shi.scoring_history_id = sh.id
@@ -43,6 +53,8 @@ def load_all_signals(conn):
             AND i.timestamp = shi.indicators_timestamp 
             AND i.timeframe = shi.indicators_timeframe
         )
+        WHERE 1=1
+        {exchange_condition}
     """
     
     # Try importing pandas for speed
