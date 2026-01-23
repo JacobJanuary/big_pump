@@ -32,6 +32,11 @@ SCORE_THRESHOLD_MAX = 300   # Maximum score (set to None for no upper limit)
 # Target patterns to filter for
 TARGET_PATTERNS = ['SQUEEZE_IGNITION', 'OI_EXPLOSION']
 
+# Deduplication and Analysis Configuration
+COOLDOWN_HOURS = 12         # Hours to wait before accepting a duplicate signal
+DEFAULT_ANALYSIS_DAYS = 30  # Default history to load
+DEFAULT_SCAN_WINDOW_HOURS = COOLDOWN_HOURS # Scan window matches cooldown
+
 # Exchange Configuration
 # Options: 'ALL', 'BINANCE', 'BYBIT'
 EXCHANGE_FILTER = 'BINANCE' 

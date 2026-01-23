@@ -14,10 +14,14 @@ from pump_analysis_lib import (
     get_db_connection,
     fetch_signals,
     deduplicate_signals,
-    get_entry_price_and_candles
+    get_entry_price_and_candles,
+    SCORE_THRESHOLD,
+    SCORE_THRESHOLD_MAX,
+    COOLDOWN_HOURS,
+    DEFAULT_ANALYSIS_DAYS
 )
 
-def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_hours=12, min_score=118, max_score=300):
+def populate_signal_analysis(days=DEFAULT_ANALYSIS_DAYS, limit=None, force_refresh=False, cooldown_hours=COOLDOWN_HOURS, min_score=SCORE_THRESHOLD, max_score=SCORE_THRESHOLD_MAX):
     """
     Fetch signals, preprocess them, and store in web.signal_analysis table
     
@@ -25,9 +29,9 @@ def populate_signal_analysis(days=30, limit=None, force_refresh=False, cooldown_
         days: Number of days to look back
         limit: Limit number of signals
         force_refresh: If True, TRUNCATE and repopulate. If False, only add new signals.
-        cooldown_hours: Deduplication cooldown period in hours (default: 12, synchronized with Scanner)
-        min_score: Minimum total score (default: 100)
-        max_score: Maximum total score (default: 300)
+        cooldown_hours: Deduplication cooldown period in hours (default: lib constant)
+        min_score: Minimum total score (default: lib constant)
+        max_score: Maximum total score (default: lib constant)
     """
     print(f"Populating signal analysis table for the last {days} days...")
     print(f"Score Range: {min_score} - {max_score}")

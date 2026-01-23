@@ -35,9 +35,9 @@ from pump_analysis_lib import (
     SCORE_THRESHOLD,
     SCORE_THRESHOLD_MAX,
     TARGET_PATTERNS,
-    INDICATOR_FILTERS
+    INDICATOR_FILTERS,
+    COOLDOWN_HOURS
 )
-
 
 # Настройка логирования
 logging.basicConfig(
@@ -122,7 +122,7 @@ class HighScoreSignalWebSocketServer:
         self.client_info: Dict = {}
         
         # Deduplication: DB-based (uses web.signal_analysis)
-        self.dedup_cooldown_hours = 12  # Config for logging only
+        self.dedup_cooldown_hours = COOLDOWN_HOURS  # Config for logging only
 
         # Состояние
         self.db_pool: Optional[asyncpg.Pool] = None

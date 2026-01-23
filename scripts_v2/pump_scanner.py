@@ -14,8 +14,17 @@ from datetime import datetime
 import settings
 
 # Import from local scripts
+# Import from local scripts
 from populate_signal_analysis import populate_signal_analysis
-from pump_analysis_lib import EXCHANGE_FILTER
+from pump_analysis_lib import (
+    EXCHANGE_FILTER,
+    get_db_connection,
+    fetch_signals,
+    SCORE_THRESHOLD,
+    SCORE_THRESHOLD_MAX,
+    COOLDOWN_HOURS,
+    DEFAULT_SCAN_WINDOW_HOURS
+)
 
 # --- Configuration ---
 TELEGRAM_CONFIG = settings.TELEGRAM
@@ -75,26 +84,28 @@ def scan_and_alert():
         days=0.042,  # ~1 hour
         limit=None, 
         force_refresh=False,
-        cooldown_hours=12
+        cooldown_hours=COOLDOWN_HOURS
     )
     
     # Now fetch ALL current signals from DB (last 12 hours to match cooldown)
-    from pump_analysis_lib import get_db_connection, fetch_signals
+    # We used imported functions instead of local import inside function
     
     conn = get_db_connection()
     try:
-        # Get signals from last 12 hours (matching cooldown)
-        all_signals = fetch_signals(conn, days=0.5, limit=None, min_score=118, max_score=300)  # 12 hours, synced with filters
+        # Get signals from last X hours (matching cooldown)
+        # Using 0.5 days is 12 hours, which matches DEFAULT_SCAN_WINDOW_HOURS if it is 12
+        scan_days = DEFAULT_SCAN_WINDOW_HOURS / 24.0
+        
+        all_signals = fetch_signals(conn, days=scan_days, limit=None, min_score=SCORE_THRESHOLD, max_score=SCORE_THRESHOLD_MAX)
         
         if not all_signals:
             print("No signals found in database.")
             return
         
-        print(f"Found {len(all_signals)} total signals in DB (last 12h)")
+        print(f"Found {len(all_signals)} total signals in DB (last {DEFAULT_SCAN_WINDOW_HOURS}h)")
         
         # Filter for signals we haven't sent yet
-        # Use 12-hour cooldown just like populate_signal_analysis
-        COOLDOWN_HOURS = 12
+        # Use cooldown from config
         new_to_send = []
         
         for signal in all_signals:
