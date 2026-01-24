@@ -58,11 +58,14 @@ def generate_filter_grid() -> List[Dict]:
     return grid
 # Core optimizer logic
 # ---------------------------------------------------------------------------
-def run_strategy_on_signal(signal_id: int, strategy_params: Dict) -> Tuple[int, bool, float, Dict]:
-    """Execute the trading strategy for a single signal.
-
-    Returns a tuple ``(signal_id, is_win, pnl)``. The implementation reuses the
-    ``run_strategy`` function from ``optimize_combined_leverage``.
+# ---------------------------------------------------------------------------
+def process_signal(signal_id: int, strategy_grid: List[Dict]) -> List[Tuple[int, bool, float, Dict]]:
+    """Execute ALL trading strategies for a single signal.
+    
+    This function:
+    1. Fetches bars for the signal ONCE (expensive DB op).
+    2. Iterates through the strategy_grid (cheap CPU op).
+    3. Returns a list of results for each strategy config.
     """
     # Import the core strategy function
     from optimize_combined_leverage import run_strategy
@@ -71,21 +74,30 @@ def run_strategy_on_signal(signal_id: int, strategy_params: Dict) -> Tuple[int, 
     conn = get_connection()
     bars_dict = fetch_bars_batch(conn, [signal_id])
     conn.close()
+    
     bars = bars_dict.get(signal_id, [])
+    results = []
+    
     if not bars:
-        # No data – treat as loss with zero PnL
-        return signal_id, False, 0.0
+        # No data – treat as loss with zero PnL for all strategies
+        # Or simply return empty? Returning loss is safer for data consistency.
+        for sp in strategy_grid:
+            results.append((signal_id, False, 0.0, sp))
+        return results
 
-    # Map strategy_params to expected arguments
-    sl_pct = strategy_params.get("sl") or strategy_params.get("sl_pct")
-    delta_window = strategy_params.get("window") or strategy_params.get("delta_window")
-    threshold_mult = strategy_params.get("threshold") or strategy_params.get("threshold_mult")
-    leverage = strategy_params.get("leverage", 1)
+    # Run all strategies on the cached bars
+    for sp in strategy_grid:
+        # Map strategy_params to expected arguments
+        sl_pct = sp.get("sl") or sp.get("sl_pct")
+        delta_window = sp.get("window") or sp.get("delta_window")
+        threshold_mult = sp.get("threshold") or sp.get("threshold_mult")
+        leverage = sp.get("leverage", 1)
 
-    pnl = run_strategy(bars, sl_pct, delta_window, threshold_mult, leverage)
-    is_win = pnl > 0
-    # Return strategy_params to allow aggregation by config
-    return signal_id, is_win, pnl, strategy_params
+        pnl = run_strategy(bars, sl_pct, delta_window, threshold_mult, leverage)
+        is_win = pnl > 0
+        results.append((signal_id, is_win, pnl, sp))
+        
+    return results
 
 def evaluate_filter(filter_cfg: Dict) -> Tuple[Dict, List[Tuple[int, bool, float, Dict]]]:
     """Evaluate a single filter configuration.
@@ -169,20 +181,28 @@ def evaluate_filter(filter_cfg: Dict) -> Tuple[Dict, List[Tuple[int, bool, float
                     })
 
     tasks = []
+    # Each task is (signal_id, strategy_grid_list)
+    # Note: passing the full list per task pickles it each time. 
+    # Since the list is constant, this is acceptable for multiprocessing in Python 3.8+ (copy-on-write on fork)
+    # but on spawn (Win/Mac default for 3.8+), it pickles.
+    # The grid is ~375 dicts, small enough.
     for sid in signal_ids:
-        for sp in strategy_params_grid:
-            tasks.append((sid, sp))
+        tasks.append((sid, strategy_params_grid))
 
     # Parallel vs Sequential execution
     if MAX_WORKERS == 1:
         # Avoid multiprocessing overhead/errors for single worker
-        results = [run_strategy_on_signal(sid, sp) for sid, sp in tasks]
+        # results will be a list of lists: [[(sid, win, pnl, params), ...], ...]
+        result_batches = [process_signal(sid, grid) for sid, grid in tasks]
     else:
         # Use starmap to avoid pickling issues with local functions
         pool = mp.Pool(processes=MAX_WORKERS)
-        results = pool.starmap(run_strategy_on_signal, tasks)
+        result_batches = pool.starmap(process_signal, tasks)
         pool.close()
         pool.join()
+        
+    # Flatten the list of lists
+    results = [item for batch in result_batches for item in batch]
     return filter_cfg, results
 
 # ---------------------------------------------------------------------------
