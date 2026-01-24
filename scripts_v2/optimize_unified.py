@@ -270,7 +270,7 @@ def main():
                     best_strat_stats = stats
 
             if best_strat_stats:
-                all_results.append({
+                result_entry = {
                     "filter": filter_cfg,
                     "strategy": best_strat_stats["params"],
                     "metrics": {
@@ -278,7 +278,15 @@ def main():
                         "win_rate": best_strat_stats["wins"] / best_strat_stats["total"],
                         "total_signals": best_strat_stats["total"]
                     }
-                })
+                }
+                all_results.append(result_entry)
+                
+                # Save intermediate result immediately (append to JSONL)
+                try:
+                    with open("intermediate_results.jsonl", "a", encoding="utf-8") as f:
+                        f.write(json.dumps(result_entry) + "\n")
+                except Exception as e:
+                    print(f"Warning: could not write intermediate result: {e}")
 
     # Sort by total PnL
     all_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
