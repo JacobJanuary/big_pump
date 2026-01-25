@@ -25,9 +25,9 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Configuration (can be overridden via env vars)
 # ---------------------------------------------------------------------------
-SCORE_RANGE = range(100, 901, 10)  # 100‑900 inclusive, step 10
-MIN_SIGNALS_FOR_EVAL = int(os.getenv("MIN_SIGNALS_FOR_EVAL", "50"))
-MIN_WIN_RATE = float(os.getenv("MIN_WIN_RATE", "0.4"))
+SCORE_RANGE = range(100, 901, 50)  # 100-900 inclusive, step 50
+MIN_SIGNALS_FOR_EVAL = int(os.getenv("MIN_SIGNALS_FOR_EVAL", "0")) # Default 0 (disabled)
+MIN_WIN_RATE = float(os.getenv("MIN_WIN_RATE", "0.0")) # Disabled
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "12"))
 
 # ---------------------------------------------------------------------------
@@ -44,13 +44,13 @@ def generate_filter_grid() -> List[Dict]:
     grid = []
     for score, rsi, vol, oi in product(
         SCORE_RANGE,               # total_score min
-        range(0, 81, 1),          # RSI 0‑80
-        range(0, 16, 1),          # Volume z‑score 0‑15
-        range(0, 41, 1)           # OI delta % 0‑40
+        range(0, 81, 5),          # RSI 0-80, step 5
+        range(0, 16, 1),          # Volume z-score 0-15 (unchanged)
+        range(0, 41, 1)           # OI delta % 0-40 (unchanged)
     ):
         grid.append({
             "score_min": score,
-            "score_max": score + 10,
+            "score_max": score + 50, # Window matches step size
             "rsi_min": rsi,
             "vol_min": vol,
             "oi_min": oi,
