@@ -18,7 +18,7 @@ DATABASE = {
     'user': os.getenv('DB_USER', 'elcrypto'),
     'password': os.getenv('DB_PASSWORD') or None,  # None allows .pgpass usage
     'host': os.getenv('DB_HOST', 'localhost'),
-    'port': os.getenv('DB_PORT', '5432')
+    'port': os.getenv('DB_PORT', '5435')
 }
 
 # Individual DB parameters (for asyncpg compatibility)

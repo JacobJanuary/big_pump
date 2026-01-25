@@ -158,7 +158,8 @@ def evaluate_filter(filter_cfg: Dict) -> Tuple[Dict, List[Tuple[int, bool, float
     # Strategy parameters grid (based on optimize_combined_leverage.py)
     # Define ranges
     leverage_opts = [1, 5, 10]
-    delta_window_opts = [10, 20, 30, 60, 120]
+    # Expanded windows to include "Holding" strategy (up to 2 hours)
+    delta_window_opts = [10, 30, 60, 120, 300, 600, 1800, 3600, 7200]
     threshold_opts = [1.0, 1.5, 2.0, 2.5, 3.0]
     
     # SL options depend on leverage
