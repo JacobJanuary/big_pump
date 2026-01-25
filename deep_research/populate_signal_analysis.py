@@ -1,0 +1,240 @@
+"""
+Populate signal analysis table with preprocessed data
+"""
+import sys
+import os
+from pathlib import Path
+import json
+
+# Add scripts directory to path
+current_dir = Path(__file__).resolve().parent
+sys.path.append(str(current_dir))
+
+from pump_analysis_lib import (
+    get_db_connection,
+    fetch_signals,
+    deduplicate_signals,
+    get_entry_price_and_candles,
+    SCORE_THRESHOLD,
+    SCORE_THRESHOLD_MAX,
+    COOLDOWN_HOURS,
+    DEFAULT_ANALYSIS_DAYS
+)
+
+def populate_signal_analysis(days=DEFAULT_ANALYSIS_DAYS, limit=None, force_refresh=False, cooldown_hours=COOLDOWN_HOURS, min_score=SCORE_THRESHOLD, max_score=SCORE_THRESHOLD_MAX, skip_dedup=False):
+    """
+    Fetch signals, preprocess them, and store in web.signal_analysis table
+    
+    Args:
+        days: Number of days to look back
+        limit: Limit number of signals
+        force_refresh: If True, TRUNCATE and repopulate. If False, only add new signals.
+        cooldown_hours: Deduplication cooldown period in hours (default: lib constant)
+        min_score: Minimum total score (default: lib constant)
+        max_score: Maximum total score (default: lib constant)
+        skip_dedup: If True, skip deduplication entirely
+    """
+    print(f"Populating signal analysis table for the last {days} days...")
+    print(f"Score Range: {min_score} - {max_score}")
+    print(f"Using {cooldown_hours}h deduplication cooldown...")
+    
+    try:
+        with get_db_connection() as conn:
+            if force_refresh:
+                # Clear existing data
+                print("Force refresh: Clearing existing data from web.signal_analysis...")
+                with conn.cursor() as cur:
+                    cur.execute("TRUNCATE TABLE web.signal_analysis CASCADE")
+                conn.commit()
+            else:
+                print("Incremental mode: Only adding new signals...")
+            
+            # Fetch signals
+            signals = fetch_signals(conn, days=days, limit=limit, min_score=min_score, max_score=max_score)
+            
+            if not signals:
+                print("No signals found.")
+                return
+            
+            print(f"Found {len(signals)} signals from database.")
+            
+            # Load existing state for deduplication (last signal time per pair)
+            # This ensures we don't insert a signal that is a duplicate of one already in DB
+            print("Loading existing signal history for deduplication...")
+            last_signal_time_query = """
+                SELECT pair_symbol, MAX(signal_timestamp) as last_ts
+                FROM web.signal_analysis
+                GROUP BY pair_symbol
+            """
+            initial_dedup_state = {}
+            if not force_refresh:
+                with conn.cursor() as cur:
+                    cur.execute(last_signal_time_query)
+                    for row in cur.fetchall():
+                        initial_dedup_state[row[0]] = row[1]
+            print(f"Loaded history for {len(initial_dedup_state)} pairs.")
+
+            # Deduplicate (12h cooldown, time-based only)
+            if skip_dedup:
+                unique_signals = signals
+                print(f"Deduplication DISABLED. Processing all {len(unique_signals)} signals.")
+            else:
+                unique_signals = deduplicate_signals(signals, cooldown_hours=cooldown_hours, initial_state=initial_dedup_state)
+                print(f"After deduplication: {len(unique_signals)} unique signals.")
+            
+            # Get existing signal timestamps to skip (exact match check)
+            if not force_refresh:
+                existing_query = """
+                    SELECT signal_timestamp, pair_symbol
+                    FROM web.signal_analysis
+                """
+                with conn.cursor() as cur:
+                    cur.execute(existing_query)
+                    existing = set((row[0], row[1]) for row in cur.fetchall())
+                print(f"Found {len(existing)} existing signals in database.")
+            else:
+                existing = set()
+            
+            # Process each signal
+            inserted = 0
+            skipped = 0
+            inserted_signals = []
+            for i, signal in enumerate(unique_signals, 1):
+                if i % 10 == 0:
+                    print(f"Processing {i}/{len(unique_signals)}... (inserted: {inserted}, skipped: {skipped})", end='\r')
+                
+                # Skip if already exists (incremental mode)
+                if (signal['timestamp'], signal['pair_symbol']) in existing:
+                    skipped += 1
+                    print(f"\n  ⚠️ SKIPPED (exact match): {signal['pair_symbol']} at {signal['timestamp']}")
+                    continue
+                
+                # Get entry price and candles
+                entry_price, candles, entry_time_dt = get_entry_price_and_candles(
+                    conn, signal,
+                    analysis_hours=24,
+                    entry_offset_minutes=17
+                )
+                
+                if entry_price is None or not candles:
+                    print(f"\n  ❌ SKIPPED (no entry price/candles): {signal['pair_symbol']} at {signal['timestamp']}")
+                    skipped += 1
+                    continue
+                
+                # Calculate metrics
+                entry_time_ms = candles[0]['open_time']
+                max_price = entry_price
+                max_price_time_ms = entry_time_ms
+                min_price = entry_price
+                
+                for candle in candles:
+                    high = float(candle['high_price'])
+                    low = float(candle['low_price'])
+                    
+                    if high > max_price:
+                        max_price = high
+                        max_price_time_ms = candle['open_time']
+                    
+                    if low < min_price:
+                        min_price = low
+                        min_price = low
+                
+                max_growth_pct = ((max_price - entry_price) / entry_price) * 100
+                max_drawdown_pct = ((min_price - entry_price) / entry_price) * 100
+                time_to_peak_seconds = int((max_price_time_ms - entry_time_ms) / 1000)
+                
+                from datetime import datetime, timezone
+                max_price_time_dt = datetime.fromtimestamp(max_price_time_ms / 1000, tz=timezone.utc)
+                
+                # Convert candles to JSON (store only essential data)
+                candles_json = json.dumps([{
+                    'time': c['open_time'],
+                    'o': float(c['open_price']),
+                    'h': float(c['high_price']),
+                    'l': float(c['low_price']),
+                    'c': float(c['close_price'])
+                } for c in candles])
+                
+                # Insert into database
+                insert_query = """
+                    INSERT INTO web.signal_analysis (
+                        signal_timestamp, pair_symbol, trading_pair_id, total_score,
+                        entry_time, entry_price,
+                        max_price, max_price_time, min_price,
+                        max_growth_pct, max_drawdown_pct,
+                        time_to_peak_seconds,
+                        candles_data, analysis_window_hours
+                    ) VALUES (
+                        %s, %s, %s, %s,
+                        %s, %s,
+                        %s, %s, %s,
+                        %s, %s,
+                        %s,
+                        %s::jsonb, %s
+                    )
+                """
+                
+                with conn.cursor() as cur:
+                    cur.execute(insert_query, (
+                        signal['timestamp'], signal['pair_symbol'], signal['trading_pair_id'], signal['total_score'],
+                        entry_time_dt, entry_price,
+                        max_price, max_price_time_dt, min_price,
+                        max_growth_pct, max_drawdown_pct,
+                        time_to_peak_seconds,
+                        candles_json, 24
+                    ))
+                
+                inserted += 1
+                inserted_signals.append(signal)
+                
+                # Commit every 50 signals
+                if inserted % 50 == 0:
+                    conn.commit()
+            
+            # Final commit
+            conn.commit()
+            
+            print(f"\n\nSuccessfully populated {inserted} new signals into web.signal_analysis")
+            if skipped > 0:
+                print(f"Skipped {skipped} existing signals")
+                
+            # Return list of newly inserted signals for scanner
+            # We need to reconstruct the signal object or just return the basic info needed for alerting
+            new_signals = []
+            if inserted > 0:
+                # Re-iterate unique_signals to find which ones were inserted
+                # This is a bit inefficient but safe. Or we could have collected them in the loop.
+                # Let's collect in the loop in future, but for now, let's just return the ones that weren't skipped.
+                # Actually, better to modify the loop above.
+                pass
+                
+            return inserted_signals
+
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description='Populate signal analysis table.')
+    parser.add_argument('--days', type=int, default=30, help='Number of days to look back')
+    parser.add_argument('--limit', type=int, default=None, help='Limit number of signals')
+    parser.add_argument('--force-refresh', action='store_true', help='Force full refresh (TRUNCATE and repopulate)')
+    parser.add_argument('--cooldown', type=int, default=12, help='Deduplication cooldown in hours (default: 12)')
+    parser.add_argument('--no-dedup', action='store_true', help='Disable deduplication entirely')
+    parser.add_argument('--min-score', type=float, default=100, help='Minimum total score (default: 100)')
+    parser.add_argument('--max-score', type=float, default=300, help='Maximum total score (default: 300)')
+    args = parser.parse_args()
+    
+    populate_signal_analysis(
+        days=args.days, 
+        limit=args.limit, 
+        force_refresh=args.force_refresh, 
+        cooldown_hours=args.cooldown,
+        skip_dedup=args.no_dedup,
+        min_score=args.min_score,
+        max_score=args.max_score
+    )
+
