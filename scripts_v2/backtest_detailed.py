@@ -205,13 +205,12 @@ def main():
     # We join with indicators to get RSI/Vol/OI at once
     # Fetch all signals that might match our Score Range (100-300)
     # We join with indicators to get RSI/Vol/OI at once
-    # TABLE NAME FIX: Verified via pump_analysis_lib.py -> public.trading_pairs
+    # TABLE NAME FIX: Use sa.pair_symbol directly (denormalized column), remove risky join
     sql = """
         SELECT sa.id, sa.trading_pair_id, sa.signal_timestamp, sa.total_score,
-               i.rsi, i.volume_zscore, i.oi_delta_pct, p.symbol
+               i.rsi, i.volume_zscore, i.oi_delta_pct, sa.pair_symbol
         FROM web.signal_analysis sa
         JOIN fas_v2.indicators i ON (i.trading_pair_id = sa.trading_pair_id AND i.timestamp = sa.signal_timestamp AND i.timeframe='15m')
-        JOIN public.trading_pairs p ON p.id = sa.trading_pair_id
         WHERE sa.total_score >= 100 AND sa.total_score < 300
         ORDER BY sa.signal_timestamp ASC
     """
