@@ -308,6 +308,38 @@ def main():
         
         print(f"{date_str:<20} | {t['Symbol']:<10} | {t['Score']:<5} | {t['Strategy']:<12} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<6} | {color}{pnl_str:<8}{RESET} | {t['Reason']}")
 
+    # -----------------------------------------------------------------------
+    # 2. DAILY PERFORMANCE SUMMARY TABLE
+    # -----------------------------------------------------------------------
+    print("\n" + "="*80)
+    print(f"{'DAILY PERFORMANCE SUMMARY':^80}")
+    print("="*80)
+    print(f"{'DATE':<12} | {'TRADES':<6} | {'WINS':<4} | {'LOSS':<4} | {'WR%':<6} | {'DAILY PNL%':<12} | {'CUMULATIVE'}")
+    print("-" * 80)
+    
+    # Sort dates
+    sorted_days = sorted(daily_pnl.keys())
+    running_total = 0.0
+    
+    for day in sorted_days:
+        day_trades = [t for t in trades if str(t["Date"]).startswith(day)]
+        count = len(day_trades)
+        wins = len([t for t in day_trades if t["PnL%"] > 0])
+        losses = count - wins
+        wr = (wins / count * 100) if count > 0 else 0
+        
+        d_pnl = daily_pnl[day]
+        running_total += d_pnl
+        
+        d_pnl_str = f"{d_pnl:+.2f}%"
+        cum_str = f"{running_total:+.2f}%"
+        
+        d_color = GREEN if d_pnl > 0 else RED
+        c_color = GREEN if running_total > 0 else RED
+        
+        print(f"{day:<12} | {count:<6} | {wins:<4} | {losses:<4} | {wr:5.1f}% | {d_color}{d_pnl_str:<12}{RESET} | {c_color}{cum_str}{RESET}")
+    print("="*80)
+
     # Save CSV
     csv_path = "backtest_trades.csv"
     keys = ["Date", "Symbol", "Score", "Strategy", "Entry", "Exit", "Duration(s)", "Reason", "PnL%"]
