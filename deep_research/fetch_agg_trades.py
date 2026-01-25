@@ -286,7 +286,22 @@ def fetch_agg_trades(limit=None, dry_run=False, workers=12):
                 print("✅ Все сигналы уже обработаны")
                 return
             
-            print(f"Найдено сигналов для обработки: {len(signals)}")
+            # Загружаем ID сигналов, для которых уже есть aggTrades
+            print("Checking existing aggTrades...")
+            with conn.cursor() as cur:
+                cur.execute("SELECT DISTINCT signal_analysis_id FROM web.agg_trades")
+                existing_ids = set(row[0] for row in cur.fetchall())
+            print(f"Found {len(existing_ids)} signals with existing aggTrades")
+            
+            # Фильтруем — оставляем только те, что ещё не загружены
+            signals_to_process = [s for s in signals if s['id'] not in existing_ids]
+            skipped_count = len(signals) - len(signals_to_process)
+            
+            if not signals_to_process:
+                print(f"✅ Все {len(signals)} сигналов уже имеют aggTrades. Ничего делать не нужно.")
+                return
+            
+            print(f"Найдено сигналов: {len(signals)} (пропущено: {skipped_count}, к обработке: {len(signals_to_process)})")
             print("-" * 60)
             
             processed = 0
@@ -295,7 +310,7 @@ def fetch_agg_trades(limit=None, dry_run=False, workers=12):
             # Параллельная загрузка
             with Pool(processes=workers) as pool:
                 # Используем imap_unordered для потоковой обработки по мере завершения
-                for i, (signal_id, symbol, result_path) in enumerate(pool.imap_unordered(process_signal, signals), 1):
+                for i, (signal_id, symbol, result_path) in enumerate(pool.imap_unordered(process_signal, signals_to_process), 1):
                     
                     if result_path is None:
                         # print(f"[{i}/{len(signals)}] {symbol} - ⚠️ Нет данных", end='\r')
@@ -306,9 +321,9 @@ def fetch_agg_trades(limit=None, dry_run=False, workers=12):
                         # В Main Process: загружаем файл в БД
                         insert_trades_from_file(conn, result_path)
                         conn.commit()
-                        print(f"[{i}/{len(signals)}] {symbol} - ✅ Загружено")
+                        print(f"[{i}/{len(signals_to_process)}] {symbol} - ✅ Загружено")
                     else:
-                        print(f"[{i}/{len(signals)}] {symbol} - [DRY RUN] Файл сохранен: {result_path}")
+                        print(f"[{i}/{len(signals_to_process)}] {symbol} - [DRY RUN] Файл сохранен: {result_path}")
                         # В dry-run не удаляем файл или удаляем? Удалим чтобы мусор не копить.
                         if os.path.exists(result_path):
                             os.remove(result_path)
