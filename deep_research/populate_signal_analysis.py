@@ -36,7 +36,10 @@ def populate_signal_analysis(days=DEFAULT_ANALYSIS_DAYS, limit=None, force_refre
     """
     print(f"Populating signal analysis table for the last {days} days...")
     print(f"Score Range: {min_score} - {max_score}")
-    print(f"Using {cooldown_hours}h deduplication cooldown...")
+    if skip_dedup:
+        print("Deduplication: DISABLED")
+    else:
+        print(f"Deduplication: {cooldown_hours}h cooldown")
     
     try:
         with get_db_connection() as conn:
@@ -106,7 +109,7 @@ def populate_signal_analysis(days=DEFAULT_ANALYSIS_DAYS, limit=None, force_refre
                 # Skip if already exists (incremental mode)
                 if (signal['timestamp'], signal['pair_symbol']) in existing:
                     skipped += 1
-                    print(f"\n  ⚠️ SKIPPED (exact match): {signal['pair_symbol']} at {signal['timestamp']}")
+                    # Silent skip - this is normal incremental behavior
                     continue
                 
                 # Get entry price and candles
