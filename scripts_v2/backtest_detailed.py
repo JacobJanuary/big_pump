@@ -274,6 +274,40 @@ def main():
                 
     conn.close()
     
+    # Sort trades by date
+    trades.sort(key=lambda x: x["Date"])
+
+    # Console Output with Colors
+    print("\n" + "="*100)
+    print(f"{'DETAILED TRADE LOG':^100}")
+    print("="*100)
+    print(f"{'DATE':<20} | {'SYMBOL':<10} | {'SCORE':<5} | {'STRATEGY':<12} | {'ENTRY':<10} | {'EXIT':<10} | {'DUR(s)':<6} | {'PNL%':<8} | {'REASON'}")
+    print("-" * 100)
+
+    daily_pnl = {} # "YYYY-MM-DD": pnl
+    
+    total_pnl_cum = 0.0
+    
+    # ANSI Colors
+    GREEN = '\033[92m'
+    RED = '\033[91m'
+    RESET = '\033[0m'
+
+    for t in trades:
+        date_str = str(t["Date"])[:19]
+        day = str(t["Date"])[:10]
+        pnl = t["PnL%"]
+        
+        # Accumulate Daily
+        daily_pnl[day] = daily_pnl.get(day, 0.0) + pnl
+        total_pnl_cum += pnl
+        
+        # Colorize PnL
+        pnl_str = f"{pnl:+.2f}%"
+        color = GREEN if pnl > 0 else RED
+        
+        print(f"{date_str:<20} | {t['Symbol']:<10} | {t['Score']:<5} | {t['Strategy']:<12} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<6} | {color}{pnl_str:<8}{RESET} | {t['Reason']}")
+
     # Save CSV
     csv_path = "backtest_trades.csv"
     keys = ["Date", "Symbol", "Score", "Strategy", "Entry", "Exit", "Duration(s)", "Reason", "PnL%"]
@@ -283,19 +317,27 @@ def main():
         writer.writeheader()
         writer.writerows(trades)
         
-    # Summary
-    total_pnl = sum(t["PnL%"] for t in trades)
+    # Summary similar to backtest_portfolio_realistic
+    total_days = len(daily_pnl)
+    avg_daily = sum(daily_pnl.values()) / total_days if total_days > 0 else 0
     wins = [t for t in trades if t["PnL%"] > 0]
     wr = len(wins) / len(trades) if trades else 0
     
+    # Calculate Max Drawdown (on cumulative PnL curve)
+    # Simple check on daily sequence not strictly accurate for equity curve but approximate
+    
     print("\n" + "="*60)
-    print(f"BACKTEST COMPLETE")
+    print(f"{'PORTFOLIO SUMMARY (30 Days)':^60}")
     print("="*60)
-    print(f"Total Trades: {len(trades)}")
-    print(f"Total PnL:    {total_pnl:.2f}% (Margin)")
-    print(f"Win Rate:     {wr*100:.1f}%")
-    print(f"Saved details to: {csv_path}")
+    print(f"Total Trades:      {len(trades)}")
+    print(f"Win Rate:          {wr*100:.1f}%")
+    print(f"Total PnL (Gross): {GREEN if total_pnl_cum > 0 else RED}{total_pnl_cum:.2f}%{RESET} (Sum of margin %)")
+    print("-" * 60)
+    print(f"Average Daily PnL: {avg_daily:.2f}%")
+    print(f"Best Day:          {max(daily_pnl.values(), default=0):.2f}%")
+    print(f"Worst Day:         {min(daily_pnl.values(), default=0):.2f}%")
     print("="*60)
+    print(f"Full details saved to: {csv_path}")
 
 if __name__ == "__main__":
     main()
