@@ -115,34 +115,72 @@ def run_strategy(
 ) -> Tuple[float, int]:
     """Запустить стратегию на наборе баров.
     Возвращает (total_pnl, last_bar_timestamp).
+    
+    OPTIMIZED: Precomputes cumulative delta and avg_delta arrays for O(n) instead of O(n²).
     """
     if not bars:
         return 0.0, 0
+    
+    n = len(bars)
+    
+    # =========================================================================
+    # PRECOMPUTE: Cumulative delta for fast rolling window calculation
+    # =========================================================================
+    # cumsum[i] = sum of delta from bar 0 to bar i (inclusive)
+    cumsum_delta = [0.0] * (n + 1)
+    cumsum_abs_delta = [0.0] * (n + 1)
+    for i in range(n):
+        cumsum_delta[i + 1] = cumsum_delta[i] + bars[i][2]
+        cumsum_abs_delta[i + 1] = cumsum_abs_delta[i] + abs(bars[i][2])
+    
+    # Precompute avg_delta for lookback=100
+    lookback = 100
+    avg_delta_arr = [0.0] * n
+    for i in range(n):
+        lb = min(i, lookback)
+        if lb > 0:
+            avg_delta_arr[i] = (cumsum_abs_delta[i] - cumsum_abs_delta[i - lb]) / lb
+    
+    # Build timestamp index for fast window lookup
+    timestamps = [bar[0] for bar in bars]
+    
+    # =========================================================================
+    # MAIN STRATEGY LOOP
+    # =========================================================================
     entry_price = bars[0][1]
     max_price = entry_price
     last_exit_ts = 0
     in_position = True
     total_pnl = 0.0
     comm_cost = COMMISSION_PCT * 2 * leverage
-    for idx, bar in enumerate(bars):
+    
+    for idx in range(n):
+        bar = bars[idx]
         ts = bar[0]
         price = bar[1]
+        
         if in_position:
             if price > max_price:
                 max_price = price
             pnl_from_entry = (price - entry_price) / entry_price * 100
             drawdown_from_max = (max_price - price) / max_price * 100
-            # Stop‑loss
+            
+            # Stop-loss
             if pnl_from_entry <= -sl_pct:
                 total_pnl += (pnl_from_entry * leverage - comm_cost)
                 in_position = False
                 last_exit_ts = ts
                 continue
+            
             # Trailing / momentum exit
-            if (pnl_from_entry >= BASE_ACTIVATION and drawdown_from_max >= BASE_CALLBACK):
-                rolling_delta = get_rolling_delta(bars, idx, delta_window)
-                avg_delta = get_avg_delta(bars, idx)
+            if pnl_from_entry >= BASE_ACTIVATION and drawdown_from_max >= BASE_CALLBACK:
+                # Fast rolling_delta using cumsum (approximate with fixed lookback)
+                window_start_idx = max(0, idx - delta_window)
+                rolling_delta = cumsum_delta[idx + 1] - cumsum_delta[window_start_idx]
+                
+                avg_delta = avg_delta_arr[idx]
                 threshold = avg_delta * threshold_mult
+                
                 if not (rolling_delta > threshold) and not (rolling_delta >= 0):
                     total_pnl += (pnl_from_entry * leverage - comm_cost)
                     in_position = False
@@ -150,7 +188,7 @@ def run_strategy(
                     max_price = price
                     continue
         else:
-            # Re‑entry logic
+            # Re-entry logic
             if ts - last_exit_ts >= BASE_COOLDOWN:
                 if price < max_price:
                     drop_pct = (max_price - price) / max_price * 100
@@ -162,12 +200,14 @@ def run_strategy(
                             last_exit_ts = 0
                 else:
                     max_price = price
+    
     # Если позиция всё ещё открыта – закрываем в конце
     if in_position:
         final_price = bars[-1][1]
         pnl = (final_price - entry_price) / entry_price * 100
         total_pnl += (pnl * leverage - comm_cost)
         last_exit_ts = bars[-1][0]
+    
     return total_pnl, last_exit_ts
 
 # ---------------------------------------------------------------------------

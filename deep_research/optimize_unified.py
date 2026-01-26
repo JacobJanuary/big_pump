@@ -332,6 +332,7 @@ def process_pair(pair: str, signals: List[SignalInfo], strategy_grid: List[Dict]
 # Global cache - set by main() before parallel processing
 PRELOADED_SIGNALS: List[SignalData] = []
 PRELOADED_BARS: Dict[int, List[tuple]] = {}
+# (MAX_SIGNALS_PER_FILTER removed - run_strategy is now O(n) instead of O(n²))
 
 def evaluate_filter_preloaded(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, Dict[int, float]]:
     """Run optimisation for one filter config using PRELOADED data.
@@ -343,6 +344,8 @@ def evaluate_filter_preloaded(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tu
     """
     # Filter signals in memory (no SQL!)
     signals = filter_signals_in_memory(PRELOADED_SIGNALS, filter_cfg)
+    
+    # Skip filters with too few signals
     if len(signals) < MIN_SIGNALS_FOR_EVAL:
         return filter_cfg, {}
     
