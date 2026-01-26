@@ -29,7 +29,9 @@ sys.path.append(str(current_dir.parent / "scripts_v2"))
 
 from pump_analysis_lib import get_db_connection
 from optimize_combined_leverage_filtered import (
-    run_strategy,  # OPTIMIZED version from deep_research (O(n) instead of O(n²))
+    precompute_bars,      # Precompute cumsum arrays ONCE per signal
+    run_strategy_fast,    # Use precomputed data for 540x faster execution
+    run_strategy,         # Legacy wrapper (for compatibility)
 )
 
 # ---------------------------------------------------------------------------
@@ -300,9 +302,13 @@ def process_pair(pair: str, signals: List[SignalInfo], strategy_grid: List[Dict]
         bars_cache: Pre-loaded bars {signal_id: List[tuple]}
     
     Returns a dict `strategy_id -> aggregated_pnl`.
+    
+    OPTIMIZED: Uses precompute_bars() ONCE per signal, then run_strategy_fast() for each strategy.
+    This avoids recalculating cumsum 540 times for the same bars.
     """
     aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
     position_tracker_ts = 0  # timestamp of last exit for this pair
+    
     for info in sorted(signals, key=lambda x: x.timestamp):
         # Skip if a position is still open (timestamp earlier than last exit)
         signal_ts = int(info.timestamp.timestamp())
@@ -311,11 +317,17 @@ def process_pair(pair: str, signals: List[SignalInfo], strategy_grid: List[Dict]
         bars = bars_cache.get(info.signal_id, [])
         if len(bars) < 100:
             continue
+        
+        # OPTIMIZATION: Precompute cumsum arrays ONCE for this signal
+        precomputed = precompute_bars(bars)
+        if precomputed is None:
+            continue
+        
         # Track the latest exit timestamp across all strategies for this signal
         max_last_ts = position_tracker_ts
         for sp_idx, sp in enumerate(strategy_grid):
-            pnl, last_ts = run_strategy(
-                bars,
+            pnl, last_ts = run_strategy_fast(
+                precomputed,
                 sp["sl_pct"],
                 sp["delta_window"],
                 sp["threshold_mult"],
@@ -324,6 +336,7 @@ def process_pair(pair: str, signals: List[SignalInfo], strategy_grid: List[Dict]
             aggregated[sp_idx] += pnl
             if last_ts > max_last_ts:
                 max_last_ts = last_ts
+        
         # Update the global tracker after evaluating all strategies for this signal
         position_tracker_ts = max_last_ts
     return aggregated

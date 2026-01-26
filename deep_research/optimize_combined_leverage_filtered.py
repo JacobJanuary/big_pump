@@ -106,27 +106,14 @@ def get_avg_delta(bars: List[tuple], idx: int, lookback: int = 100) -> float:
 # Core strategy execution – now returns PnL и timestamp последнего бара
 # ---------------------------------------------------------------------------
 
-def run_strategy(
-    bars: List[tuple],
-    sl_pct: float,
-    delta_window: int,
-    threshold_mult: float,
-    leverage: int,
-) -> Tuple[float, int]:
-    """Запустить стратегию на наборе баров.
-    Возвращает (total_pnl, last_bar_timestamp).
-    
-    OPTIMIZED: Precomputes cumulative delta and avg_delta arrays for O(n) instead of O(n²).
-    """
+def precompute_bars(bars: List[tuple]) -> Dict:
+    """Precompute cumsum arrays for bars - call ONCE per signal, reuse for all strategies."""
     if not bars:
-        return 0.0, 0
+        return None
     
     n = len(bars)
     
-    # =========================================================================
-    # PRECOMPUTE: Cumulative delta for fast rolling window calculation
-    # =========================================================================
-    # cumsum[i] = sum of delta from bar 0 to bar i (inclusive)
+    # Cumulative delta sums
     cumsum_delta = [0.0] * (n + 1)
     cumsum_abs_delta = [0.0] * (n + 1)
     for i in range(n):
@@ -141,12 +128,29 @@ def run_strategy(
         if lb > 0:
             avg_delta_arr[i] = (cumsum_abs_delta[i] - cumsum_abs_delta[i - lb]) / lb
     
-    # Build timestamp index for fast window lookup
-    timestamps = [bar[0] for bar in bars]
+    return {
+        'bars': bars,
+        'n': n,
+        'cumsum_delta': cumsum_delta,
+        'avg_delta_arr': avg_delta_arr,
+    }
+
+def run_strategy_fast(
+    precomputed: Dict,
+    sl_pct: float,
+    delta_window: int,
+    threshold_mult: float,
+    leverage: int,
+) -> Tuple[float, int]:
+    """Run strategy using precomputed bar data - FAST version."""
+    if precomputed is None:
+        return 0.0, 0
     
-    # =========================================================================
-    # MAIN STRATEGY LOOP
-    # =========================================================================
+    bars = precomputed['bars']
+    n = precomputed['n']
+    cumsum_delta = precomputed['cumsum_delta']
+    avg_delta_arr = precomputed['avg_delta_arr']
+    
     entry_price = bars[0][1]
     max_price = entry_price
     last_exit_ts = 0
@@ -174,7 +178,6 @@ def run_strategy(
             
             # Trailing / momentum exit
             if pnl_from_entry >= BASE_ACTIVATION and drawdown_from_max >= BASE_CALLBACK:
-                # Fast rolling_delta using cumsum (approximate with fixed lookback)
                 window_start_idx = max(0, idx - delta_window)
                 rolling_delta = cumsum_delta[idx + 1] - cumsum_delta[window_start_idx]
                 
@@ -209,6 +212,18 @@ def run_strategy(
         last_exit_ts = bars[-1][0]
     
     return total_pnl, last_exit_ts
+
+# Backwards compatibility wrapper
+def run_strategy(
+    bars: List[tuple],
+    sl_pct: float,
+    delta_window: int,
+    threshold_mult: float,
+    leverage: int,
+) -> Tuple[float, int]:
+    """Legacy wrapper - precomputes each time. Use run_strategy_fast for bulk operations."""
+    precomputed = precompute_bars(bars)
+    return run_strategy_fast(precomputed, sl_pct, delta_window, threshold_mult, leverage)
 
 # ---------------------------------------------------------------------------
 # Signal loading helpers
