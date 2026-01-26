@@ -59,9 +59,14 @@ def find_best_per_range(buckets: Dict[str, List[Dict]], top_n: int = 1) -> Dict[
     return best_per_range
 
 
-def create_composite_strategy(best_per_range: Dict[str, List[Dict]]) -> List[Dict]:
-    """Create composite strategy rules."""
+def create_composite_strategy(best_per_range: Dict[str, List[Dict]], min_pnl: float = 0) -> List[Dict]:
+    """Create composite strategy rules.
+    
+    Args:
+        min_pnl: Minimum PnL threshold. Ranges with lower PnL are skipped.
+    """
     rules = []
+    skipped = []
     
     for score_range in sorted(best_per_range.keys(), key=lambda x: int(x.split("-")[0])):
         configs = best_per_range[score_range]
@@ -72,6 +77,11 @@ def create_composite_strategy(best_per_range: Dict[str, List[Dict]]) -> List[Dic
         f = best["filter"]
         s = best["strategy"]
         m = best["metrics"]
+        
+        # Skip unprofitable ranges
+        if m["total_pnl"] < min_pnl:
+            skipped.append((score_range, m["total_pnl"]))
+            continue
         
         rule = {
             "priority": len(rules) + 1,
@@ -92,6 +102,11 @@ def create_composite_strategy(best_per_range: Dict[str, List[Dict]]) -> List[Dic
             "expected_pnl": m["total_pnl"],
         }
         rules.append(rule)
+    
+    if skipped:
+        print(f"\n⚠️  Skipping {len(skipped)} unprofitable ranges (PnL < {min_pnl}%):")
+        for sr, pnl in skipped:
+            print(f"   - {sr}: {pnl:.2f}%")
     
     return rules
 
@@ -158,6 +173,7 @@ def main():
     parser.add_argument("--file", type=str, help="Path to results JSON file")
     parser.add_argument("--top", type=int, default=1, help="Top N configs per range to show")
     parser.add_argument("--output", type=str, default="composite_strategy.json", help="Output file")
+    parser.add_argument("--min-pnl", type=float, default=0, help="Minimum PnL to include range (default: 0, skip negative)")
     args = parser.parse_args()
     
     results = load_results(args.file)
@@ -173,8 +189,8 @@ def main():
     # Find best per range
     best_per_range = find_best_per_range(buckets, args.top)
     
-    # Create composite strategy
-    rules = create_composite_strategy(best_per_range)
+    # Create composite strategy (skip ranges below min_pnl)
+    rules = create_composite_strategy(best_per_range, min_pnl=args.min_pnl)
     
     # Print report
     print_composite_report(rules, best_per_range)
