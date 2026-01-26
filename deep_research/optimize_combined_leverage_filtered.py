@@ -141,8 +141,17 @@ def run_strategy_fast(
     delta_window: int,
     threshold_mult: float,
     leverage: int,
+    # Parameterized strategy constants (use defaults for backwards compatibility)
+    base_activation: float = BASE_ACTIVATION,
+    base_callback: float = BASE_CALLBACK,
+    base_reentry_drop: float = BASE_REENTRY_DROP,
+    base_cooldown: int = BASE_COOLDOWN,
 ) -> Tuple[float, int]:
-    """Run strategy using precomputed bar data - FAST version."""
+    """Run strategy using precomputed bar data - FAST version.
+    
+    New in v2: Uses proportional threshold scaling when data < delta_window.
+    This prevents false exits based on insufficient data.
+    """
     if precomputed is None:
         return 0.0, 0
     
@@ -176,13 +185,20 @@ def run_strategy_fast(
                 last_exit_ts = ts
                 continue
             
-            # Trailing / momentum exit
-            if pnl_from_entry >= BASE_ACTIVATION and drawdown_from_max >= BASE_CALLBACK:
+            # Trailing / momentum exit (using parameterized constants)
+            if pnl_from_entry >= base_activation and drawdown_from_max >= base_callback:
                 window_start_idx = max(0, idx - delta_window)
+                actual_window_size = idx - window_start_idx
                 rolling_delta = cumsum_delta[idx + 1] - cumsum_delta[window_start_idx]
                 
                 avg_delta = avg_delta_arr[idx]
                 threshold = avg_delta * threshold_mult
+                
+                # Proportional scaling when insufficient data
+                # If we only have 50% of requested window, require 50% of threshold
+                if actual_window_size < delta_window and delta_window > 0:
+                    data_ratio = actual_window_size / delta_window
+                    threshold = threshold * data_ratio
                 
                 if not (rolling_delta > threshold) and not (rolling_delta >= 0):
                     total_pnl += (pnl_from_entry * leverage - comm_cost)
@@ -191,11 +207,11 @@ def run_strategy_fast(
                     max_price = price
                     continue
         else:
-            # Re-entry logic
-            if ts - last_exit_ts >= BASE_COOLDOWN:
+            # Re-entry logic (using parameterized constants)
+            if ts - last_exit_ts >= base_cooldown:
                 if price < max_price:
                     drop_pct = (max_price - price) / max_price * 100
-                    if drop_pct >= BASE_REENTRY_DROP:
+                    if drop_pct >= base_reentry_drop:
                         if bar[2] > 0 and bar[4] > bar[5]:
                             in_position = True
                             entry_price = price
@@ -220,10 +236,17 @@ def run_strategy(
     delta_window: int,
     threshold_mult: float,
     leverage: int,
+    base_activation: float = BASE_ACTIVATION,
+    base_callback: float = BASE_CALLBACK,
+    base_reentry_drop: float = BASE_REENTRY_DROP,
+    base_cooldown: int = BASE_COOLDOWN,
 ) -> Tuple[float, int]:
     """Legacy wrapper - precomputes each time. Use run_strategy_fast for bulk operations."""
     precomputed = precompute_bars(bars)
-    return run_strategy_fast(precomputed, sl_pct, delta_window, threshold_mult, leverage)
+    return run_strategy_fast(
+        precomputed, sl_pct, delta_window, threshold_mult, leverage,
+        base_activation, base_callback, base_reentry_drop, base_cooldown
+    )
 
 # ---------------------------------------------------------------------------
 # Signal loading helpers

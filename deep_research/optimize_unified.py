@@ -80,27 +80,62 @@ def generate_filter_grid() -> List[Dict]:
     return grid
 
 # ---------------------------------------------------------------------------
-# Strategy grid generation (same as in optimize_combined_leverage)
+# Strategy grid generation (EXPANDED with BASE_* parameterization)
 # ---------------------------------------------------------------------------
 def generate_strategy_grid() -> List[Dict]:
+    """Generate expanded strategy grid with parameterized BASE_* constants.
+    
+    Three trailing exit profiles:
+    1. SCALPING:     activation=0.4%, callback=0.2% (early exit, from scripts_v2)
+    2. BALANCED:     activation=4.0%, callback=2.0% (middle ground)
+    3. CONSERVATIVE: activation=10.0%, callback=4.0% (hold longer)
+    
+    Grid size calculation:
+    - leverage: 2 options
+    - sl_pct: 6 options  
+    - delta_window: 10 options
+    - threshold_mult: 5 options
+    - activation/callback pairs: 3 options
+    - base_cooldown: 3 options
+    
+    Total: 2 * 6 * 10 * 5 * 3 * 3 = 5,400 combinations
+    """
     leverage_opts = [5, 10]
-    delta_window_opts = [10, 30, 60, 120, 300, 600, 1800, 3600, 7200]
+    delta_window_opts = [5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200]
     threshold_opts = [1.0, 1.5, 2.0, 2.5, 3.0]
     sl_by_leverage = {
         5: [3, 4, 5, 7, 10, 15],
         10: [3, 4, 5, 7, 10, 15],
     }
+    
+    # Four trailing exit profiles (activation, callback) pairs
+    trailing_profiles = [
+        (0.4, 0.2),   # SCALPING: from scripts_v2, aggressive early exit
+        (4.0, 2.0),   # BALANCED: middle ground
+        (7.0, 3.0),   # MODERATE: between balanced and conservative
+        (10.0, 4.0),  # CONSERVATIVE: hold longer
+    ]
+    
+    base_reentry_drop = 5.0  # Fixed
+    base_cooldown_opts = [60, 300, 600]
+    
     grid = []
     for lev in leverage_opts:
         for sl in sl_by_leverage[lev]:
             for win in delta_window_opts:
                 for thresh in threshold_opts:
-                    grid.append({
-                        "leverage": lev,
-                        "sl_pct": sl,
-                        "delta_window": win,
-                        "threshold_mult": thresh,
-                    })
+                    for (act, cb) in trailing_profiles:
+                        for cool in base_cooldown_opts:
+                            grid.append({
+                                "leverage": lev,
+                                "sl_pct": sl,
+                                "delta_window": win,
+                                "threshold_mult": thresh,
+                                "base_activation": act,
+                                "base_callback": cb,
+                                "base_reentry_drop": base_reentry_drop,
+                                "base_cooldown": cool,
+                            })
     return grid
 
 # ---------------------------------------------------------------------------
@@ -341,13 +376,17 @@ def precompute_all_strategies(
             
         sig_results = {}
         for s_idx, sp in enumerate(strategy_grid):
-            # Run strategy
+            # Run strategy with all parameters including BASE_*
             pnl, last_ts = run_strategy_fast(
                 precomputed,
                 sp["sl_pct"],
                 sp["delta_window"],
                 sp["threshold_mult"],
-                sp["leverage"]
+                sp["leverage"],
+                sp.get("base_activation", 10.0),
+                sp.get("base_callback", 4.0),
+                sp.get("base_reentry_drop", 5.0),
+                sp.get("base_cooldown", 300),
             )
             sig_results[s_idx] = (pnl, last_ts)
         
