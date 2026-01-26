@@ -108,25 +108,21 @@ def generate_strategy_grid() -> List[Dict]:
 def fetch_filtered_signals(filter_cfg: Dict) -> List[SignalInfo]:
     """Return a list of SignalInfo objects that satisfy the filter configuration.
 
-    This implementation performs a SQL query joining `fas_v2.scoring_history`
-    with `fas_v2.indicators` to apply the dynamic filter thresholds, then maps
-    the resulting rows to `web.signal_analysis.id` for later bar loading.
+    Uses web.signal_analysis directly (same as scripts_v2/optimize_unified.py)
+    joined with fas_v2.indicators for filter thresholds.
     """
     try:
         with get_db_connection() as conn:
-            # Build dynamic SQL with joins to apply filter thresholds
             query = """
-                SELECT sh.id, sh.pair_symbol, sh.timestamp,
-                       i.rsi, i.volume_zscore, i.oi_delta_pct
-                FROM fas_v2.scoring_history AS sh
-                JOIN fas_v2.sh_indicators shi ON shi.scoring_history_id = sh.id
-                JOIN fas_v2.indicators i ON (
-                    i.trading_pair_id = shi.indicators_trading_pair_id
-                    AND i.timestamp = shi.indicators_timestamp
-                    AND i.timeframe = shi.indicators_timeframe
+                SELECT sa.id, sa.pair_symbol, sa.signal_timestamp
+                FROM web.signal_analysis AS sa
+                JOIN fas_v2.indicators AS i ON (
+                    i.trading_pair_id = sa.trading_pair_id 
+                    AND i.timestamp = sa.signal_timestamp
+                    AND i.timeframe = '15m'
                 )
-                WHERE sh.total_score >= %(score_min)s
-                  AND sh.total_score < %(score_max)s
+                WHERE sa.total_score >= %(score_min)s
+                  AND sa.total_score < %(score_max)s
                   AND i.rsi >= %(rsi_min)s
                   AND i.volume_zscore >= %(vol_min)s
                   AND i.oi_delta_pct >= %(oi_min)s
@@ -141,22 +137,11 @@ def fetch_filtered_signals(filter_cfg: Dict) -> List[SignalInfo]:
             with conn.cursor() as cur:
                 cur.execute(query, params)
                 rows = cur.fetchall()
-            # Map (pair, timestamp) to web.signal_analysis.id
-            with conn.cursor() as cur:
-                cur.execute("SELECT id, pair_symbol, signal_timestamp FROM web.signal_analysis")
-                web_rows = cur.fetchall()
-            web_map: Dict[Tuple[str, datetime], int] = {}
-            for wid, sym, ts in web_rows:
-                if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                web_map[(sym, ts)] = wid
             matched: List[SignalInfo] = []
-            for fas_id, sym, ts, rsi, vol, oi in rows:
+            for signal_id, sym, ts in rows:
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
-                key = (sym, ts)
-                if key in web_map:
-                    matched.append(SignalInfo(signal_id=web_map[key], pair=sym, timestamp=ts))
+                matched.append(SignalInfo(signal_id=signal_id, pair=sym, timestamp=ts))
             return matched
     except Exception as e:
         print(f"Error fetching filtered signals: {e}")
