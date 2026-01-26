@@ -250,8 +250,10 @@ def process_pair(pair: str, signals: List[SignalInfo]) -> Tuple[Dict[int, float]
     processed = 0
     skipped = 0
     for info in sorted(signals, key=lambda x: x.timestamp):
+        # Конвертируем datetime в Unix timestamp для сравнения
+        signal_ts = int(info.timestamp.timestamp())
         # Пропускаем, если позиция ещё открыта
-        if info.timestamp < position_tracker_ts:
+        if signal_ts < position_tracker_ts:
             skipped += 1
             continue
         bars = load_bars_for_signal(info.signal_id)
