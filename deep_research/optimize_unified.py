@@ -63,8 +63,8 @@ def generate_filter_grid() -> List[Dict]:
     """
     grid = []
     for score, rsi, vol, oi in itertools.product(
-        SCORE_RANGE,               # total_score min
-        range(0, 81, 5),           # RSI 0‑80 step 5
+        SCORE_RANGE,               # total_score min (100-900 step 50)
+        range(0, 81, 5),           # RSI 0-80 step 5
         range(0, 16, 1),           # volume_zscore 0-15 step 1
         range(0, 41, 1),           # oi_delta 0-40 step 1
     ):
@@ -102,7 +102,108 @@ def generate_strategy_grid() -> List[Dict]:
     return grid
 
 # ---------------------------------------------------------------------------
-# Fetch signals that satisfy a filter configuration
+# PRELOAD ALL DATA ONCE (eliminates SQL in optimization loop)
+# ---------------------------------------------------------------------------
+class SignalData(NamedTuple):
+    """Extended signal info with indicator values for in-memory filtering"""
+    signal_id: int
+    pair: str
+    timestamp: datetime
+    score: int
+    rsi: float
+    vol_zscore: float
+    oi_delta: float
+
+def preload_all_signals() -> List[SignalData]:
+    """Load ALL signals with their indicators in ONE query.
+    
+    Returns list of SignalData for in-memory filtering.
+    """
+    print("[PRELOAD] Loading all signals from database...")
+    signals = []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT sa.id, sa.pair_symbol, sa.signal_timestamp, sa.total_score,
+                           i.rsi, i.volume_zscore, i.oi_delta_pct
+                    FROM web.signal_analysis AS sa
+                    JOIN fas_v2.indicators AS i ON (
+                        i.trading_pair_id = sa.trading_pair_id 
+                        AND i.timestamp = sa.signal_timestamp
+                        AND i.timeframe = '15m'
+                    )
+                    WHERE sa.total_score >= 100 AND sa.total_score < 950
+                """)
+                for row in cur.fetchall():
+                    sid, sym, ts, score, rsi, vol, oi = row
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=timezone.utc)
+                    signals.append(SignalData(
+                        signal_id=sid, pair=sym, timestamp=ts,
+                        score=score, rsi=rsi or 0, vol_zscore=vol or 0, oi_delta=oi or 0
+                    ))
+        print(f"[PRELOAD] Loaded {len(signals)} signals")
+    except Exception as e:
+        print(f"Error preloading signals: {e}")
+    return signals
+
+def preload_all_bars(signal_ids: List[int]) -> Dict[int, List[tuple]]:
+    """Load ALL bars for all signals in chunks.
+    
+    Returns dict: {signal_id: [(ts, price, delta, 0, buy, sell), ...]}
+    """
+    print(f"[PRELOAD] Loading bars for {len(signal_ids)} signals...")
+    bars_map: Dict[int, List[tuple]] = {}
+    chunk_size = 50
+    
+    for i in range(0, len(signal_ids), chunk_size):
+        chunk = signal_ids[i:i + chunk_size]
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT signal_analysis_id, second_ts, close_price, delta,
+                               large_buy_count, large_sell_count
+                        FROM web.agg_trades_1s
+                        WHERE signal_analysis_id = ANY(%s)
+                        ORDER BY signal_analysis_id, second_ts
+                    """, (chunk,))
+                    for row in cur.fetchall():
+                        sid, ts, price, delta, buy, sell = row
+                        bars_map.setdefault(sid, []).append(
+                            (ts, float(price), float(delta), 0.0, buy, sell)
+                        )
+        except Exception as e:
+            print(f"Error loading bars chunk {i}: {e}")
+        if (i + chunk_size) % 500 == 0:
+            print(f"[PRELOAD] Loaded bars for {min(i + chunk_size, len(signal_ids))}/{len(signal_ids)} signals")
+    
+    print(f"[PRELOAD] Bars loaded for {len(bars_map)} signals")
+    return bars_map
+
+# ---------------------------------------------------------------------------
+# Filter signals in memory (no SQL)
+# ---------------------------------------------------------------------------
+def filter_signals_in_memory(all_signals: List[SignalData], filter_cfg: Dict) -> List[SignalInfo]:
+    """Filter preloaded signals by filter config - pure Python, no SQL."""
+    matched = []
+    score_min = filter_cfg["score_min"]
+    score_max = filter_cfg["score_max"]
+    rsi_min = filter_cfg["rsi_min"]
+    vol_min = filter_cfg["vol_min"]
+    oi_min = filter_cfg["oi_min"]
+    
+    for s in all_signals:
+        if (score_min <= s.score < score_max and
+            s.rsi >= rsi_min and
+            s.vol_zscore >= vol_min and
+            s.oi_delta >= oi_min):
+            matched.append(SignalInfo(signal_id=s.signal_id, pair=s.pair, timestamp=s.timestamp))
+    return matched
+
+# ---------------------------------------------------------------------------
+# Legacy fetch functions (kept for reference but not used in main loop)
 # ---------------------------------------------------------------------------
 def fetch_filtered_signals(filter_cfg: Dict) -> List[SignalInfo]:
     """Return a list of SignalInfo objects that satisfy the filter configuration.
@@ -226,18 +327,22 @@ def process_pair(pair: str, signals: List[SignalInfo], strategy_grid: List[Dict]
     return aggregated
 
 # ---------------------------------------------------------------------------
-# Evaluate a single filter configuration
+# Evaluate a single filter configuration (PRELOADED VERSION - no SQL)
 # ---------------------------------------------------------------------------
-def evaluate_filter(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, Dict[int, float]]:
-    """Run optimisation for one filter config.
+# Global cache - set by main() before parallel processing
+PRELOADED_SIGNALS: List[SignalData] = []
+PRELOADED_BARS: Dict[int, List[tuple]] = {}
+
+def evaluate_filter_preloaded(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, Dict[int, float]]:
+    """Run optimisation for one filter config using PRELOADED data.
 
     Returns the filter config and a dict `strategy_id -> total_pnl` aggregated over
     all pairs.
     
-    NOTE: Bars are batch-loaded once per filter to avoid DB connection exhaustion.
-    Pairs are processed sequentially for global position tracking.
+    NOTE: Uses in-memory filtering, NO SQL queries executed here.
     """
-    signals = fetch_filtered_signals(filter_cfg)
+    # Filter signals in memory (no SQL!)
+    signals = filter_signals_in_memory(PRELOADED_SIGNALS, filter_cfg)
     if len(signals) < MIN_SIGNALS_FOR_EVAL:
         return filter_cfg, {}
     
@@ -246,14 +351,11 @@ def evaluate_filter(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, 
     for s in signals:
         by_pair.setdefault(s.pair, []).append(s)
     
-    # Batch load all bars for all signals in ONE query
-    all_signal_ids = [s.signal_id for s in signals]
-    bars_cache = fetch_bars_batch(all_signal_ids)
-    
+    # Use preloaded bars cache (no SQL!)
     # Sequential processing per pair (required for global position tracking)
     aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
     for pair, pair_signals in by_pair.items():
-        pair_agg = process_pair(pair, pair_signals, strategy_grid, bars_cache)
+        pair_agg = process_pair(pair, pair_signals, strategy_grid, PRELOADED_BARS)
         for sid, val in pair_agg.items():
             aggregated[sid] += val
     return filter_cfg, aggregated
@@ -261,7 +363,7 @@ def evaluate_filter(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, 
 # ---------------------------------------------------------------------------
 # Main optimisation loop
 # ---------------------------------------------------------------------------
-DEBUG_LOGGING = True  # Set to True to log each filter evaluation
+DEBUG_LOGGING = False  # Set to True for verbose logging
 
 def _evaluate_filter_wrapper(args):
     """Wrapper for multiprocessing - unpacks args tuple."""
@@ -270,7 +372,7 @@ def _evaluate_filter_wrapper(args):
         import os
         pid = os.getpid()
         print(f"[PID {pid}] Starting filter: score={filter_cfg.get('score_min')}, rsi={filter_cfg.get('rsi_min')}, vol={filter_cfg.get('vol_min')}, oi={filter_cfg.get('oi_min')}", flush=True)
-    result = evaluate_filter(filter_cfg, strategy_grid)
+    result = evaluate_filter_preloaded(filter_cfg, strategy_grid)
     if DEBUG_LOGGING:
         print(f"[PID {pid}] Finished filter: score={filter_cfg.get('score_min')}", flush=True)
     return result
@@ -295,6 +397,32 @@ def main():
     strategy_grid = generate_strategy_grid()
     print(f"Filter grid: {len(filter_grid)} combinations, Strategy grid: {len(strategy_grid)} combinations")
     print(f"Using {MAX_WORKERS} workers for parallel filter processing")
+
+    # =========================================================================
+    # PRELOAD ALL DATA ONCE (eliminates all SQL queries during optimization)
+    # =========================================================================
+    global PRELOADED_SIGNALS, PRELOADED_BARS
+    
+    print("\n" + "="*70)
+    print("PHASE 1: Preloading all data into memory (one-time DB access)")
+    print("="*70)
+    
+    PRELOADED_SIGNALS = preload_all_signals()
+    if not PRELOADED_SIGNALS:
+        print("ERROR: No signals loaded. Exiting.")
+        return
+    
+    all_signal_ids = [s.signal_id for s in PRELOADED_SIGNALS]
+    PRELOADED_BARS = preload_all_bars(all_signal_ids)
+    
+    # Filter out signals without bars
+    signals_with_bars = [s for s in PRELOADED_SIGNALS if s.signal_id in PRELOADED_BARS and len(PRELOADED_BARS[s.signal_id]) >= 100]
+    PRELOADED_SIGNALS = signals_with_bars
+    print(f"[PRELOAD] Signals with sufficient bars (>=100): {len(PRELOADED_SIGNALS)}")
+    
+    print("="*70)
+    print("PHASE 2: Running optimization (NO SQL queries from here)")
+    print("="*70 + "\n")
 
     all_results = []
     
