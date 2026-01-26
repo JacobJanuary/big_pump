@@ -117,13 +117,15 @@ def fetch_filtered_signals(filter_cfg: Dict) -> List[SignalInfo]:
         with get_db_connection() as conn:
             # Build dynamic SQL with joins to apply filter thresholds
             query = """
-                SELECT sh.id, sh.pair_symbol, sh.signal_timestamp,
+                SELECT sh.id, sh.pair_symbol, sh.timestamp,
                        i.rsi, i.volume_zscore, i.oi_delta_pct
                 FROM fas_v2.scoring_history AS sh
-                JOIN fas_v2.indicators AS i
-                  ON i.trading_pair_id = sh.trading_pair_id
-                 AND i.timestamp = sh.signal_timestamp
-                 AND i.timeframe = '15m'
+                JOIN fas_v2.sh_indicators shi ON shi.scoring_history_id = sh.id
+                JOIN fas_v2.indicators i ON (
+                    i.trading_pair_id = shi.indicators_trading_pair_id
+                    AND i.timestamp = shi.indicators_timestamp
+                    AND i.timeframe = shi.indicators_timeframe
+                )
                 WHERE sh.total_score >= %(score_min)s
                   AND sh.total_score < %(score_max)s
                   AND i.rsi >= %(rsi_min)s
