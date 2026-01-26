@@ -294,52 +294,112 @@ def fetch_bars_batch(signal_ids: List[int]) -> Dict[int, List[tuple]]:
 # ---------------------------------------------------------------------------
 # Per‑pair sequential processing with global position tracking
 # ---------------------------------------------------------------------------
-def process_pair(pair: str, signals: List[SignalInfo], strategy_grid: List[Dict],
-                 bars_cache: Dict[int, List[tuple]]) -> Dict[int, float]:
-    """Process all signals for a single pair sequentially.
+# ---------------------------------------------------------------------------
+# LOOKUP TABLE ARCHITECTURE
+# ---------------------------------------------------------------------------
+# Global vars for WORKERS
+WORKER_SIGNALS: List[SignalData] = []
+WORKER_RESULTS: Dict[int, Dict[int, Tuple[float, int]]] = {}
 
-    Args:
-        bars_cache: Pre-loaded bars {signal_id: List[tuple]}
+def init_worker_lookup(signals: List[SignalData], results: Dict[int, Dict[int, Tuple[float, int]]]):
+    """Initialize worker with read-only data (Copy-on-Write optimization)."""
+    global WORKER_SIGNALS, WORKER_RESULTS
+    WORKER_SIGNALS = signals
+    WORKER_RESULTS = results
+
+def precompute_all_strategies(
+    signals: List[SignalData],
+    bars_cache: Dict[int, List[tuple]],
+    strategy_grid: List[Dict]
+) -> Dict[int, Dict[int, Tuple[float, int]]]:
+    """Phase 1: Run ALL strategies for ALL signals.
     
-    Returns a dict `strategy_id -> aggregated_pnl`.
-    
-    OPTIMIZED: Uses precompute_bars() ONCE per signal, then run_strategy_fast() for each strategy.
-    This avoids recalculating cumsum 540 times for the same bars.
+    Returns: {signal_id: {strategy_idx: (pnl, last_exit_ts)}}
     """
-    aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
-    position_tracker_ts = 0  # timestamp of last exit for this pair
+    print(f"[PRECOMPUTE] Running {len(strategy_grid)} strategies for {len(signals)} signals...")
+    results_map = {}
     
-    for info in sorted(signals, key=lambda x: x.timestamp):
-        # Skip if a position is still open (timestamp earlier than last exit)
-        signal_ts = int(info.timestamp.timestamp())
-        if signal_ts < position_tracker_ts:
-            continue
-        bars = bars_cache.get(info.signal_id, [])
+    # We can use parallelization here too if needed, but sequential is fine for 300k items
+    # (~1ms per item = 300s. Parallel 12 workers = 25s)
+    
+    # Let's use a pool for this precomputation to make it super fast
+    # Map (signal, bars) -> {strat_idx: res}
+    
+    start_time = datetime.now()
+    processed_count = 0
+    
+    for sig in signals:
+        sid = sig.signal_id
+        bars = bars_cache.get(sid, [])
         if len(bars) < 100:
             continue
-        
-        # OPTIMIZATION: Precompute cumsum arrays ONCE for this signal
+            
+        # Precompute cumsum once
         precomputed = precompute_bars(bars)
-        if precomputed is None:
+        if not precomputed:
             continue
-        
-        # Track the latest exit timestamp across all strategies for this signal
-        max_last_ts = position_tracker_ts
-        for sp_idx, sp in enumerate(strategy_grid):
+            
+        sig_results = {}
+        for s_idx, sp in enumerate(strategy_grid):
+            # Run strategy
             pnl, last_ts = run_strategy_fast(
                 precomputed,
                 sp["sl_pct"],
                 sp["delta_window"],
                 sp["threshold_mult"],
-                sp["leverage"],
+                sp["leverage"]
             )
-            aggregated[sp_idx] += pnl
-            if last_ts > max_last_ts:
-                max_last_ts = last_ts
+            sig_results[s_idx] = (pnl, last_ts)
         
-        # Update the global tracker after evaluating all strategies for this signal
-        position_tracker_ts = max_last_ts
-    return aggregated
+        results_map[sid] = sig_results
+        processed_count += 1
+        
+        if processed_count % 100 == 0:
+            print(f"[PRECOMPUTE] PROGESS: {processed_count}/{len(signals)} signals processed...", end='\r')
+
+    elapsed = (datetime.now() - start_time).total_seconds()
+    print(f"\n[PRECOMPUTE] Done in {elapsed:.1f}s. Computed {len(results_map)} signals.")
+    return results_map
+
+def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, Dict[int, float]]:
+    """Phase 2: Evaluate filter using LOOKUP TABLE (No calculation)."""
+    # 1. Filter signals (InMemory)
+    matched_signals = filter_signals_in_memory(WORKER_SIGNALS, filter_cfg)
+    if len(matched_signals) < MIN_SIGNALS_FOR_EVAL:
+        return filter_cfg, {}
+
+    # 2. Group by pair
+    by_pair: Dict[str, List[SignalInfo]] = {}
+    for s in matched_signals:
+        by_pair.setdefault(s.pair, []).append(SignalInfo(s.signal_id, s.pair, s.timestamp))
+
+    # 3. Sum results from LOOKUP TABLE
+    aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
+    
+    for pair, pair_signals in by_pair.items():
+        # Sequential check for pair position tracking
+        position_tracker_ts = 0
+        sorted_signals = sorted(pair_signals, key=lambda x: x.timestamp)
+        
+        for sig in sorted_signals:
+            if int(sig.timestamp.timestamp()) < position_tracker_ts:
+                continue
+                
+            # Lookup results
+            sig_res = WORKER_RESULTS.get(sig.signal_id)
+            if not sig_res:
+                continue
+                
+            # Add PnL for all strategies
+            max_last_ts = position_tracker_ts
+            for s_idx, (pnl, last_ts) in sig_res.items():
+                aggregated[s_idx] += pnl
+                if last_ts > max_last_ts:
+                    max_last_ts = last_ts
+                    
+            position_tracker_ts = max_last_ts
+
+    return filter_cfg, aggregated
 
 # ---------------------------------------------------------------------------
 # Evaluate a single filter configuration (PRELOADED VERSION - no SQL)
@@ -349,51 +409,24 @@ PRELOADED_SIGNALS: List[SignalData] = []
 PRELOADED_BARS: Dict[int, List[tuple]] = {}
 # (MAX_SIGNALS_PER_FILTER removed - run_strategy is now O(n) instead of O(n²))
 
-def evaluate_filter_preloaded(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, Dict[int, float]]:
-    """Run optimisation for one filter config using PRELOADED data.
-
-    Returns the filter config and a dict `strategy_id -> total_pnl` aggregated over
-    all pairs.
-    
-    NOTE: Uses in-memory filtering, NO SQL queries executed here.
-    """
-    # Filter signals in memory (no SQL!)
-    signals = filter_signals_in_memory(PRELOADED_SIGNALS, filter_cfg)
-    
-    # Skip filters with too few signals
-    if len(signals) < MIN_SIGNALS_FOR_EVAL:
-        return filter_cfg, {}
-    
-    # Group by pair
-    by_pair: Dict[str, List[SignalInfo]] = {}
-    for s in signals:
-        by_pair.setdefault(s.pair, []).append(s)
-    
-    # Use preloaded bars cache (no SQL!)
-    # Sequential processing per pair (required for global position tracking)
-    aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
-    for pair, pair_signals in by_pair.items():
-        pair_agg = process_pair(pair, pair_signals, strategy_grid, PRELOADED_BARS)
-        for sid, val in pair_agg.items():
-            aggregated[sid] += val
-    return filter_cfg, aggregated
+# (evaluate_filter_preloaded removed - using Lookup Table architecture)
+# ---------------------------------------------------------------------------
+# Evaluate a single filter configuration (LOOKUP TABLE WRAPPER)
+# ---------------------------------------------------------------------------
+def _evaluate_filter_wrapper_lookup(args):
+    """Wrapper for multiprocessing with Lookup Table."""
+    filter_cfg, strategy_grid = args
+    return evaluate_filter_lookup(filter_cfg, strategy_grid)
 
 # ---------------------------------------------------------------------------
 # Main optimisation loop
 # ---------------------------------------------------------------------------
-DEBUG_LOGGING = False  # Set to True for verbose logging
+DEBUG_LOGGING = False
 
-def _evaluate_filter_wrapper(args):
-    """Wrapper for multiprocessing - unpacks args tuple."""
+def _evaluate_filter_wrapper_lookup(args):
+    """Wrapper for multiprocessing with Lookup Table."""
     filter_cfg, strategy_grid = args
-    if DEBUG_LOGGING:
-        import os
-        pid = os.getpid()
-        print(f"[PID {pid}] Starting filter: score={filter_cfg.get('score_min')}, rsi={filter_cfg.get('rsi_min')}, vol={filter_cfg.get('vol_min')}, oi={filter_cfg.get('oi_min')}", flush=True)
-    result = evaluate_filter_preloaded(filter_cfg, strategy_grid)
-    if DEBUG_LOGGING:
-        print(f"[PID {pid}] Finished filter: score={filter_cfg.get('score_min')}", flush=True)
-    return result
+    return evaluate_filter_lookup(filter_cfg, strategy_grid)
 
 def main():
     import argparse
@@ -417,29 +450,43 @@ def main():
     print(f"Using {MAX_WORKERS} workers for parallel filter processing")
 
     # =========================================================================
-    # PRELOAD ALL DATA ONCE (eliminates all SQL queries during optimization)
+    # PHASE 1: PRELOAD & PRECOMPUTE (The Heavy Lifting)
     # =========================================================================
     global PRELOADED_SIGNALS, PRELOADED_BARS
     
     print("\n" + "="*70)
-    print("PHASE 1: Preloading all data into memory (one-time DB access)")
+    print("PHASE 1: Preloading & Precomputing Strategy Results")
     print("="*70)
     
-    PRELOADED_SIGNALS = preload_all_signals()
-    if not PRELOADED_SIGNALS:
+    # 1. Load Signals
+    all_signals = preload_all_signals()
+    if not all_signals:
         print("ERROR: No signals loaded. Exiting.")
         return
     
-    all_signal_ids = [s.signal_id for s in PRELOADED_SIGNALS]
-    PRELOADED_BARS = preload_all_bars(all_signal_ids)
+    # 2. Load Bars
+    all_signal_ids = [s.signal_id for s in all_signals]
+    bars_cache = preload_all_bars(all_signal_ids)
     
-    # Filter out signals without bars
-    signals_with_bars = [s for s in PRELOADED_SIGNALS if s.signal_id in PRELOADED_BARS and len(PRELOADED_BARS[s.signal_id]) >= 100]
-    PRELOADED_SIGNALS = signals_with_bars
-    print(f"[PRELOAD] Signals with sufficient bars (>=100): {len(PRELOADED_SIGNALS)}")
+    # 3. Filter signals with sufficient bars
+    signals_with_bars = [s for s in all_signals if s.signal_id in bars_cache and len(bars_cache[s.signal_id]) >= 100]
+    print(f"[PRELOAD] Signals with sufficient bars (>=100): {len(signals_with_bars)}")
+    if not signals_with_bars:
+        print("No signals with sufficient data.")
+        return
+
+    # 4. PRECOMPUTE ALL STRATEGIES (Lookup Table Generation)
+    # This runs 540 strategies for every signal once.
+    lookup_table = precompute_all_strategies(signals_with_bars, bars_cache, strategy_grid)
     
+    # Clean up bars_cache to free memory (we only need the lookup table now!)
+    del bars_cache
+    import gc
+    gc.collect()
+    print("[MEMORY] Cleared bars cache. Ready for optimization.")
+
     print("="*70)
-    print("PHASE 2: Running optimization (NO SQL queries from here)")
+    print("PHASE 2: Running optimization (Lookup Table Mode - Ultra Fast)")
     print("="*70 + "\n")
 
     all_results = []
@@ -456,8 +503,11 @@ def main():
             iterator = tasks
             print(f"Optimizing {len(filter_grid)} filter configurations...")
         
+        # Initialize global worker state for sequential run
+        init_worker_lookup(signals_with_bars, lookup_table)
+        
         for task in iterator:
-            cfg, agg = _evaluate_filter_wrapper(task)
+            cfg, agg = _evaluate_filter_wrapper_lookup(task)
             if agg:
                 best_sid = max(agg, key=lambda k: agg[k])
                 best_params = strategy_grid[best_sid]
@@ -467,61 +517,75 @@ def main():
                     "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
                 }
                 all_results.append(result_entry)
+                # Save immediately for seq mode
                 try:
                     with open("intermediate_results.jsonl", "a", encoding="utf-8") as f:
                         f.write(json.dumps(result_entry) + "\n")
                 except Exception:
                     pass
     else:
-        # Parallel processing with imap_unordered for progress tracking
-        try:
-            from tqdm import tqdm
-            with mp.Pool(processes=MAX_WORKERS, maxtasksperchild=100) as pool:
-                for cfg, agg in tqdm(pool.imap_unordered(_evaluate_filter_wrapper, tasks), 
-                                      total=len(tasks), desc="Optimizing filters"):
-                    if agg:
-                        best_sid = max(agg, key=lambda k: agg[k])
-                        best_params = strategy_grid[best_sid]
-                        result_entry = {
-                            "filter": cfg,
-                            "strategy": best_params,
-                            "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
-                        }
-                        all_results.append(result_entry)
+        # Multiprocessing with Initializer
+        with mp.Pool(processes=MAX_WORKERS, initializer=init_worker_lookup, initargs=(signals_with_bars, lookup_table)) as pool:
+            try:
+                from tqdm import tqdm
+                iterator = tqdm(pool.imap_unordered(_evaluate_filter_wrapper_lookup, tasks, chunksize=1000), 
+                              total=len(tasks), desc="Optimizing filters")
+            except ImportError:
+                iterator = pool.imap_unordered(_evaluate_filter_wrapper_lookup, tasks, chunksize=1000)
+                print(f"Optimizing {len(filter_grid)} filter configurations...")
+
+            for cfg, agg in iterator:
+                if agg:
+                    best_sid = max(agg, key=lambda k: agg[k])
+                    best_params = strategy_grid[best_sid]
+                    result_entry = {
+                        "filter": cfg,
+                        "strategy": best_params,
+                        "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
+                    }
+                    all_results.append(result_entry)
+                    # Save occasionally
+                    if len(all_results) % 500 == 0:
                         try:
                             with open("intermediate_results.jsonl", "a", encoding="utf-8") as f:
                                 f.write(json.dumps(result_entry) + "\n")
                         except Exception:
                             pass
-        except ImportError:
-            print(f"Optimizing {len(filter_grid)} filter configurations...")
-            with mp.Pool(processes=MAX_WORKERS) as pool:
-                results = pool.map(_evaluate_filter_wrapper, tasks)
-            for cfg, agg in results:
-                if agg:
-                    best_sid = max(agg, key=lambda k: agg[k])
-                    best_params = strategy_grid[best_sid]
-                    all_results.append({
-                        "filter": cfg,
-                        "strategy": best_params,
-                        "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
-                    })
 
-    # Sort final results by total PnL descending
+    # -----------------------------------------------------------------------
+    # Save results
+    # -----------------------------------------------------------------------
+    print("\n" + "="*70)
+    print(f"Optimization complete. Found {len(all_results)} valid configurations.")
+    
+    if not all_results:
+        print("No valid results found.")
+        return
+
+    # Sort by Total PnL
     all_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
-
-    output_path = Path(__file__).with_name("filter_strategy_optimization.json")
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(all_results, f, indent=2)
-    print(f"\nSaved aggregated results to {output_path}")
-    if all_results:
-        best = all_results[0]
-        print("\nBest configuration:")
-        print(f"Filter: {best['filter']}")
-        print(f"Strategy: {best['strategy']}")
-        print(f"Total PnL: {best['metrics']['total_pnl']:.2f}%")
-    else:
-        print("No viable configurations found.")
+    
+    # Print Top 10
+    print("\n🏆 TOP 10 CONFIGURATIONS:")
+    print(f"{'#':<3} {'Score':<12} {'RSI':<5} {'Vol':<5} {'OI':<5} | {'Lev':<4} {'SL%':<5} {'Win':<4} {'Mult':<5} | {'Total PnL %':<12}")
+    print("-" * 85)
+    
+    for i, res in enumerate(all_results[:10], 1):
+        f = res["filter"]
+        s = res["strategy"]
+        m = res["metrics"]
+        print(f"{i:<3} {f['score_min']}-{f['score_max']:<5} {f['rsi_min']:<5} {f['vol_min']:<5} {f['oi_min']:<5} | "
+              f"{s['leverage']:<4} {s['sl_pct']:<5} {s['delta_window']:<4} {s['threshold_mult']:<5} | {m['total_pnl']:<12.2f}")
+    
+    # Save JSON
+    output_file = "optimization_results_unified.json"
+    try:
+        with open(output_file, "w") as f:
+            json.dump(all_results, f, indent=2)
+        print(f"\nSaved full results to {output_file}")
+    except Exception as e:
+        print(f"Error saving results: {e}")
 
 if __name__ == "__main__":
+    mp.freeze_support()
     main()
