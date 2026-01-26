@@ -21,15 +21,15 @@ from datetime import datetime, timezone
 from typing import List, Dict, Tuple, NamedTuple
 import multiprocessing as mp
 
-# Ensure scripts_v2 is on sys.path for imports
+# Ensure deep_research is FIRST in sys.path for imports (to use optimized run_strategy)
 import sys
 current_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(current_dir))  # deep_research FIRST
 sys.path.append(str(current_dir.parent / "scripts_v2"))
-sys.path.append(str(current_dir))
 
 from pump_analysis_lib import get_db_connection
 from optimize_combined_leverage_filtered import (
-    run_strategy,  # returns (pnl, last_bar_ts)
+    run_strategy,  # OPTIMIZED version from deep_research (O(n) instead of O(n²))
 )
 
 # ---------------------------------------------------------------------------
