@@ -1,315 +1,301 @@
-# optimize_unified.py – Unified optimizer for signal filters and strategy parameters
+# optimize_unified.py – Unified optimizer with global position tracking
 
-"""Unified optimizer that searches for the best combination of signal filter
-parameters and strategy parameters.
+"""
+Unified optimizer that searches for the best combination of signal filter parameters
+and strategy parameters, while ensuring that a position is not opened for the same
+trading pair if a previous position is still active (global position tracking).
 
-Key features:
-* Expanded SCORE_RANGE (100‑900 step 10).
-* Batched DB reads via :pymod:`db_batch_utils.fetch_bars_batch`.
-* Multiprocessing pool (default 12 workers) – each worker gets its own DB
-  connection.
-* Pruning: discard filter configs with too few signals or low win‑rate.
-* Result aggregation and CSV report generation.
+Features:
+* Exhaustive filter grid (score, RSI, volume_zscore, oi_delta)
+* Strategy grid (leverage, SL, delta_window, threshold_mult)
+* Per‑pair sequential processing → global position tracking
+* Parallel execution across pairs (multiprocessing Pool)
+* tqdm progress bar for filter‑grid iteration
 """
 
 import os
 import itertools
-import multiprocessing as mp
-from typing import List, Dict, Tuple
-
-from pump_analysis_lib import get_db_connection, fetch_signals
-from db_batch_utils import fetch_bars_batch, batch_execute, get_connection
 import json
 from pathlib import Path
+from datetime import datetime, timezone
+from typing import List, Dict, Tuple, NamedTuple
+import multiprocessing as mp
+
+# Ensure scripts_v2 is on sys.path for imports
+import sys
+current_dir = Path(__file__).resolve().parent
+sys.path.append(str(current_dir.parent / "scripts_v2"))
+sys.path.append(str(current_dir))
+
+from pump_analysis_lib import get_db_connection
+from optimize_combined_leverage_filtered import (
+    run_strategy,  # returns (pnl, last_bar_ts)
+    load_bars_for_signal,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration (can be overridden via env vars)
 # ---------------------------------------------------------------------------
-SCORE_RANGE = range(100, 901, 50)  # 100-900 inclusive, step 50
-MIN_SIGNALS_FOR_EVAL = int(os.getenv("MIN_SIGNALS_FOR_EVAL", "0")) # Default 0 (disabled)
-MIN_WIN_RATE = float(os.getenv("MIN_WIN_RATE", "0.0")) # Disabled
+SCORE_RANGE = range(100, 901, 50)  # 100‑900 step 50 → 17 values
+MIN_SIGNALS_FOR_EVAL = int(os.getenv("MIN_SIGNALS_FOR_EVAL", "0"))  # 0 = disabled
+MIN_WIN_RATE = float(os.getenv("MIN_WIN_RATE", "0.0"))  # disabled by default
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "12"))
 
 # ---------------------------------------------------------------------------
-def generate_filter_grid() -> List[Dict]:
-    """Generate the full filter grid.
+# Helper data structures
+# ---------------------------------------------------------------------------
+class SignalInfo(NamedTuple):
+    """Metadata needed for global position tracking"""
+    signal_id: int
+    pair: str
+    timestamp: datetime
 
-    Returns a list of dictionaries with thresholds for:
-    * total_score (min, max)
-    * rsi (min)
-    * volume_zscore (min)
-    * oi_delta_pct (min)
+# ---------------------------------------------------------------------------
+# Filter grid generation
+# ---------------------------------------------------------------------------
+def generate_filter_grid() -> List[Dict]:
+    """Create exhaustive filter combinations.
+
+    Each dict contains the minimum thresholds for:
+    * total_score (score_min, score_max)
+    * rsi (rsi_min)
+    * volume_zscore (vol_min)
+    * oi_delta_pct (oi_min)
     """
-    from itertools import product
     grid = []
-    for score, rsi, vol, oi in product(
+    for score, rsi, vol, oi in itertools.product(
         SCORE_RANGE,               # total_score min
-        range(0, 81, 5),          # RSI 0-80, step 5
-        range(0, 16, 1),          # Volume z-score 0-15 (unchanged)
-        range(0, 41, 1)           # OI delta % 0-40 (unchanged)
+        range(0, 81, 5),           # RSI 0‑80 step 5
+        range(0, 16, 1),           # volume_zscore 0‑15
+        range(0, 41, 1),           # oi_delta 0‑40
     ):
         grid.append({
             "score_min": score,
-            "score_max": score + 50, # Window matches step size
+            "score_max": score + 50,  # window matches step size
             "rsi_min": rsi,
             "vol_min": vol,
             "oi_min": oi,
         })
     return grid
-# Core optimizer logic
+
 # ---------------------------------------------------------------------------
+# Strategy grid generation (same as in optimize_combined_leverage)
 # ---------------------------------------------------------------------------
-def process_signal(signal_id: int, strategy_grid: List[Dict]) -> List[Tuple[int, bool, float, Dict]]:
-    """Execute ALL trading strategies for a single signal.
-    
-    This function:
-    1. Fetches bars for the signal ONCE (expensive DB op).
-    2. Iterates through the strategy_grid (cheap CPU op).
-    3. Returns a list of results for each strategy config.
-    """
-    # Import the core strategy function
-    from optimize_combined_leverage import run_strategy
-
-    # Fetch bars for this signal using batched utility (single-id batch)
-    conn = get_connection()
-    bars_dict = fetch_bars_batch(conn, [signal_id])
-    conn.close()
-    
-    bars = bars_dict.get(signal_id, [])
-    results = []
-    
-    if not bars:
-        # No data – treat as loss with zero PnL for all strategies
-        # Or simply return empty? Returning loss is safer for data consistency.
-        for sp in strategy_grid:
-            results.append((signal_id, False, 0.0, sp))
-        return results
-
-    # Run all strategies on the cached bars
-    for sp in strategy_grid:
-        # Map strategy_params to expected arguments
-        sl_pct = sp.get("sl") or sp.get("sl_pct")
-        delta_window = sp.get("window") or sp.get("delta_window")
-        threshold_mult = sp.get("threshold") or sp.get("threshold_mult")
-        leverage = sp.get("leverage", 1)
-
-        pnl = run_strategy(bars, sl_pct, delta_window, threshold_mult, leverage)
-        is_win = pnl > 0
-        results.append((signal_id, is_win, pnl, sp))
-        
-    return results
-
-def evaluate_filter(filter_cfg: Dict) -> Tuple[Dict, List[Tuple[int, bool, float, Dict]]]:
-    """Evaluate a single filter configuration.
-
-    * Load matching signal IDs.
-    * Apply pruning based on ``MIN_SIGNALS_FOR_EVAL`` and ``MIN_WIN_RATE``.
-    * Run strategy optimisation for the surviving signals (parallel).
-    * Return the filter config and a list of strategy results.
-    """
-    conn = get_connection()
-    # Query joining indicators table for RSI, volume_zscore, oi_delta_pct
-    query = """
-        SELECT sa.id, sa.is_win
-        FROM web.signal_analysis AS sa
-        JOIN fas_v2.indicators AS i ON (
-            i.trading_pair_id = sa.trading_pair_id 
-            AND i.timestamp = sa.signal_timestamp
-            AND i.timeframe = '15m'
-        )
-        WHERE sa.total_score >= %(score_min)s
-          AND sa.total_score < %(score_max)s
-          AND i.rsi >= %(rsi_min)s
-          AND i.volume_zscore >= %(vol_min)s
-          AND i.oi_delta_pct >= %(oi_min)s
-    """
-    params = {
-        "score_min": filter_cfg["score_min"],
-        "score_max": filter_cfg["score_max"],
-        "rsi_min": filter_cfg["rsi_min"],
-        "vol_min": filter_cfg["vol_min"],
-        "oi_min": filter_cfg["oi_min"],
-    }
-    with conn.cursor() as cur:
-        cur.execute(query, params)
-        signal_data = cur.fetchall()
-    conn.close()
-
-    # signal_data = [(id, is_win), ...]
-    signal_ids = [row[0] for row in signal_data]
-
-    # Early pruning based on count (check BEFORE slicing for test limit)
-    if len(signal_ids) < MIN_SIGNALS_FOR_EVAL:
-        return filter_cfg, []
-
-    # Limit for quick testing if requested
-    test_limit = int(os.getenv("TEST_LIMIT", "0"))
-    if test_limit > 0:
-        signal_ids = signal_ids[:5]
-    # Early win-rate pruning
-    # Disabled because is_win can be NULL for new signals
-    # if signal_data:
-    #     win_rate = sum(1 for _, is_win in signal_data if is_win) / len(signal_data)
-    #     if win_rate < MIN_WIN_RATE:
-    #         return filter_cfg, []
-    # else:
-    #     return filter_cfg, []
-
-    # Strategy parameters grid (based on optimize_combined_leverage.py)
-    # Define ranges
+def generate_strategy_grid() -> List[Dict]:
     leverage_opts = [1, 5, 10]
-    # Expanded windows to include "Holding" strategy (up to 2 hours)
     delta_window_opts = [10, 30, 60, 120, 300, 600, 1800, 3600, 7200]
     threshold_opts = [1.0, 1.5, 2.0, 2.5, 3.0]
-    
-    # SL options depend on leverage
     sl_by_leverage = {
         1: [5, 7, 10, 15, 20],
         5: [3, 4, 5, 7, 10, 15],
         10: [2, 3, 4, 5, 7, 8],
     }
-
-    strategy_params_grid = []
+    grid = []
     for lev in leverage_opts:
         for sl in sl_by_leverage[lev]:
             for win in delta_window_opts:
                 for thresh in threshold_opts:
-                    strategy_params_grid.append({
+                    grid.append({
                         "leverage": lev,
-                        "sl": sl,
-                        "window": win,
-                        "threshold": thresh
+                        "sl_pct": sl,
+                        "delta_window": win,
+                        "threshold_mult": thresh,
                     })
+    return grid
 
-    tasks = []
-    # Each task is (signal_id, strategy_grid_list)
-    # Note: passing the full list per task pickles it each time. 
-    # Since the list is constant, this is acceptable for multiprocessing in Python 3.8+ (copy-on-write on fork)
-    # but on spawn (Win/Mac default for 3.8+), it pickles.
-    # The grid is ~375 dicts, small enough.
-    for sid in signal_ids:
-        tasks.append((sid, strategy_params_grid))
+# ---------------------------------------------------------------------------
+# Fetch signals that satisfy a filter configuration
+# ---------------------------------------------------------------------------
+def fetch_filtered_signals(filter_cfg: Dict) -> List[SignalInfo]:
+    """Return a list of SignalInfo objects that satisfy the filter configuration.
 
-    # Parallel vs Sequential execution
+    This implementation performs a SQL query joining `fas_v2.scoring_history`
+    with `fas_v2.indicators` to apply the dynamic filter thresholds, then maps
+    the resulting rows to `web.signal_analysis.id` for later bar loading.
+    """
+    try:
+        with get_db_connection() as conn:
+            # Build dynamic SQL with joins to apply filter thresholds
+            query = """
+                SELECT sh.id, sh.pair_symbol, sh.signal_timestamp,
+                       i.rsi, i.volume_zscore, i.oi_delta_pct
+                FROM fas_v2.scoring_history AS sh
+                JOIN fas_v2.indicators AS i
+                  ON i.trading_pair_id = sh.trading_pair_id
+                 AND i.timestamp = sh.signal_timestamp
+                 AND i.timeframe = '15m'
+                WHERE sh.total_score >= %(score_min)s
+                  AND sh.total_score < %(score_max)s
+                  AND i.rsi >= %(rsi_min)s
+                  AND i.volume_zscore >= %(vol_min)s
+                  AND i.oi_delta_pct >= %(oi_min)s
+            """
+            params = {
+                "score_min": filter_cfg["score_min"],
+                "score_max": filter_cfg["score_max"],
+                "rsi_min": filter_cfg["rsi_min"],
+                "vol_min": filter_cfg["vol_min"],
+                "oi_min": filter_cfg["oi_min"],
+            }
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                rows = cur.fetchall()
+            # Map (pair, timestamp) to web.signal_analysis.id
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, pair_symbol, signal_timestamp FROM web.signal_analysis")
+                web_rows = cur.fetchall()
+            web_map: Dict[Tuple[str, datetime], int] = {}
+            for wid, sym, ts in web_rows:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                web_map[(sym, ts)] = wid
+            matched: List[SignalInfo] = []
+            for fas_id, sym, ts, rsi, vol, oi in rows:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                key = (sym, ts)
+                if key in web_map:
+                    matched.append(SignalInfo(signal_id=web_map[key], pair=sym, timestamp=ts))
+            return matched
+    except Exception as e:
+        print(f"Error fetching filtered signals: {e}")
+        return []
+
+# ---------------------------------------------------------------------------
+# Per‑pair sequential processing with global position tracking
+# ---------------------------------------------------------------------------
+def process_pair(pair: str, signals: List[SignalInfo], strategy_grid: List[Dict]) -> Dict[int, float]:
+    """Process all signals for a single pair sequentially.
+
+    Returns a dict `strategy_id -> aggregated_pnl`.
+    """
+    aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
+    position_tracker_ts = 0  # timestamp of last exit for this pair
+    for info in sorted(signals, key=lambda x: x.timestamp):
+        # Skip if a position is still open (timestamp earlier than last exit)
+        signal_ts = int(info.timestamp.timestamp())
+        if signal_ts < position_tracker_ts:
+            continue
+        bars = load_bars_for_signal(info.signal_id)
+        if len(bars) < 100:
+            continue
+        # Track the latest exit timestamp across all strategies for this signal
+        max_last_ts = position_tracker_ts
+        for sp_idx, sp in enumerate(strategy_grid):
+            pnl, last_ts = run_strategy(
+                bars,
+                sp["sl_pct"],
+                sp["delta_window"],
+                sp["threshold_mult"],
+                sp["leverage"],
+            )
+            aggregated[sp_idx] += pnl
+            if last_ts > max_last_ts:
+                max_last_ts = last_ts
+        # Update the global tracker after evaluating all strategies for this signal
+        position_tracker_ts = max_last_ts
+    return aggregated
+
+# ---------------------------------------------------------------------------
+# Evaluate a single filter configuration
+# ---------------------------------------------------------------------------
+def evaluate_filter(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, Dict[int, float]]:
+    """Run optimisation for one filter config.
+
+    Returns the filter config and a dict `strategy_id -> total_pnl` aggregated over
+    all pairs.
+    """
+    signals = fetch_filtered_signals(filter_cfg)
+    if len(signals) < MIN_SIGNALS_FOR_EVAL:
+        return filter_cfg, {}
+    # Group by pair
+    by_pair: Dict[str, List[SignalInfo]] = {}
+    for s in signals:
+        by_pair.setdefault(s.pair, []).append(s)
+    # Parallel processing per pair
+    aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
     if MAX_WORKERS == 1:
-        # Avoid multiprocessing overhead/errors for single worker
-        # results will be a list of lists: [[(sid, win, pnl, params), ...], ...]
-        result_batches = [process_signal(sid, grid) for sid, grid in tasks]
+        for pair, pair_signals in by_pair.items():
+            pair_agg = process_pair(pair, pair_signals, strategy_grid)
+            for sid, val in pair_agg.items():
+                aggregated[sid] += val
     else:
-        # Use starmap to avoid pickling issues with local functions
-        pool = mp.Pool(processes=MAX_WORKERS)
-        result_batches = pool.starmap(process_signal, tasks)
-        pool.close()
-        pool.join()
-        
-    # Flatten the list of lists
-    results = [item for batch in result_batches for item in batch]
-    return filter_cfg, results
+        with mp.Pool(processes=MAX_WORKERS) as pool:
+            tasks = [(pair, sigs, strategy_grid) for pair, sigs in by_pair.items()]
+            results = pool.starmap(process_pair, tasks)
+            for pair_agg in results:
+                for sid, val in pair_agg.items():
+                    aggregated[sid] += val
+    return filter_cfg, aggregated
 
 # ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-import argparse
-
-# ---------------------------------------------------------------------------
-# Main entry point
+# Main optimisation loop
 # ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Unified Optimizer for Strategy Parameters")
-    parser.add_argument("--workers", type=int, default=12, help="Number of parallel workers (default: 12)")
-    parser.add_argument("--limit", type=int, default=0, help="Limit number of filter configurations (for testing)")
-    parser.add_argument("--min-signals", type=int, default=10, help="Minimum signals required to evaluate a filter (default: 10)")
-    
+    import argparse
+    parser = argparse.ArgumentParser(description="Unified optimizer with global position tracking")
+    parser.add_argument("--workers", type=int, default=12, help="Number of parallel workers (default 12)")
+    parser.add_argument("--limit", type=int, default=0, help="Limit number of filter configs (for testing)")
+    parser.add_argument("--min-signals", type=int, default=50, help="Minimum signals required per filter (default 50)")
     args = parser.parse_args()
-    
-    # Update global constants based on args
+
     global MAX_WORKERS, MIN_SIGNALS_FOR_EVAL
     MAX_WORKERS = args.workers
     MIN_SIGNALS_FOR_EVAL = args.min_signals
 
     filter_grid = generate_filter_grid()
-    
-    # Apply limit
     if args.limit > 0:
-        print(f"Limiting filter grid to first {args.limit} configurations for testing.")
         filter_grid = filter_grid[:args.limit]
-        
+        print(f"Limiting filter grid to first {args.limit} configs for testing.")
+
+    strategy_grid = generate_strategy_grid()
+
     all_results = []
-    
-    # Use tqdm for progress bar if available
     try:
         from tqdm import tqdm
         iterator = tqdm(filter_grid, desc="Optimizing filters")
     except ImportError:
         iterator = filter_grid
-        print(f"Starting optimization of {len(filter_grid)} configurations...")
+        print(f"Optimizing {len(filter_grid)} filter configurations...")
 
     for filter_cfg in iterator:
-        cfg, results = evaluate_filter(filter_cfg)
-        if results:
-            # Aggregate results by strategy parameters
-            grouped_stats = {}
-            for sid, is_win, pnl, sp in results:
-                # Group by strategy params (hashable key)
-                sp_key = tuple(sorted(sp.items()))
-                if sp_key not in grouped_stats:
-                    grouped_stats[sp_key] = {"pnl": 0.0, "wins": 0, "total": 0, "params": sp}
-                
-                stats = grouped_stats[sp_key]
-                stats["pnl"] += pnl
-                stats["total"] += 1
-                if is_win:
-                    stats["wins"] += 1
+        cfg, agg = evaluate_filter(filter_cfg, strategy_grid)
+        if not agg:
+            continue
+        # Find best strategy for this filter
+        best_sid = max(agg, key=lambda k: agg[k])
+        best_params = strategy_grid[best_sid]
+        result_entry = {
+            "filter": cfg,
+            "strategy": best_params,
+            "metrics": {
+                "total_pnl": agg[best_sid],
+                "strategy_id": best_sid,
+            },
+        }
+        all_results.append(result_entry)
+        # Write intermediate result (append mode) – safe for long runs
+        try:
+            with open("intermediate_results.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps(result_entry) + "\n")
+        except Exception as e:
+            print(f"Warning: could not write intermediate result: {e}")
 
-            # Find best strategy for this filter
-            best_strat_pnl = -float('inf')
-            best_strat_stats = None
-
-            for sp_key, stats in grouped_stats.items():
-                if stats["pnl"] > best_strat_pnl:
-                    best_strat_pnl = stats["pnl"]
-                    best_strat_stats = stats
-
-            if best_strat_stats:
-                result_entry = {
-                    "filter": filter_cfg,
-                    "strategy": best_strat_stats["params"],
-                    "metrics": {
-                        "total_pnl": best_strat_stats["pnl"],
-                        "win_rate": best_strat_stats["wins"] / best_strat_stats["total"],
-                        "total_signals": best_strat_stats["total"]
-                    }
-                }
-                all_results.append(result_entry)
-                
-                # Save intermediate result immediately (append to JSONL)
-                try:
-                    with open("intermediate_results.jsonl", "a", encoding="utf-8") as f:
-                        f.write(json.dumps(result_entry) + "\n")
-                except Exception as e:
-                    print(f"Warning: could not write intermediate result: {e}")
-
-    # Sort by total PnL
+    # Sort final results by total PnL descending
     all_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
-    
-    # Save results
+
     output_path = Path(__file__).with_name("filter_strategy_optimization.json")
-    with open(output_path, "w") as f:
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2)
-    
-    print(f"\nAggregated results for {len(all_results)} filter configs.")
+    print(f"\nSaved aggregated results to {output_path}")
     if all_results:
         best = all_results[0]
-        print(f"Best PnL: {best['metrics']['total_pnl']:.2f}")
-        print(f"Best Config: Filter={best['filter']}, Strategy={best['strategy']}")
-        
-        # Save best config separately
-        with open(Path(__file__).with_name("best_config.json"), "w") as f:
-            json.dump(best, f, indent=2)
+        print("\nBest configuration:")
+        print(f"Filter: {best['filter']}")
+        print(f"Strategy: {best['strategy']}")
+        print(f"Total PnL: {best['metrics']['total_pnl']:.2f}%")
     else:
-        print("Best PnL: N/A")
-
-    print(f"Evaluated {len(filter_grid)} filter configurations.")
+        print("No viable configurations found.")
 
 if __name__ == "__main__":
     main()
