@@ -180,11 +180,11 @@ def run_simulation_detailed(bars, strategy_params):
     }
 
 
-def get_filtered_signal_ids(conn) -> List[Tuple[int, str, datetime, int]]:
+def get_filtered_signal_ids(conn) -> List[Tuple[int, str, datetime, int, float, float, float]]:
     """
     Get filtered signals using SAME logic as optimize_combined_leverage_filtered.py
     
-    Returns list of (web.signal_analysis.id, symbol, timestamp, score) tuples
+    Returns list of (web.signal_analysis.id, symbol, timestamp, score, rsi, vol_zscore, oi_delta) tuples
     that satisfy all filters from pump_analysis_lib.
     
     CRITICAL: fetch_signals returns fas_v2.scoring_history.id.
@@ -215,12 +215,15 @@ def get_filtered_signal_ids(conn) -> List[Tuple[int, str, datetime, int]]:
             ts = ts.replace(tzinfo=timezone.utc)
         web_map[(sym, ts)] = wid
     
-    # 3. Match FAS signals to web.signal_analysis IDs
+    # 3. Match FAS signals to web.signal_analysis IDs (with indicators)
     matched = []
     for s in raw_signals:
         sym = s['pair_symbol']
         ts = s['timestamp']
         score = s['total_score']
+        rsi = s.get('rsi', 0) or 0
+        vol_zscore = s.get('volume_zscore', 0) or 0
+        oi_delta = s.get('oi_delta_pct', 0) or 0
         
         # Normalize source timestamp
         if ts.tzinfo is None:
@@ -228,7 +231,7 @@ def get_filtered_signal_ids(conn) -> List[Tuple[int, str, datetime, int]]:
         
         # Try exact match
         if (sym, ts) in web_map:
-            matched.append((web_map[(sym, ts)], sym, ts, score))
+            matched.append((web_map[(sym, ts)], sym, ts, score, rsi, vol_zscore, oi_delta))
     
     print(f"   Matched to web.signal_analysis: {len(matched)}")
     return matched
@@ -278,7 +281,7 @@ def main():
         bars_dict = fetch_bars_batch(conn, sids)
         
         for item in batch:
-            sid, symbol, ts, score = item
+            sid, symbol, ts, score, rsi, vol_zscore, oi_delta = item
             
             # Convert timestamp to epoch for comparison
             entry_epoch = ts.timestamp() if hasattr(ts, 'timestamp') else ts
@@ -294,8 +297,11 @@ def main():
             if not bars or len(bars) < 100:
                 continue
             
-            # Use default strategy for all signals (can be customized per score range)
-            strat = DEFAULT_STRATEGY
+            # Use get_matching_rule to find strategy based on score/rsi/vol/oi
+            strat = get_matching_rule(score, rsi, vol_zscore, oi_delta)
+            if strat is None:
+                # No matching rule - skip this signal
+                continue
             
             res = run_simulation_detailed(bars, strat)
             
