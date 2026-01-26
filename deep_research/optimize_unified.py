@@ -66,8 +66,8 @@ def generate_filter_grid() -> List[Dict]:
     for score, rsi, vol, oi in itertools.product(
         SCORE_RANGE,               # total_score min
         range(0, 81, 5),           # RSI 0‑80 step 5
-        range(0, 16, 1),           # volume_zscore 0‑15
-        range(0, 41, 1),           # oi_delta 0‑40
+        range(0, 16, 2),           # volume_zscore 0-14 step 2
+        range(0, 41, 3),           # oi_delta 0-39 step 3
     ):
         grid.append({
             "score_min": score,
@@ -82,13 +82,12 @@ def generate_filter_grid() -> List[Dict]:
 # Strategy grid generation (same as in optimize_combined_leverage)
 # ---------------------------------------------------------------------------
 def generate_strategy_grid() -> List[Dict]:
-    leverage_opts = [1, 5, 10]
+    leverage_opts = [5, 10]
     delta_window_opts = [10, 30, 60, 120, 300, 600, 1800, 3600, 7200]
     threshold_opts = [1.0, 1.5, 2.0, 2.5, 3.0]
     sl_by_leverage = {
-        1: [5, 7, 10, 15, 20],
         5: [3, 4, 5, 7, 10, 15],
-        10: [2, 3, 4, 5, 7, 8],
+        10: [3, 4, 5, 7, 10, 15],
     }
     grid = []
     for lev in leverage_opts:
