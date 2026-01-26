@@ -8,6 +8,7 @@ IDs to fetch 1-second bars from web.agg_trades_1s.
 """
 import csv
 import sys
+import json
 from pathlib import Path
 from typing import List, Dict, Tuple
 from datetime import datetime, timezone
@@ -35,30 +36,44 @@ from scripts_v2.optimize_combined_leverage import (
 )
 
 # ---------------------------------------------------------------------------
-# Composite Strategy Rules (Hardcoded from Report)
+# Composite Strategy Rules (Loaded from composite_strategy.json)
 # ---------------------------------------------------------------------------
-RULES = [
-    {
-        "range": (100, 150),
-        "filters": {"rsi": 45, "vol": 1, "oi": 2},
-        "strategy": {"leverage": 10, "sl": 7, "window": 120, "threshold": 1.0}
-    },
-    {
-        "range": (150, 200),
-        "filters": {"rsi": 65, "vol": 1, "oi": 0},
-        "strategy": {"leverage": 10, "sl": 3, "window": 10, "threshold": 1.0}
-    },
-    {
-        "range": (200, 250),
-        "filters": {"rsi": 50, "vol": 0, "oi": 0},
-        "strategy": {"leverage": 10, "sl": 4, "window": 20, "threshold": 1.0}
-    },
-    {
-        "range": (250, 300),
-        "filters": {"rsi": 25, "vol": 0, "oi": 0},
-        "strategy": {"leverage": 10, "sl": 3, "window": 10, "threshold": 1.0}
-    }
-]
+def load_rules_from_json(json_path: str = None) -> list:
+    """Load rules from composite_strategy.json"""
+    paths_to_try = [
+        json_path,
+        "composite_strategy.json",
+        "../composite_strategy.json",
+        Path(__file__).parent.parent / "composite_strategy.json",
+    ]
+    
+    for path in paths_to_try:
+        if path and Path(path).exists():
+            print(f"Loading rules from {path}...")
+            with open(path, "r") as f:
+                data = json.load(f)
+            # Convert from JSON format to backtest format
+            rules = []
+            for r in data.get("rules", []):
+                f = r["filter"]
+                s = r["strategy"]
+                rules.append({
+                    "range": (f["score_min"], f["score_max"]),
+                    "filters": {"rsi": f["rsi_min"], "vol": f["vol_min"], "oi": f["oi_min"]},
+                    "strategy": {
+                        "leverage": s["leverage"], 
+                        "sl": s["sl_pct"], 
+                        "window": s["delta_window"], 
+                        "threshold": s["threshold_mult"]
+                    }
+                })
+            return rules
+    
+    print("WARNING: composite_strategy.json not found, using defaults")
+    return []
+
+# Load rules at module level
+RULES = load_rules_from_json()
 
 def get_matching_rule(score, rsi, vol, oi):
     """Find the correct rule for a signal based on Score and Filters."""
