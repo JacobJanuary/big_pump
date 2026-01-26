@@ -39,7 +39,7 @@ from optimize_combined_leverage_filtered import (
 SCORE_RANGE = range(100, 901, 50)  # 100‑900 step 50 → 17 values
 MIN_SIGNALS_FOR_EVAL = int(os.getenv("MIN_SIGNALS_FOR_EVAL", "0"))  # 0 = disabled
 MIN_WIN_RATE = float(os.getenv("MIN_WIN_RATE", "0.0"))  # disabled by default
-MAX_WORKERS = int(os.getenv("MAX_WORKERS", "12"))
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "4"))  # reduced to prevent DB connection exhaustion
 
 # ---------------------------------------------------------------------------
 # Helper data structures
@@ -272,7 +272,7 @@ def main():
         # Parallel processing with imap_unordered for progress tracking
         try:
             from tqdm import tqdm
-            with mp.Pool(processes=MAX_WORKERS) as pool:
+            with mp.Pool(processes=MAX_WORKERS, maxtasksperchild=100) as pool:
                 for cfg, agg in tqdm(pool.imap_unordered(_evaluate_filter_wrapper, tasks), 
                                       total=len(tasks), desc="Optimizing filters"):
                     if agg:
