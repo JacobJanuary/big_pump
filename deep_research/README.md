@@ -10,7 +10,7 @@ Standalone research environment for Big Pump strategy optimization. Isolated fro
 cd ~/big_pump
 
 # 1. Cleanup (if starting fresh)
-# Delete old strategy file and optionally truncate signal analysis table
+rm -f composite_strategy.json
 
 # 2. Import signals (30 days, score 100-900)
 python3 deep_research/populate_signal_analysis.py --days 30 --min-score 100 --max-score 900 --no-dedup
@@ -18,13 +18,13 @@ python3 deep_research/populate_signal_analysis.py --days 30 --min-score 100 --ma
 # 3. Download tick data from Binance
 python3 deep_research/fetch_agg_trades.py --workers 12
 
-# 4. Optional: Download 1m candles for broader context
-python3 deep_research/fetch_minute_candles.py
-
-# 5. Aggregate to 1-second bars with Delta
+# 4. Aggregate to 1-second bars with Delta
 python3 deep_research/prepare_delta_data.py --workers 8 --create-table
 
-# 6. Run optimization (Grid Search ~189k combinations)
+# 5. Optional: Download 1m candles for portfolio backtest
+python3 deep_research/fetch_minute_candles.py
+
+# 6. Run optimization (Grid Search ~7,200 strategies × ~190k filters)
 python3 deep_research/optimize_unified.py --workers 12
 
 # 7. Analyze results → Generate composite_strategy.json
@@ -38,140 +38,109 @@ python3 deep_research/backtest_detailed.py
 
 ## 📂 Script Inventory
 
-### 1. Data Ingestion & Preparation
-
 | Script | Purpose | Key Parameters |
 |--------|---------|----------------|
 | `populate_signal_analysis.py` | Import signals from `fas_v2` → `web.signal_analysis` | `--days`, `--min-score`, `--max-score`, `--no-dedup` |
 | `fetch_agg_trades.py` | Download raw 1-second aggregate trades from Binance | `--workers`, `--start-date`, `--end-date` |
-| `fetch_minute_candles.py` | Fetch 1-minute OHLCV candles for macro analysis | `--workers` |
-| `prepare_delta_data.py` | Aggregate trades into 1s bars with Delta, RSI, Volume Z-Score | `--workers`, `--create-table` |
+| `prepare_delta_data.py` | Aggregate trades into 1s bars with Delta, Volume | `--workers`, `--create-table` |
+| `optimize_unified.py` | **Core Optimizer**: O(1) grid search with Matrix Pre-computation | `--workers`, `--score-min`, `--score-max` |
+| `analyze_results.py` | Aggregate optimization sweeps → `composite_strategy.json` | (reads from JSON results) |
+| `backtest_detailed.py` | **Primary Validator**: Timeline-aware backtest with trade logging | (auto-loads `composite_strategy.json`) |
+| `backtest_portfolio_realistic.py` | Multi-asset portfolio simulation with slippage/fees | `--sl`, `--activation`, `--timeout` |
 
-### 2. Strategy Optimization
-
-| Script | Purpose | Key Parameters |
-|--------|---------|----------------|
-| `optimize_unified.py` | **Core Optimizer**: O(1) grid search with Matrix Pre-computation (~400k it/sec) | `--workers`, `--score-min`, `--score-max` |
-| `optimize_combined_leverage_filtered.py` | Legacy optimizer; superseded by Unified | `--workers` |
-| `optimize_combined_leverage.py` | Earlier version of combined optimizer | `--workers` |
-| `optimization_lib.py` | Shared math utilities and indicator functions | (Library) |
-
-### 3. Backtesting & Reporting
-
-| Script | Purpose | Key Parameters |
-|--------|---------|----------------|
-| `backtest_detailed.py` | **Primary Validator**: Timeline-aware backtest with trade logging | `--strategy-file`, `--output` |
-| `backtest_portfolio_realistic.py` | Multi-asset portfolio simulation with slippage/fees | `--initial-capital`, `--max-positions` |
-| `analyze_results.py` | Aggregate optimization sweeps → `composite_strategy.json` | (reads from DB results) |
-| `report_enhanced.py` | Generate visual/tabular reports from trade logs | `--format`, `--output` |
-| `show_intermediate_top.py` | Inspect progress of long-running optimizations | (utility) |
-
-### 4. Libraries & Utilities
-
-| Library | Purpose |
-|---------|---------|
-| `pump_analysis_lib.py` | DB connection, signal fetching, production filter configs |
-| `db_batch_utils.py` | Optimized database IO for batch bar loading |
-| `optimization_lib.py` | Shared mathematical utilities for optimization |
-| `diagnose_freeze.py` | Debug utility for identifying multiprocessing bottlenecks |
+*Note: `optimize_combined_leverage_filtered.py` is legacy and superseded by `optimize_unified.py`.*
 
 ---
 
-## ⚠️ Pre-Execution Cleanup
+## 📊 Database Schema Reference
 
-Before starting a new research cycle:
+The research pipeline uses a dedicated set of tables in the `web` schema to ensure isolation and high performance.
 
-```bash
-# 1. Delete old strategy file
-rm -f composite_strategy.json
+### 1. `web.signal_analysis` (Metadata)
+Primary storage for signal events and pre-calculated metrics.
+- `id`: Unique signal ID.
+- `trading_pair_id`: Reference to `public.trading_pairs`.
+- `total_score`: Signal quality score (100-900).
+- `max_growth_pct`: Maximum price growth within 24h.
+- `max_drawdown_pct`: Maximum drawdown within 24h.
+- `time_to_peak_seconds`: Time to reach max price.
+- `candles_data`: JSON blob of 24h 5m candles (for quick previews).
 
-# 2. Optional: Truncate signal analysis table (if changing date range)
-python3 -c "
-from pump_analysis_lib import get_db_connection
-conn = get_db_connection()
-cur = conn.cursor()
-cur.execute('TRUNCATE web.signal_analysis CASCADE')
-conn.commit()
-conn.close()
-print('Signal analysis table truncated')
-"
+### 2. `web.agg_trades` (Raw Data)
+Temporary holding area for raw trades from Binance dump files.
+- `signal_analysis_id`: Link to signal.
+- `price`, `quantity`: Trade details.
+- `is_buyer_maker`: Direction (True = Sell, False = Buy).
+- `transact_time`: Millisecond timestamp.
 
-# 3. Optional: Truncate 1-second bars (if data is corrupted)
-python3 -c "
-from db_batch_utils import get_connection
-conn = get_connection()
-cur = conn.cursor()
-cur.execute('TRUNCATE web.agg_trades_1s')
-conn.commit()
-conn.close()
-print('1-second bars table truncated')
-"
-```
+### 3. `web.agg_trades_1s` (Optimized Bars)
+High-performance 1-second bars with Delta, used by the Optimizer.
+- `second_ts`: Unix timestamp (seconds).
+- `close_price`: Closing price of the second.
+- `delta`: `Buy Volume - Sell Volume`.
+- `large_buy_count`: Number of trades > 2σ mean volume.
+- `large_sell_count`: Number of large sell trades.
+
+### 4. `web.minute_candles` (Portfolio Backtest)
+Standard 1-minute OHLCV candles for macro simulations.
+- `open_time`: Unix timestamp.
+- `open`, `high`, `low`, `close`, `volume`: Standard OHLCV data.
+
+---
+
+## 🧠 Optimization Logic
+
+The `optimize_unified.py` script uses a **Two-Phase Matrix Optimization**:
+
+### Phase 1: Pre-computation (The Heavy Lifting)
+- Loads 1s bars for all signals.
+- Runs **5,400+ Strategy Combinations** against every signal.
+- Caches results (PnL and Exit Time) in a lookup table.
+- **Speed**: ~400,000 iterations/sec.
+
+### Phase 2: Filter Grid Search (The Intelligence)
+- Iterates ~190,000 filter combinations (Score, RSI, Vol, OI).
+- Filters signals in memory.
+- Looks up PnL from Phase 1.
+- Applies **Global Position Tracking** (prevents overlapping trades).
+
+### 🎯 Trailing Exit Profiles
+The optimizer now tests 4 distinct trailing logic profiles simultaneously:
+
+| Profile | Activation | Callback | Behavior |
+|---------|------------|----------|----------|
+| **SCALPING** | 0.4% | 0.2% | Extremely aggressive. Takes small profits quickly. Good for high-churn/low-quality signals. |
+| **BALANCED** | 4.0% | 2.0% | Standard balanced approach. |
+| **MODERATE** | 7.0% | 3.0% | Allows for more volatility before exit. |
+| **CONSERVATIVE** | 10.0% | 4.0% | Aims for "moonshots", tolerating significant pullback. |
 
 ---
 
 ## 🛠 Troubleshooting
 
-### 1. ModuleNotFoundError: No module named 'pump_analysis_lib'
-
-Scripts depend on local libraries. Set `PYTHONPATH`:
-
+### 1. Data Integrity Issues
+If backtest shows zero trades or strange results:
 ```bash
-cd ~/big_pump
-PYTHONPATH=./deep_research python3 deep_research/backtest_detailed.py
+# Check if 1s bars have delta
+python3 -c "from pump_analysis_lib import get_db_connection; c=get_db_connection(); print(c.execute('SELECT COUNT(*) FROM web.agg_trades_1s WHERE delta != 0').fetchone()[0])"
 ```
 
-Or export permanently:
+### 2. "ModuleNotFoundError"
 ```bash
-export PYTHONPATH=$PYTHONPATH:$(pwd)/deep_research
+export PYTHONPATH=$PYTHONPATH:$(pwd)
 ```
 
-### 2. Missing Database Driver (psycopg2)
-
-```bash
-pip install psycopg2-binary
-# or
-pip install psycopg
-```
-
-### 3. Zero Delta or Large Trade Counts
-
-If backtest shows all "Timeout" or zero re-entries:
-
-```sql
--- Check data integrity
-SELECT COUNT(*) FROM web.agg_trades_1s WHERE delta != 0 OR large_buy_count > 0;
-```
-
-If `large_buy_count` is 0 but `delta` populated — truncate and rerun:
-```bash
-# Truncate and rebuild
-PYTHONPATH=./deep_research python3 -c "from db_batch_utils import get_connection; c=get_connection(); cur=c.cursor(); cur.execute('TRUNCATE web.agg_trades_1s'); c.commit()"
-
-python3 deep_research/prepare_delta_data.py --workers 8
-```
-
-### 4. Optimizer Freezes at ~6% (11k iterations)
-
-This indicates a data bottleneck. Run diagnostics:
-```bash
-python3 deep_research/diagnose_freeze.py
-```
+### 3. Optimizer Freezes
+If `optimize_unified.py` hangs at start:
+- Reduce `--workers`.
+- Ensure DB connection limit isn't hit (`max_connections` in Postgres).
 
 ---
 
 ## 📊 Output Files
 
-| File | Location | Description |
-|------|----------|-------------|
-| `composite_strategy.json` | Project root | Generated ruleset with champion parameters per score range |
-| `backtest_results.json` | (configurable) | Detailed trade log from backtest |
-| `optimization_results/` | (if configured) | Intermediate optimization checkpoints |
-
----
-
-## 🔬 Research Environment Notes
-
-- **Isolation**: Changes to libs won't break live alerting scanner
-- **Portability**: Folder can be moved to high-performance servers for long runs
-- **Key metrics**: Synthetic Yield vs Realized Portfolio Return (gap typically ~7x)
+| File | Description |
+|------|-------------|
+| `composite_strategy.json` | The "Champion" ruleset. Contains the best strategy parameters for each Score Range. |
+| `optimization_results_unified.json` | Raw dump of all profitable configurations found. |
+| `backtest_trades.csv` | Detailed log of every trade simulated by `backtest_detailed.py`. |

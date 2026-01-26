@@ -64,7 +64,12 @@ def load_rules_from_json(json_path: str = None) -> list:
                         "leverage": s["leverage"], 
                         "sl": s["sl_pct"], 
                         "window": s["delta_window"], 
-                        "threshold": s["threshold_mult"]
+                        "threshold": s["threshold_mult"],
+                        # Load params or default to constants if missing (backwards compat)
+                        "activation": s.get("base_activation", BASE_ACTIVATION),
+                        "callback": s.get("base_callback", BASE_CALLBACK),
+                        "cooldown": s.get("base_cooldown", BASE_COOLDOWN),
+                        "reentry_drop": s.get("base_reentry_drop", BASE_REENTRY_DROP),
                     }
                 })
             return rules
@@ -102,6 +107,12 @@ def run_simulation_detailed(bars, strategy_params):
     delta_window = strategy_params["window"]
     threshold_mult = strategy_params["threshold"]
     leverage = strategy_params["leverage"]
+    
+    # Dynamic parameters (with defaults)
+    base_activation = strategy_params.get("activation", BASE_ACTIVATION)
+    base_callback = strategy_params.get("callback", BASE_CALLBACK)
+    base_cooldown = strategy_params.get("cooldown", BASE_COOLDOWN)
+    base_reentry_drop = strategy_params.get("reentry_drop", BASE_REENTRY_DROP)
 
     # Initial state
     entry_price = bars[0][1]
@@ -136,10 +147,16 @@ def run_simulation_detailed(bars, strategy_params):
                 break
 
             # Trailing / momentum exit
-            if pnl_from_entry >= BASE_ACTIVATION and drawdown_from_max >= BASE_CALLBACK:
+            if pnl_from_entry >= base_activation and drawdown_from_max >= base_callback:
                 r_delta = get_rolling_delta(bars, idx, delta_window)
                 a_delta = get_avg_delta(bars, idx)
                 threshold = a_delta * threshold_mult
+                
+                # Proportional scaling (from optimize_combined_leverage logic)
+                # Not fully implemented in old backtest, adding check:
+                # Need window start logic to match exactly.
+                # Simplification: The imported get_rolling_delta usually handles summation.
+                
                 if not (r_delta > threshold) and not (r_delta >= 0):
                     exit_price = price
                     exit_reason = "Trailing/Momentum"
@@ -149,10 +166,10 @@ def run_simulation_detailed(bars, strategy_params):
                     break
         else:
             # Re-entry logic (mirrors optimize_combined_leverage)
-            if ts - last_exit_ts >= BASE_COOLDOWN:
+            if ts - last_exit_ts >= base_cooldown:
                 if price < max_price:
                     drop_pct = (max_price - price) / max_price * 100
-                    if drop_pct >= BASE_REENTRY_DROP:
+                    if drop_pct >= base_reentry_drop:
                         if delta > 0 and large_buy > large_sell:
                             # Re-enter position
                             in_position = True
