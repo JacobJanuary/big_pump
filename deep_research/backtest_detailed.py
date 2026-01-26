@@ -180,61 +180,44 @@ def run_simulation_detailed(bars, strategy_params):
     }
 
 
-def get_filtered_signal_ids(conn) -> List[Tuple[int, str, datetime, int, float, float, float]]:
+def get_all_signals_like_optimizer(conn) -> List[Tuple[int, str, datetime, int, float, float, float]]:
     """
-    Get filtered signals using SAME logic as optimize_combined_leverage_filtered.py
+    Load ALL signals using SAME logic as optimize_unified.py
     
-    Returns list of (web.signal_analysis.id, symbol, timestamp, score, rsi, vol_zscore, oi_delta) tuples
-    that satisfy all filters from pump_analysis_lib.
+    This uses the SAME query as preload_all_signals() in optimize_unified.py:
+    - Join web.signal_analysis with fas_v2.indicators
+    - score >= 100, score < 950
+    - NO additional vol/oi/rsi filters (those are applied via get_matching_rule)
     
-    CRITICAL: fetch_signals returns fas_v2.scoring_history.id.
-    We need web.signal_analysis.id to query web.agg_trades_1s.
-    We map them by (pair_symbol, timestamp).
+    Returns list of (signal_id, symbol, timestamp, score, rsi, vol_zscore, oi_delta) tuples
     """
-    print(f"   Filters: Score >= {SCORE_THRESHOLD}, Vol Z > {INDICATOR_FILTERS['volume_zscore_threshold']}, OI Delta > {INDICATOR_FILTERS['oi_delta_threshold']}")
+    print("   Loading signals using same logic as optimize_unified.py...")
     
-    # 1. Get filtered signals from Source (FAS system)
-    # This applies filters like Score >= 118, Patterns, Exchange, etc.
-    raw_signals = fetch_signals(conn, days=60)
-    
-    if not raw_signals:
-        return []
-    
-    print(f"   FAS signals after filters: {len(raw_signals)}")
-    
-    # 2. Fetch ALL IDs from web.signal_analysis for mapping
+    signals = []
     with conn.cursor() as cur:
-        cur.execute("SELECT id, pair_symbol, signal_timestamp FROM web.signal_analysis")
-        web_signals = cur.fetchall()
-    
-    # Create Lookup Map: (symbol, timestamp) -> (web.id)
-    web_map = {}
-    for wid, sym, ts in web_signals:
-        # Ensure UTC for consistent matching
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        web_map[(sym, ts)] = wid
-    
-    # 3. Match FAS signals to web.signal_analysis IDs (with indicators)
-    matched = []
-    for s in raw_signals:
-        sym = s['pair_symbol']
-        ts = s['timestamp']
-        score = s['total_score']
-        rsi = s.get('rsi', 0) or 0
-        vol_zscore = s.get('volume_zscore', 0) or 0
-        oi_delta = s.get('oi_delta_pct', 0) or 0
+        cur.execute("""
+            SELECT sa.id, sa.pair_symbol, sa.signal_timestamp, sa.total_score,
+                   i.rsi, i.volume_zscore, i.oi_delta_pct
+            FROM web.signal_analysis AS sa
+            JOIN fas_v2.indicators AS i ON (
+                i.trading_pair_id = sa.trading_pair_id 
+                AND i.timestamp = sa.signal_timestamp
+                AND i.timeframe = '15m'
+            )
+            WHERE sa.total_score >= 100 AND sa.total_score < 950
+        """)
         
-        # Normalize source timestamp
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        
-        # Try exact match
-        if (sym, ts) in web_map:
-            matched.append((web_map[(sym, ts)], sym, ts, score, rsi, vol_zscore, oi_delta))
+        for row in cur.fetchall():
+            sid, sym, ts, score, rsi, vol, oi = row
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            signals.append((
+                sid, sym, ts, score,
+                rsi or 0, vol or 0, oi or 0
+            ))
     
-    print(f"   Matched to web.signal_analysis: {len(matched)}")
-    return matched
+    print(f"   Loaded {len(signals)} signals (same as optimizer)")
+    return signals
 
 
 # Default strategy params (from best optimization results)
@@ -252,17 +235,17 @@ def main():
     print("=" * 60)
     print("DETAILED BACKTEST (Same Source as Optimizer)")
     print("=" * 60)
-    print("Fetching filtered signals...")
+    print("Loading signals...")
     
-    # Get signals using SAME filtering as optimize_combined_leverage_filtered.py
-    signals = get_filtered_signal_ids(conn)
+    # Get signals using SAME logic as optimize_unified.py (no pre-filtering)
+    signals = get_all_signals_like_optimizer(conn)
     
     if not signals:
-        print("❌ No signals found after filtering.")
+        print("❌ No signals found.")
         conn.close()
         return
     
-    print(f"\nTotal signals to backtest: {len(signals)}")
+    print(f"\nTotal signals loaded: {len(signals)}")
     print("-" * 60)
     
     trades = []
@@ -271,6 +254,7 @@ def main():
     # Track active positions to prevent overlapping trades on same symbol
     active_positions = {}  # {symbol: exit_timestamp_epoch}
     skipped_due_to_position = 0
+    skipped_no_matching_rule = 0
     
     # Process in batches
     for i in range(0, len(signals), batch_size):
@@ -301,6 +285,7 @@ def main():
             strat = get_matching_rule(score, rsi, vol_zscore, oi_delta)
             if strat is None:
                 # No matching rule - skip this signal
+                skipped_no_matching_rule += 1
                 continue
             
             res = run_simulation_detailed(bars, strat)
@@ -334,6 +319,8 @@ def main():
     trades.sort(key=lambda x: x["Date"])
     
     print(f"\nSkipped due to occupied position: {skipped_due_to_position}")
+    print(f"Skipped due to no matching rule: {skipped_no_matching_rule}")
+    print(f"Actually traded: {len(trades)}")
 
     # Console Output with Colors
     print("\n" + "="*100)
