@@ -190,6 +190,9 @@ def evaluate_filter(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, 
 
     Returns the filter config and a dict `strategy_id -> total_pnl` aggregated over
     all pairs.
+    
+    NOTE: Pairs are processed sequentially to maintain global position tracking
+    and avoid nested multiprocessing pool issues.
     """
     signals = fetch_filtered_signals(filter_cfg)
     if len(signals) < MIN_SIGNALS_FOR_EVAL:
@@ -198,20 +201,12 @@ def evaluate_filter(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, 
     by_pair: Dict[str, List[SignalInfo]] = {}
     for s in signals:
         by_pair.setdefault(s.pair, []).append(s)
-    # Parallel processing per pair
+    # Sequential processing per pair (required for global position tracking)
     aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
-    if MAX_WORKERS == 1:
-        for pair, pair_signals in by_pair.items():
-            pair_agg = process_pair(pair, pair_signals, strategy_grid)
-            for sid, val in pair_agg.items():
-                aggregated[sid] += val
-    else:
-        with mp.Pool(processes=MAX_WORKERS) as pool:
-            tasks = [(pair, sigs, strategy_grid) for pair, sigs in by_pair.items()]
-            results = pool.starmap(process_pair, tasks)
-            for pair_agg in results:
-                for sid, val in pair_agg.items():
-                    aggregated[sid] += val
+    for pair, pair_signals in by_pair.items():
+        pair_agg = process_pair(pair, pair_signals, strategy_grid)
+        for sid, val in pair_agg.items():
+            aggregated[sid] += val
     return filter_cfg, aggregated
 
 # ---------------------------------------------------------------------------
