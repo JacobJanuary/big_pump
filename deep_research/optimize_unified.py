@@ -261,10 +261,19 @@ def evaluate_filter(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, 
 # ---------------------------------------------------------------------------
 # Main optimisation loop
 # ---------------------------------------------------------------------------
+DEBUG_LOGGING = True  # Set to True to log each filter evaluation
+
 def _evaluate_filter_wrapper(args):
     """Wrapper for multiprocessing - unpacks args tuple."""
     filter_cfg, strategy_grid = args
-    return evaluate_filter(filter_cfg, strategy_grid)
+    if DEBUG_LOGGING:
+        import os
+        pid = os.getpid()
+        print(f"[PID {pid}] Starting filter: score={filter_cfg.get('score_min')}, rsi={filter_cfg.get('rsi_min')}, vol={filter_cfg.get('vol_min')}, oi={filter_cfg.get('oi_min')}", flush=True)
+    result = evaluate_filter(filter_cfg, strategy_grid)
+    if DEBUG_LOGGING:
+        print(f"[PID {pid}] Finished filter: score={filter_cfg.get('score_min')}", flush=True)
+    return result
 
 def main():
     import argparse
