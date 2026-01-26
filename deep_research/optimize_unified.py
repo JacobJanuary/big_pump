@@ -155,10 +155,12 @@ def preload_all_bars(signal_ids: List[int]) -> Dict[int, List[tuple]]:
     """
     print(f"[PRELOAD] Loading bars for {len(signal_ids)} signals...")
     bars_map: Dict[int, List[tuple]] = {}
-    chunk_size = 50
+    chunk_size = 10  # Smaller chunks for better progress visibility
+    total_chunks = (len(signal_ids) + chunk_size - 1) // chunk_size
     
-    for i in range(0, len(signal_ids), chunk_size):
+    for chunk_idx, i in enumerate(range(0, len(signal_ids), chunk_size)):
         chunk = signal_ids[i:i + chunk_size]
+        print(f"[PRELOAD] Loading chunk {chunk_idx + 1}/{total_chunks} (signals {i+1}-{min(i+chunk_size, len(signal_ids))})...", end=" ", flush=True)
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cur:
@@ -169,15 +171,15 @@ def preload_all_bars(signal_ids: List[int]) -> Dict[int, List[tuple]]:
                         WHERE signal_analysis_id = ANY(%s)
                         ORDER BY signal_analysis_id, second_ts
                     """, (chunk,))
-                    for row in cur.fetchall():
+                    rows = cur.fetchall()
+                    for row in rows:
                         sid, ts, price, delta, buy, sell = row
                         bars_map.setdefault(sid, []).append(
                             (ts, float(price), float(delta), 0.0, buy, sell)
                         )
+                    print(f"{len(rows):,} rows", flush=True)
         except Exception as e:
-            print(f"Error loading bars chunk {i}: {e}")
-        if (i + chunk_size) % 500 == 0:
-            print(f"[PRELOAD] Loaded bars for {min(i + chunk_size, len(signal_ids))}/{len(signal_ids)} signals")
+            print(f"ERROR: {e}")
     
     print(f"[PRELOAD] Bars loaded for {len(bars_map)} signals")
     return bars_map
