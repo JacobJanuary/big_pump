@@ -212,6 +212,11 @@ def evaluate_filter(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, 
 # ---------------------------------------------------------------------------
 # Main optimisation loop
 # ---------------------------------------------------------------------------
+def _evaluate_filter_wrapper(args):
+    """Wrapper for multiprocessing - unpacks args tuple."""
+    filter_cfg, strategy_grid = args
+    return evaluate_filter(filter_cfg, strategy_grid)
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Unified optimizer with global position tracking")
@@ -230,37 +235,73 @@ def main():
         print(f"Limiting filter grid to first {args.limit} configs for testing.")
 
     strategy_grid = generate_strategy_grid()
+    print(f"Filter grid: {len(filter_grid)} combinations, Strategy grid: {len(strategy_grid)} combinations")
+    print(f"Using {MAX_WORKERS} workers for parallel filter processing")
 
     all_results = []
-    try:
-        from tqdm import tqdm
-        iterator = tqdm(filter_grid, desc="Optimizing filters")
-    except ImportError:
-        iterator = filter_grid
-        print(f"Optimizing {len(filter_grid)} filter configurations...")
-
-    for filter_cfg in iterator:
-        cfg, agg = evaluate_filter(filter_cfg, strategy_grid)
-        if not agg:
-            continue
-        # Find best strategy for this filter
-        best_sid = max(agg, key=lambda k: agg[k])
-        best_params = strategy_grid[best_sid]
-        result_entry = {
-            "filter": cfg,
-            "strategy": best_params,
-            "metrics": {
-                "total_pnl": agg[best_sid],
-                "strategy_id": best_sid,
-            },
-        }
-        all_results.append(result_entry)
-        # Write intermediate result (append mode) – safe for long runs
+    
+    # Parallel processing of filter combinations
+    tasks = [(cfg, strategy_grid) for cfg in filter_grid]
+    
+    if MAX_WORKERS == 1:
+        # Sequential for debugging
         try:
-            with open("intermediate_results.jsonl", "a", encoding="utf-8") as f:
-                f.write(json.dumps(result_entry) + "\n")
-        except Exception as e:
-            print(f"Warning: could not write intermediate result: {e}")
+            from tqdm import tqdm
+            iterator = tqdm(tasks, desc="Optimizing filters")
+        except ImportError:
+            iterator = tasks
+            print(f"Optimizing {len(filter_grid)} filter configurations...")
+        
+        for task in iterator:
+            cfg, agg = _evaluate_filter_wrapper(task)
+            if agg:
+                best_sid = max(agg, key=lambda k: agg[k])
+                best_params = strategy_grid[best_sid]
+                result_entry = {
+                    "filter": cfg,
+                    "strategy": best_params,
+                    "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
+                }
+                all_results.append(result_entry)
+                try:
+                    with open("intermediate_results.jsonl", "a", encoding="utf-8") as f:
+                        f.write(json.dumps(result_entry) + "\n")
+                except Exception:
+                    pass
+    else:
+        # Parallel processing with imap_unordered for progress tracking
+        try:
+            from tqdm import tqdm
+            with mp.Pool(processes=MAX_WORKERS) as pool:
+                for cfg, agg in tqdm(pool.imap_unordered(_evaluate_filter_wrapper, tasks), 
+                                      total=len(tasks), desc="Optimizing filters"):
+                    if agg:
+                        best_sid = max(agg, key=lambda k: agg[k])
+                        best_params = strategy_grid[best_sid]
+                        result_entry = {
+                            "filter": cfg,
+                            "strategy": best_params,
+                            "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
+                        }
+                        all_results.append(result_entry)
+                        try:
+                            with open("intermediate_results.jsonl", "a", encoding="utf-8") as f:
+                                f.write(json.dumps(result_entry) + "\n")
+                        except Exception:
+                            pass
+        except ImportError:
+            print(f"Optimizing {len(filter_grid)} filter configurations...")
+            with mp.Pool(processes=MAX_WORKERS) as pool:
+                results = pool.map(_evaluate_filter_wrapper, tasks)
+            for cfg, agg in results:
+                if agg:
+                    best_sid = max(agg, key=lambda k: agg[k])
+                    best_params = strategy_grid[best_sid]
+                    all_results.append({
+                        "filter": cfg,
+                        "strategy": best_params,
+                        "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
+                    })
 
     # Sort final results by total PnL descending
     all_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
