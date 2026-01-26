@@ -147,10 +147,12 @@ def fetch_filtered_signals(filter_cfg: Dict) -> List[SignalInfo]:
         return []
 
 # ---------------------------------------------------------------------------
-# Batch load bars for multiple signals in ONE query
+# Batch load bars for multiple signals in ONE query (with chunking)
 # ---------------------------------------------------------------------------
+MAX_SIGNALS_PER_BATCH = 20  # Limit to prevent huge queries
+
 def fetch_bars_batch(signal_ids: List[int]) -> Dict[int, List[tuple]]:
-    """Load all bars for multiple signals in a single DB query.
+    """Load all bars for multiple signals, chunked to prevent memory issues.
     
     Returns dict: {signal_id: [(second_ts, close_price, delta, 0.0, large_buy, large_sell), ...]}
     """
@@ -158,26 +160,30 @@ def fetch_bars_batch(signal_ids: List[int]) -> Dict[int, List[tuple]]:
         return {}
     
     bars_map: Dict[int, List[tuple]] = {}
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT signal_analysis_id, second_ts, close_price, delta,
-                           large_buy_count, large_sell_count
-                    FROM web.agg_trades_1s
-                    WHERE signal_analysis_id = ANY(%s)
-                    ORDER BY signal_analysis_id, second_ts
-                    """,
-                    (signal_ids,)
-                )
-                for row in cur.fetchall():
-                    sid, ts, price, delta, buy, sell = row
-                    bars_map.setdefault(sid, []).append(
-                        (ts, float(price), float(delta), 0.0, buy, sell)
+    
+    # Process in chunks to avoid huge queries
+    for i in range(0, len(signal_ids), MAX_SIGNALS_PER_BATCH):
+        chunk = signal_ids[i:i + MAX_SIGNALS_PER_BATCH]
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT signal_analysis_id, second_ts, close_price, delta,
+                               large_buy_count, large_sell_count
+                        FROM web.agg_trades_1s
+                        WHERE signal_analysis_id = ANY(%s)
+                        ORDER BY signal_analysis_id, second_ts
+                        """,
+                        (chunk,)
                     )
-    except Exception as e:
-        print(f"Error batch loading bars: {e}")
+                    for row in cur.fetchall():
+                        sid, ts, price, delta, buy, sell = row
+                        bars_map.setdefault(sid, []).append(
+                            (ts, float(price), float(delta), 0.0, buy, sell)
+                        )
+        except Exception as e:
+            print(f"Error batch loading bars (chunk {i}): {e}")
     return bars_map
 
 # ---------------------------------------------------------------------------
