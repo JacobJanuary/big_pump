@@ -218,7 +218,7 @@ def main():
     parser = argparse.ArgumentParser(description="Unified Optimizer for Strategy Parameters")
     parser.add_argument("--workers", type=int, default=12, help="Number of parallel workers (default: 12)")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of filter configurations (for testing)")
-    parser.add_argument("--min-signals", type=int, default=50, help="Minimum signals required to evaluate a filter (default: 50)")
+    parser.add_argument("--min-signals", type=int, default=10, help="Minimum signals required to evaluate a filter (default: 10)")
     
     args = parser.parse_args()
     

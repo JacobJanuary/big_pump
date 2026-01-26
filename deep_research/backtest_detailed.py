@@ -8,7 +8,16 @@ from typing import List, Dict, Tuple
 sys.path.append(str(Path(__file__).parent.parent))
 
 from scripts_v2.db_batch_utils import fetch_bars_batch, get_connection
-from scripts_v2.optimize_combined_leverage import run_strategy, COMMISSION_PCT
+from scripts_v2.optimize_combined_leverage import (
+    run_strategy, 
+    COMMISSION_PCT,
+    BASE_ACTIVATION,
+    BASE_CALLBACK,
+    BASE_REENTRY_DROP,
+    BASE_COOLDOWN,
+    get_rolling_delta,
+    get_avg_delta,
+)
 
 # ---------------------------------------------------------------------------
 # Composite Strategy Rules (Hardcoded from Report)
@@ -50,152 +59,96 @@ def get_matching_rule(score, rsi, vol, oi):
     return None
 
 def run_simulation_detailed(bars, strategy_params):
-    """
-    Detailed version of run_strategy that returns trade details instead of just PnL.
+    """Run a single signal simulation and return detailed trade information.
+
+    This mirrors the logic from ``run_strategy`` in ``optimize_combined_leverage.py``
+    but also records entry/exit timestamps, reason and PnL details.
     """
     if not bars:
         return None
-        
-    entry_price = bars[0][1]
-    entry_ts = bars[0][0]
-    
+
+    # Strategy parameters
     sl_pct = strategy_params["sl"]
     delta_window = strategy_params["window"]
     threshold_mult = strategy_params["threshold"]
     leverage = strategy_params["leverage"]
-    
-    # Logic copied from optimize_combined_leverage but simplified for single pass
+
+    # Initial state
+    entry_price = bars[0][1]
+    entry_ts = bars[0][0]
     max_price = entry_price
+    in_position = True
+    last_exit_ts = 0
     exit_price = entry_price
     exit_reason = "Timeout"
-    exit_ts = entry_ts + delta_window # Default timeout
-    
+    exit_ts = bars[-1][0]
+
     comm_cost = COMMISSION_PCT * 2 * leverage
-    
-    # Indicators helpers (inlined for speed)
-    def get_rolling_delta(idx, window):
-        start_idx = max(0, idx - window)
-        return bars[idx][2] - bars[start_idx][2] # Delta is cumulative sum logic? 
-        # Wait, get_rolling_delta in lib uses SUM of delta column?
-        # Let's check db_batch_utils: delta is row[3]. 
-        # optimize_combined_leverage: get_rolling_delta sums delta column.
-        pass
 
-    # Actually, we should import run_strategy logic or replicate it faithfully. 
-    # To ensure exact match, I'll rely on the PnL matching but I need exit details.
-    # Re-implementing logic with logging:
-    
-    total_delta = 0
-    # Pre-calculate deltas for speed? No, standard loop.
-    
     for idx, bar in enumerate(bars):
-        ts = bar[0]
-        price = bar[1]
-        delta = bar[2]
-        
-        if price > max_price:
+        ts, price, delta, _, large_buy, large_sell = bar
+
+        # Update max price while in position
+        if in_position and price > max_price:
             max_price = price
-        
-        pnl_from_entry = (price - entry_price) / entry_price * 100
-        
-        # SL Check
-        if pnl_from_entry <= -sl_pct:
-            exit_price = price
-            exit_reason = "StopLoss"
-            exit_ts = ts
-            break
-            
-        # Trailing/Momentum Check
-        # Simplified: We need rolling delta over 'delta_window' bars (seconds)
-        # bars[idx][2] is delta for that second? No, 'delta' column in agg_trades_1s is usually volume delta.
-        # Check optimize_combined_leverage.get_rolling_delta logic:
-        # return sum(b[2] for b in bars[start:end])
-        
-        # Optimization: maintain rolling sum window
-        start_idx = max(0, idx - delta_window)
-        # rolling_delta = sum(b[2] for b in bars[start_idx : idx+1]) 
-        # (This is slow in python loop, but okay for backtest script)
-        
-        rolling_delta = 0
-        for k in range(start_idx, idx + 1):
-            rolling_delta += bars[k][2]
-        
-        avg_delta = 0 # Approximate average?
-        # get_avg_delta in lib: sum(all previous) / count?
-        # Let's assume standard trailing logic for now:
-        # If PnL > 0.4% AND Drawdown > 0.2% AND Momentum Lost -> Exit
-        
-        # Replicating exact logic from audit is complex without imports.
-        # Let's trust that if we want exact same results, we should refactor optimize_combined_leverage to return details.
-        # BUT user wants a script NOW.
-        # I will use a simplified "close enough" logic for the report details, 
-        # or better: MODIFY optimize_combined_leverage to optionally return details.
-        pass
-    
-    # ... Wait, modifying the lib is risky for running processes. 
-    # I'll implement the loop here.
-    
-    # ----------------------------------------------------------------
-    # Re-implementation of logic from optimize_combined_leverage.py
-    # ----------------------------------------------------------------
-    BASE_ACTIVATION = 0.4
-    BASE_CALLBACK = 0.2
-    
-    final_pnl = 0.0
-    in_position = True
-    
-    for idx, bar in enumerate(bars):
-        ts = bar[0]
-        price = bar[1]
-        
-        pnl_from_entry = (price - entry_price) / entry_price * 100
-        drawdown_from_max = (max_price - price) / max_price * 100
-        
-        if pnl_from_entry <= -sl_pct:
-            exit_price = price
-            exit_reason = "SL"
-            exit_ts = ts
-            in_position = False
-            break
 
-        if (pnl_from_entry >= BASE_ACTIVATION and drawdown_from_max >= BASE_CALLBACK):
-            # Calculate rolling delta
-            start = max(0, idx - delta_window)
-            r_delta = sum(b[2] for b in bars[start : idx+1])
-            
-            # Avg Delta (full history of trade?)
-            a_delta = sum(b[2] for b in bars[0 : idx+1]) / (idx + 1) if idx > 0 else 0
-            
-            threshold = a_delta * threshold_mult
-            
-            # Exit Condition
-            if not (r_delta > threshold) and not (r_delta >= 0):
+        if in_position:
+            pnl_from_entry = (price - entry_price) / entry_price * 100
+            drawdown_from_max = (max_price - price) / max_price * 100
+
+            # Stop-loss
+            if pnl_from_entry <= -sl_pct:
                 exit_price = price
-                exit_reason = "Trailing/Momentum"
+                exit_reason = "SL"
                 exit_ts = ts
                 in_position = False
+                last_exit_ts = ts
                 break
-                
+
+            # Trailing / momentum exit
+            if pnl_from_entry >= BASE_ACTIVATION and drawdown_from_max >= BASE_CALLBACK:
+                r_delta = get_rolling_delta(bars, idx, delta_window)
+                a_delta = get_avg_delta(bars, idx)
+                threshold = a_delta * threshold_mult
+                if not (r_delta > threshold) and not (r_delta >= 0):
+                    exit_price = price
+                    exit_reason = "Trailing/Momentum"
+                    exit_ts = ts
+                    in_position = False
+                    last_exit_ts = ts
+                    break
+        else:
+            # Re-entry logic (mirrors optimize_combined_leverage)
+            if ts - last_exit_ts >= BASE_COOLDOWN:
+                if price < max_price:
+                    drop_pct = (max_price - price) / max_price * 100
+                    if drop_pct >= BASE_REENTRY_DROP:
+                        if delta > 0 and large_buy > large_sell:
+                            # Re-enter position
+                            in_position = True
+                            entry_price = price
+                            entry_ts = ts
+                            max_price = price
+                            last_exit_ts = 0
+                            continue
+
+    # If still in position after loop, exit at last bar
     if in_position:
-        # Timeout exit at end of bars
         exit_price = bars[-1][1]
         exit_reason = "Timeout"
         exit_ts = bars[-1][0]
 
     raw_pnl = (exit_price - entry_price) / entry_price * 100
-    final_pnl_usd = (raw_pnl * leverage) - comm_cost # Is this USD? No, percentage points of margin?
-    # Usually "PnL" in this bot = % Return on Margin.
-    # If I invest $100 with 10x, and price moves 1%, raw_pnl=1%, lev_pnl=10%.
-    # result is 10.
-    
-    row = {
+    pnl_usd = raw_pnl * leverage - comm_cost
+
+    return {
         "entry_price": entry_price,
         "exit_price": exit_price,
         "duration": exit_ts - entry_ts,
         "exit_reason": exit_reason,
-        "pnl": raw_pnl * leverage - comm_cost
+        "pnl": pnl_usd,
     }
-    return row
+
 
 def main():
     conn = get_connection()
@@ -238,6 +191,10 @@ def main():
             
     print(f"Signals passing filters: {len(signals_to_process)}")
     
+    # Track active positions to prevent overlapping trades on same symbol
+    active_positions = {}  # {symbol: exit_timestamp}
+    skipped_due_to_position = 0
+    
     # Process in batches
     for i in range(0, len(signals_to_process), batch_size):
         batch = signals_to_process[i : i+batch_size]
@@ -248,6 +205,16 @@ def main():
         
         for item in batch:
             sid, strat, symbol, ts, score = item
+            
+            # Convert timestamp to epoch for comparison
+            entry_epoch = ts.timestamp() if hasattr(ts, 'timestamp') else ts
+            
+            # Check if position is occupied
+            if symbol in active_positions:
+                if entry_epoch < active_positions[symbol]:
+                    skipped_due_to_position += 1
+                    continue  # Skip: position still open
+            
             bars = bars_dict.get(sid, [])
             
             if not bars:
@@ -260,6 +227,10 @@ def main():
             res = run_simulation_detailed(bars, strat)
             
             if res:
+                # Calculate exit timestamp and update active_positions
+                exit_epoch = entry_epoch + res["duration"]
+                active_positions[symbol] = exit_epoch
+                
                 trades.append({
                     "Date": ts,
                     "Symbol": symbol,
@@ -276,6 +247,8 @@ def main():
     
     # Sort trades by date
     trades.sort(key=lambda x: x["Date"])
+    
+    print(f"\nSkipped due to occupied position: {skipped_due_to_position}")
 
     # Console Output with Colors
     print("\n" + "="*100)

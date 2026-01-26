@@ -31,17 +31,18 @@ def fetch_bars_batch(conn, signal_ids: List[int]):
     if not signal_ids:
         return {}
 
-    # Optimized query: Join with signal_analysis to get signal timestamp
-    # and limit fetched bars to [signal_ts, signal_ts + 2 hours]
+    # Optimized query: Join with signal_analysis to get entry_time
+    # and limit fetched bars to [entry_time, entry_time + 2 hours]
     # This prevents fetching weeks of data for a single signal.
+    # IMPORTANT: Use entry_time (signal + 17 min), NOT signal_timestamp!
     sql = """
         SELECT t.signal_analysis_id, t.second_ts, t.close_price, t.delta,
                t.large_buy_count, t.large_sell_count
         FROM web.agg_trades_1s t
         JOIN web.signal_analysis s ON s.id = t.signal_analysis_id
         WHERE t.signal_analysis_id = ANY(%s)
-          AND t.second_ts >= EXTRACT(EPOCH FROM s.signal_timestamp)::bigint
-          AND t.second_ts <= (EXTRACT(EPOCH FROM s.signal_timestamp)::bigint + 7200)
+          AND t.second_ts >= EXTRACT(EPOCH FROM s.entry_time)::bigint
+          AND t.second_ts <= (EXTRACT(EPOCH FROM s.entry_time)::bigint + 7200)
         ORDER BY t.signal_analysis_id, t.second_ts
     """
     with conn.cursor() as cur:
