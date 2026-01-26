@@ -471,6 +471,16 @@ def main():
     # 3. Filter signals with sufficient bars
     signals_with_bars = [s for s in all_signals if s.signal_id in bars_cache and len(bars_cache[s.signal_id]) >= 100]
     print(f"[PRELOAD] Signals with sufficient bars (>=100): {len(signals_with_bars)}")
+    
+    # Log score distribution to understand data
+    score_dist = {}
+    for s in signals_with_bars:
+        bucket = (s.score // 50) * 50
+        score_dist[bucket] = score_dist.get(bucket, 0) + 1
+    print("[PRELOAD] Score distribution:")
+    for score in sorted(score_dist.keys()):
+        print(f"  {score}-{score+49}: {score_dist[score]} signals")
+    
     if not signals_with_bars:
         print("No signals with sufficient data.")
         return
