@@ -1,13 +1,28 @@
 #!/usr/bin/env python3
+"""
+Detailed Backtest Script - Uses SAME signal source as optimize_combined_leverage_filtered.py
+
+Critical: This script uses fetch_signals() from pump_analysis_lib to get signals
+from fas_v2.scoring_history with proper filters, then maps them to web.signal_analysis
+IDs to fetch 1-second bars from web.agg_trades_1s.
+"""
 import csv
 import sys
 from pathlib import Path
 from typing import List, Dict, Tuple
+from datetime import datetime, timezone
 
 # Add parent directory to path to allow imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from scripts_v2.db_batch_utils import fetch_bars_batch, get_connection
+from scripts_v2.db_batch_utils import fetch_bars_batch
+from scripts_v2.pump_analysis_lib import (
+    get_db_connection,
+    fetch_signals,
+    SCORE_THRESHOLD,
+    SCORE_THRESHOLD_MAX,
+    INDICATOR_FILTERS,
+)
 from scripts_v2.optimize_combined_leverage import (
     run_strategy, 
     COMMISSION_PCT,
@@ -150,61 +165,105 @@ def run_simulation_detailed(bars, strategy_params):
     }
 
 
-def main():
-    conn = get_connection()
-    
-    print("Fetching signals...")
-    # Fetch all signals that might match our Score Range (100-300)
-    # We join with indicators to get RSI/Vol/OI at once
-    # Fetch all signals that might match our Score Range (100-300)
-    # We join with indicators to get RSI/Vol/OI at once
-    # TABLE NAME FIX: Use sa.pair_symbol directly (denormalized column), remove risky join
-    sql = """
-        SELECT sa.id, sa.trading_pair_id, sa.signal_timestamp, sa.total_score,
-               i.rsi, i.volume_zscore, i.oi_delta_pct, sa.pair_symbol
-        FROM web.signal_analysis sa
-        JOIN fas_v2.indicators i ON (i.trading_pair_id = sa.trading_pair_id AND i.timestamp = sa.signal_timestamp AND i.timeframe='15m')
-        WHERE sa.total_score >= 100 AND sa.total_score < 300
-        ORDER BY sa.signal_timestamp ASC
+def get_filtered_signal_ids(conn) -> List[Tuple[int, str, datetime, int]]:
     """
+    Get filtered signals using SAME logic as optimize_combined_leverage_filtered.py
     
+    Returns list of (web.signal_analysis.id, symbol, timestamp, score) tuples
+    that satisfy all filters from pump_analysis_lib.
+    
+    CRITICAL: fetch_signals returns fas_v2.scoring_history.id.
+    We need web.signal_analysis.id to query web.agg_trades_1s.
+    We map them by (pair_symbol, timestamp).
+    """
+    print(f"   Filters: Score >= {SCORE_THRESHOLD}, Vol Z > {INDICATOR_FILTERS['volume_zscore_threshold']}, OI Delta > {INDICATOR_FILTERS['oi_delta_threshold']}")
+    
+    # 1. Get filtered signals from Source (FAS system)
+    # This applies filters like Score >= 118, Patterns, Exchange, etc.
+    raw_signals = fetch_signals(conn, days=60)
+    
+    if not raw_signals:
+        return []
+    
+    print(f"   FAS signals after filters: {len(raw_signals)}")
+    
+    # 2. Fetch ALL IDs from web.signal_analysis for mapping
     with conn.cursor() as cur:
-        cur.execute(sql)
-        signals = cur.fetchall()
+        cur.execute("SELECT id, pair_symbol, signal_timestamp FROM web.signal_analysis")
+        web_signals = cur.fetchall()
+    
+    # Create Lookup Map: (symbol, timestamp) -> (web.id)
+    web_map = {}
+    for wid, sym, ts in web_signals:
+        # Ensure UTC for consistent matching
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        web_map[(sym, ts)] = wid
+    
+    # 3. Match FAS signals to web.signal_analysis IDs
+    matched = []
+    for s in raw_signals:
+        sym = s['pair_symbol']
+        ts = s['timestamp']
+        score = s['total_score']
         
-    print(f"Found {len(signals)} candidates for backtest.")
+        # Normalize source timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        
+        # Try exact match
+        if (sym, ts) in web_map:
+            matched.append((web_map[(sym, ts)], sym, ts, score))
+    
+    print(f"   Matched to web.signal_analysis: {len(matched)}")
+    return matched
+
+
+# Default strategy params (from best optimization results)
+DEFAULT_STRATEGY = {
+    "leverage": 10,
+    "sl": 4,
+    "window": 20,
+    "threshold": 1.0
+}
+
+
+def main():
+    conn = get_db_connection()
+    
+    print("=" * 60)
+    print("DETAILED BACKTEST (Same Source as Optimizer)")
+    print("=" * 60)
+    print("Fetching filtered signals...")
+    
+    # Get signals using SAME filtering as optimize_combined_leverage_filtered.py
+    signals = get_filtered_signal_ids(conn)
+    
+    if not signals:
+        print("❌ No signals found after filtering.")
+        conn.close()
+        return
+    
+    print(f"\nTotal signals to backtest: {len(signals)}")
+    print("-" * 60)
     
     trades = []
-    
-    # Helper to batch fetch bars
-    # We only fetch bars for signals that match filters
-    batch_size = 100
-    signals_to_process = []
-    
-    for row in signals:
-        sid, pid, ts, score, rsi, vol, oi, symbol = row
-        # Check if this signal matches any rule
-        strategy = get_matching_rule(score, rsi, vol, oi)
-        
-        if strategy:
-            signals_to_process.append((sid, strategy, symbol, ts, score))
-            
-    print(f"Signals passing filters: {len(signals_to_process)}")
+    batch_size = 50
     
     # Track active positions to prevent overlapping trades on same symbol
-    active_positions = {}  # {symbol: exit_timestamp}
+    active_positions = {}  # {symbol: exit_timestamp_epoch}
     skipped_due_to_position = 0
     
     # Process in batches
-    for i in range(0, len(signals_to_process), batch_size):
-        batch = signals_to_process[i : i+batch_size]
+    for i in range(0, len(signals), batch_size):
+        batch = signals[i : i+batch_size]
         sids = [b[0] for b in batch]
         
-        # Fetch bars
+        # Fetch bars for this batch
         bars_dict = fetch_bars_batch(conn, sids)
         
         for item in batch:
-            sid, strat, symbol, ts, score = item
+            sid, symbol, ts, score = item
             
             # Convert timestamp to epoch for comparison
             entry_epoch = ts.timestamp() if hasattr(ts, 'timestamp') else ts
@@ -217,12 +276,11 @@ def main():
             
             bars = bars_dict.get(sid, [])
             
-            if not bars:
+            if not bars or len(bars) < 100:
                 continue
-                
-            # Limit bars based on window? The fetcher gets 2 hours.
-            # We must slice if window < len(bars) strictly?
-            # run_simulation_detailed handles logic.
+            
+            # Use default strategy for all signals (can be customized per score range)
+            strat = DEFAULT_STRATEGY
             
             res = run_simulation_detailed(bars, strat)
             
@@ -242,7 +300,13 @@ def main():
                     "Reason": res["exit_reason"],
                     "PnL%": round(res["pnl"], 2)
                 })
-                
+        
+        # Progress indicator
+        processed = min(i + batch_size, len(signals))
+        print(f"   Processed {processed}/{len(signals)} signals...", end='\r')
+    
+    print()  # Newline after progress
+
     conn.close()
     
     # Sort trades by date
