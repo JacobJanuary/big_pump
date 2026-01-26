@@ -1,143 +1,187 @@
 #!/usr/bin/env python3
+"""
+Analyze optimization results and create a composite trading strategy.
+
+This script:
+1. Loads results from optimization_results_unified.json
+2. Groups by Score Range
+3. Finds the best filter+strategy for each range
+4. Creates a composite strategy that covers all score ranges
+
+Usage:
+    python3 analyze_results.py
+    python3 analyze_results.py --file path/to/results.json
+    python3 analyze_results.py --top 5  # Show top 5 per range
+"""
 import json
-import os
-from collections import defaultdict
-import glob
+import argparse
 from pathlib import Path
+from collections import defaultdict
+from typing import List, Dict, Any
 
-def load_results():
-    """Load results from either the main JSON output or the intermediate JSONL."""
-    json_path = Path("scripts_v2/filter_strategy_optimization.json")
-    jsonl_path = Path("intermediate_results.jsonl")
-    
-    # Try local paths if script is run from project root
-    if not json_path.exists():
-        json_path = Path("filter_strategy_optimization.json")
-    
-    data = []
-    
-    # Priority 1: Full JSON file
-    if json_path.exists():
-        print(f"Loading full results from {json_path}...")
-        try:
-            with open(json_path, "r") as f:
-                data = json.load(f)
-            return data
-        except Exception as e:
-            print(f"Error loading JSON: {e}")
-            
-    # Priority 2: Intermediate JSONL
-    # Find the newest jsonl file
-    files = glob.glob("**/intermediate_results.jsonl", recursive=True)
-    if not files:
-        print("No result files found! Please ensure 'filter_strategy_optimization.json' or 'intermediate_results.jsonl' exists.")
-        return []
-        
-    target_file = sorted(files, key=os.path.getmtime)[-1]
-    print(f"Loading intermediate results from {target_file}...")
-    
-    with open(target_file, "r") as f:
-        for line in f:
-            if line.strip():
-                try:
-                    data.append(json.loads(line))
-                except:
-                    pass
-    return data
 
-def aggregate_rules(results):
-    """
-    Cluster results by Score bucket and find the dominant strategy for each cluster.
-    We assume the optimizer used Step 50 for scores.
-    """
-    # Bucketize by Score Range (e.g., "100-150")
-    score_buckets = defaultdict(list)
+def load_results(file_path: str = None) -> List[Dict]:
+    """Load results from JSON file."""
+    paths_to_try = [
+        file_path,
+        "optimization_results_unified.json",
+        "deep_research/optimization_results_unified.json",
+        "filter_strategy_optimization.json",
+    ]
     
-    print(f"Analyzing {len(results)} successful configurations...")
+    for path in paths_to_try:
+        if path and Path(path).exists():
+            print(f"Loading results from {path}...")
+            with open(path, "r") as f:
+                return json.load(f)
     
-    for res in results:
-        # Extract metadata
-        f = res["filter"]
-        score_key = f"{f['score_min']}-{f['score_max']}"
-        
-        # We only care about configs that actually made money
-        if res["metrics"]["total_pnl"] > 0:
-            score_buckets[score_key].append(res)
-            
-    # For each bucket, find the "Best Logic"
-    # We want to find a strategy that is stable across different secondary filters (RSI/Vol/OI)
-    final_rules = []
+    print("ERROR: No results file found!")
+    print("Tried: ", [p for p in paths_to_try if p])
+    return []
+
+
+def aggregate_by_score_range(results: List[Dict]) -> Dict[str, List[Dict]]:
+    """Group results by score range."""
+    buckets = defaultdict(list)
+    for r in results:
+        key = f"{r['filter']['score_min']}-{r['filter']['score_max']}"
+        buckets[key].append(r)
+    return buckets
+
+
+def find_best_per_range(buckets: Dict[str, List[Dict]], top_n: int = 1) -> Dict[str, List[Dict]]:
+    """Find best configurations per score range."""
+    best_per_range = {}
+    for score_range, configs in buckets.items():
+        # Sort by PnL descending
+        sorted_configs = sorted(configs, key=lambda x: x["metrics"]["total_pnl"], reverse=True)
+        best_per_range[score_range] = sorted_configs[:top_n]
+    return best_per_range
+
+
+def create_composite_strategy(best_per_range: Dict[str, List[Dict]]) -> List[Dict]:
+    """Create composite strategy rules."""
+    rules = []
     
-    sorted_keys = sorted(score_buckets.keys(), key=lambda x: int(x.split('-')[0]))
-    
-    for score_key in sorted_keys:
-        configs = score_buckets[score_key]
+    for score_range in sorted(best_per_range.keys(), key=lambda x: int(x.split("-")[0])):
+        configs = best_per_range[score_range]
         if not configs:
             continue
             
-        # 1. Find the absolute best PnL in this bucket
-        best_cfg = max(configs, key=lambda x: x["metrics"]["total_pnl"])
-        
-        # 2. Check stability: Average WinRate in top 10 configs for this bucket
-        top_10 = sorted(configs, key=lambda x: x["metrics"]["total_pnl"], reverse=True)[:10]
-        avg_wr = sum(c["metrics"]["win_rate"] for c in top_10) / len(top_10)
-        max_pnl = best_cfg["metrics"]["total_pnl"]
-        
-        # 3. Extract the winning strategy parameters
-        strat = best_cfg["strategy"]
-        filt = best_cfg["filter"]
+        best = configs[0]
+        f = best["filter"]
+        s = best["strategy"]
+        m = best["metrics"]
         
         rule = {
-            "score_range": score_key,
-            "condition": f"RSI > {filt.get('rsi_min', 0)} AND Vol > {filt.get('vol_min', 0)} AND OI > {filt.get('oi_min', 0)}",
-            "action": {
-                "leverage": strat.get('leverage'),
-                "stop_loss": strat.get('sl'),
-                "take_profit_window": strat.get('window'), # seconds
-                "threshold": strat.get('threshold')
+            "priority": len(rules) + 1,
+            "score_range": score_range,
+            "filter": {
+                "score_min": f["score_min"],
+                "score_max": f["score_max"],
+                "rsi_min": f["rsi_min"],
+                "vol_min": f["vol_min"],
+                "oi_min": f["oi_min"],
             },
-            "stats": {
-                "max_pnl": round(max_pnl, 2),
-                "avg_win_rate": f"{avg_wr*100:.1f}%",
-                "signals": best_cfg["metrics"]["total_signals"]
-            }
+            "strategy": {
+                "leverage": s["leverage"],
+                "sl_pct": s["sl_pct"],
+                "delta_window": s["delta_window"],
+                "threshold_mult": s["threshold_mult"],
+            },
+            "expected_pnl": m["total_pnl"],
         }
-        final_rules.append(rule)
-        
-    return final_rules
-
-def print_report(rules):
-    print("\n" + "="*80)
-    print(f"{'COMPOSITE TRADING STRATEGY REPORT':^80}")
-    print("="*80 + "\n")
+        rules.append(rule)
     
-    print("Based on historical data analysis, here are the recommended rules per Score Range:\n")
+    return rules
+
+
+def print_composite_report(rules: List[Dict], best_per_range: Dict[str, List[Dict]]):
+    """Print human-readable composite strategy report."""
+    print("\n" + "="*90)
+    print(f"{'🎯 COMPOSITE TRADING STRATEGY':^90}")
+    print("="*90)
+    print("\nThis strategy combines the best configurations for each score range.\n")
+    
+    total_expected_pnl = sum(r["expected_pnl"] for r in rules)
+    
+    print(f"{'#':<3} {'Score':<12} {'RSI>=':<6} {'Vol>=':<6} {'OI>=':<6} | {'Lev':<5} {'SL%':<5} {'Win':<6} {'Mult':<5} | {'PnL %':<12}")
+    print("-"*90)
     
     for rule in rules:
-        r = rule["score_range"]
-        stats = rule["stats"]
-        act = rule["action"]
-        
-        print(f"🔷 SCORE RANGE: {r}")
-        print(f"   ├─ 🔍 Filters:      {rule['condition']}")
-        print(f"   ├─ 📈 Performance:  PnL: ${stats['max_pnl']} | Avg WR: {stats['avg_win_rate']} | Signals: {stats['signals']}")
-        print(f"   └─ ⚙️  STRATEGY:     Lev: {act['leverage']}x | SL: {act['stop_loss']}% | Exit: {act['take_profit_window']}s | Thresh: {act['threshold']}")
-        print("-" * 60)
-        
-    print("\n💡 INTERPRETATION:")
-    print("1. Configure your bot to check 'Total Score' first.")
-    print("2. Select the matching rule from above.")
-    print("3. Apply the specific Filters (RSI/Vol/OI) for that score range.")
-    print("4. Use the recommended Leverage and SL settings.")
-    print("="*80)
+        f = rule["filter"]
+        s = rule["strategy"]
+        print(f"{rule['priority']:<3} {rule['score_range']:<12} {f['rsi_min']:<6} {f['vol_min']:<6} {f['oi_min']:<6} | "
+              f"{s['leverage']:<5} {s['sl_pct']:<5} {s['delta_window']:<6} {s['threshold_mult']:<5} | {rule['expected_pnl']:<12.2f}")
+    
+    print("-"*90)
+    print(f"{'COMBINED EXPECTED PnL:':<69} | {total_expected_pnl:<12.2f}")
+    print("="*90)
+    
+    print("\n📋 STRATEGY EXECUTION LOGIC:")
+    print("─"*60)
+    for rule in rules:
+        f = rule["filter"]
+        s = rule["strategy"]
+        print(f"""
+Rule {rule['priority']}: Score {rule['score_range']}
+  IF total_score >= {f['score_min']} AND total_score < {f['score_max']}
+     AND rsi >= {f['rsi_min']}
+     AND volume_zscore >= {f['vol_min']}
+     AND oi_delta_pct >= {f['oi_min']}
+  THEN:
+     Open LONG with leverage = {s['leverage']}x
+     Stop Loss = {s['sl_pct']}%
+     Exit Window = {s['delta_window']}s
+     Threshold Mult = {s['threshold_mult']}
+""")
+    
+    print("="*90)
+
+
+def save_composite_strategy(rules: List[Dict], output_file: str = "composite_strategy.json"):
+    """Save composite strategy to JSON."""
+    output = {
+        "version": "1.0",
+        "description": "Composite trading strategy combining best configs per score range",
+        "rules": rules,
+        "total_expected_pnl": sum(r["expected_pnl"] for r in rules),
+    }
+    
+    with open(output_file, "w") as f:
+        json.dump(output, f, indent=2)
+    print(f"\n💾 Saved composite strategy to {output_file}")
+
 
 def main():
-    data = load_results()
-    if not data:
+    parser = argparse.ArgumentParser(description="Analyze optimization results")
+    parser.add_argument("--file", type=str, help="Path to results JSON file")
+    parser.add_argument("--top", type=int, default=1, help="Top N configs per range to show")
+    parser.add_argument("--output", type=str, default="composite_strategy.json", help="Output file")
+    args = parser.parse_args()
+    
+    results = load_results(args.file)
+    if not results:
         return
-        
-    rules = aggregate_rules(data)
-    print_report(rules)
+    
+    print(f"Loaded {len(results):,} configurations")
+    
+    # Group by score range
+    buckets = aggregate_by_score_range(results)
+    print(f"Found {len(buckets)} score ranges")
+    
+    # Find best per range
+    best_per_range = find_best_per_range(buckets, args.top)
+    
+    # Create composite strategy
+    rules = create_composite_strategy(best_per_range)
+    
+    # Print report
+    print_composite_report(rules, best_per_range)
+    
+    # Save to file
+    save_composite_strategy(rules, args.output)
+
 
 if __name__ == "__main__":
     main()
