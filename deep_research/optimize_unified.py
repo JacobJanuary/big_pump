@@ -66,8 +66,8 @@ def generate_filter_grid() -> List[Dict]:
     for score, rsi, vol, oi in itertools.product(
         SCORE_RANGE,               # total_score min
         range(0, 81, 5),           # RSI 0‑80 step 5
-        range(0, 16, 2),           # volume_zscore 0-14 step 2
-        range(0, 41, 3),           # oi_delta 0-39 step 3
+        range(0, 16, 1),           # volume_zscore 0-15 step 1
+        range(0, 41, 1),           # oi_delta 0-40 step 1
     ):
         grid.append({
             "score_min": score,
