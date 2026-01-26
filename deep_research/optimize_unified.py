@@ -149,7 +149,7 @@ def fetch_filtered_signals(filter_cfg: Dict) -> List[SignalInfo]:
 # ---------------------------------------------------------------------------
 # Batch load bars for multiple signals in ONE query (with chunking)
 # ---------------------------------------------------------------------------
-MAX_SIGNALS_PER_BATCH = 10  # Limit to prevent huge queries
+MAX_SIGNALS_PER_BATCH = 5  # Limit to prevent huge queries
 
 def fetch_bars_batch(signal_ids: List[int]) -> Dict[int, List[tuple]]:
     """Load all bars for multiple signals, chunked to prevent memory issues.
