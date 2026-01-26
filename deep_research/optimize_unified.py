@@ -30,7 +30,6 @@ sys.path.append(str(current_dir))
 from pump_analysis_lib import get_db_connection
 from optimize_combined_leverage_filtered import (
     run_strategy,  # returns (pnl, last_bar_ts)
-    load_bars_for_signal,
 )
 
 # ---------------------------------------------------------------------------
@@ -148,11 +147,49 @@ def fetch_filtered_signals(filter_cfg: Dict) -> List[SignalInfo]:
         return []
 
 # ---------------------------------------------------------------------------
+# Batch load bars for multiple signals in ONE query
+# ---------------------------------------------------------------------------
+def fetch_bars_batch(signal_ids: List[int]) -> Dict[int, List[tuple]]:
+    """Load all bars for multiple signals in a single DB query.
+    
+    Returns dict: {signal_id: [(second_ts, close_price, delta, 0.0, large_buy, large_sell), ...]}
+    """
+    if not signal_ids:
+        return {}
+    
+    bars_map: Dict[int, List[tuple]] = {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT signal_analysis_id, second_ts, close_price, delta,
+                           large_buy_count, large_sell_count
+                    FROM web.agg_trades_1s
+                    WHERE signal_analysis_id = ANY(%s)
+                    ORDER BY signal_analysis_id, second_ts
+                    """,
+                    (signal_ids,)
+                )
+                for row in cur.fetchall():
+                    sid, ts, price, delta, buy, sell = row
+                    bars_map.setdefault(sid, []).append(
+                        (ts, float(price), float(delta), 0.0, buy, sell)
+                    )
+    except Exception as e:
+        print(f"Error batch loading bars: {e}")
+    return bars_map
+
+# ---------------------------------------------------------------------------
 # Per‑pair sequential processing with global position tracking
 # ---------------------------------------------------------------------------
-def process_pair(pair: str, signals: List[SignalInfo], strategy_grid: List[Dict]) -> Dict[int, float]:
+def process_pair(pair: str, signals: List[SignalInfo], strategy_grid: List[Dict],
+                 bars_cache: Dict[int, List[tuple]]) -> Dict[int, float]:
     """Process all signals for a single pair sequentially.
 
+    Args:
+        bars_cache: Pre-loaded bars {signal_id: List[tuple]}
+    
     Returns a dict `strategy_id -> aggregated_pnl`.
     """
     aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
@@ -162,7 +199,7 @@ def process_pair(pair: str, signals: List[SignalInfo], strategy_grid: List[Dict]
         signal_ts = int(info.timestamp.timestamp())
         if signal_ts < position_tracker_ts:
             continue
-        bars = load_bars_for_signal(info.signal_id)
+        bars = bars_cache.get(info.signal_id, [])
         if len(bars) < 100:
             continue
         # Track the latest exit timestamp across all strategies for this signal
@@ -191,20 +228,26 @@ def evaluate_filter(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, 
     Returns the filter config and a dict `strategy_id -> total_pnl` aggregated over
     all pairs.
     
-    NOTE: Pairs are processed sequentially to maintain global position tracking
-    and avoid nested multiprocessing pool issues.
+    NOTE: Bars are batch-loaded once per filter to avoid DB connection exhaustion.
+    Pairs are processed sequentially for global position tracking.
     """
     signals = fetch_filtered_signals(filter_cfg)
     if len(signals) < MIN_SIGNALS_FOR_EVAL:
         return filter_cfg, {}
+    
     # Group by pair
     by_pair: Dict[str, List[SignalInfo]] = {}
     for s in signals:
         by_pair.setdefault(s.pair, []).append(s)
+    
+    # Batch load all bars for all signals in ONE query
+    all_signal_ids = [s.signal_id for s in signals]
+    bars_cache = fetch_bars_batch(all_signal_ids)
+    
     # Sequential processing per pair (required for global position tracking)
     aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
     for pair, pair_signals in by_pair.items():
-        pair_agg = process_pair(pair, pair_signals, strategy_grid)
+        pair_agg = process_pair(pair, pair_signals, strategy_grid, bars_cache)
         for sid, val in pair_agg.items():
             aggregated[sid] += val
     return filter_cfg, aggregated
