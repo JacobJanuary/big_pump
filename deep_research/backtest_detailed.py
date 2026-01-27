@@ -146,16 +146,20 @@ def run_simulation_detailed(bars, strategy_params):
                 last_exit_ts = ts
                 break
 
-            # Trailing / momentum exit
+            # Trailing / momentum exit (using parameterized constants)
             if pnl_from_entry >= base_activation and drawdown_from_max >= base_callback:
+                # Calculate window bounds like optimizer
+                window_start_idx = max(0, idx - delta_window)
+                actual_window_size = idx - window_start_idx
                 r_delta = get_rolling_delta(bars, idx, delta_window)
                 a_delta = get_avg_delta(bars, idx)
                 threshold = a_delta * threshold_mult
                 
-                # Proportional scaling (from optimize_combined_leverage logic)
-                # Not fully implemented in old backtest, adding check:
-                # Need window start logic to match exactly.
-                # Simplification: The imported get_rolling_delta usually handles summation.
+                # CRITICAL: Proportional scaling when insufficient data
+                # If we only have 50% of requested window, require 50% of threshold
+                if actual_window_size < delta_window and delta_window > 0:
+                    data_ratio = actual_window_size / delta_window
+                    threshold = threshold * data_ratio
                 
                 if not (r_delta > threshold) and not (r_delta >= 0):
                     exit_price = price
@@ -163,6 +167,7 @@ def run_simulation_detailed(bars, strategy_params):
                     exit_ts = ts
                     in_position = False
                     last_exit_ts = ts
+                    max_price = price  # CRITICAL: Reset max_price after exit
                     break
         else:
             # Re-entry logic (mirrors optimize_combined_leverage)
@@ -178,6 +183,9 @@ def run_simulation_detailed(bars, strategy_params):
                             max_price = price
                             last_exit_ts = 0
                             continue
+                else:
+                    # CRITICAL: Update max_price when price goes above while OUT of position
+                    max_price = price
 
     # If still in position after loop, exit at last bar
     if in_position:
@@ -237,12 +245,16 @@ def get_all_signals_like_optimizer(conn) -> List[Tuple[int, str, datetime, int, 
     return signals
 
 
-# Default strategy params (from best optimization results)
+# Default strategy params (fallback if no composite_strategy.json)
 DEFAULT_STRATEGY = {
     "leverage": 10,
     "sl": 4,
     "window": 20,
-    "threshold": 1.0
+    "threshold": 1.0,
+    "activation": 10.0,
+    "callback": 4.0,
+    "cooldown": 300,
+    "reentry_drop": 5.0,
 }
 
 
