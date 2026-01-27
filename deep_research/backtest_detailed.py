@@ -31,8 +31,6 @@ from scripts_v2.optimize_combined_leverage import (
     BASE_CALLBACK,
     BASE_REENTRY_DROP,
     BASE_COOLDOWN,
-    get_rolling_delta,
-    get_avg_delta,
 )
 
 # ---------------------------------------------------------------------------
@@ -131,12 +129,17 @@ def get_matching_rule(score, rsi, vol, oi, verbose=False):
 def run_simulation_detailed(bars, strategy_params):
     """Run a single signal simulation and return detailed trade information.
 
-    CRITICAL: This now matches run_strategy_fast exactly:
+    CRITICAL: This now matches run_strategy_fast EXACTLY:
+    - Uses INDEX-BASED rolling delta (not time-based get_rolling_delta)
     - Uses continue (not break) to allow re-entry
     - Accumulates total_pnl across multiple trades
-    - Tracks all entries/exits for detailed logging
+    - Uses precomputed cumsum arrays like optimizer
     """
     if not bars:
+        return None
+
+    n = len(bars)
+    if n < 100:
         return None
 
     # Strategy parameters
@@ -150,6 +153,21 @@ def run_simulation_detailed(bars, strategy_params):
     base_callback = strategy_params.get("callback", BASE_CALLBACK)
     base_cooldown = strategy_params.get("cooldown", BASE_COOLDOWN)
     base_reentry_drop = strategy_params.get("reentry_drop", BASE_REENTRY_DROP)
+
+    # Precompute cumsum arrays EXACTLY like optimizer (precompute_bars)
+    cumsum_delta = [0.0] * (n + 1)
+    cumsum_abs_delta = [0.0] * (n + 1)
+    for i in range(n):
+        cumsum_delta[i + 1] = cumsum_delta[i] + bars[i][2]
+        cumsum_abs_delta[i + 1] = cumsum_abs_delta[i] + abs(bars[i][2])
+    
+    # Precompute avg_delta for lookback=100 EXACTLY like optimizer
+    lookback = 100
+    avg_delta_arr = [0.0] * n
+    for i in range(n):
+        lb = min(i, lookback)
+        if lb > 0:
+            avg_delta_arr[i] = (cumsum_abs_delta[i] - cumsum_abs_delta[i - lb]) / lb
 
     # Initial state
     entry_price = bars[0][1]
@@ -167,8 +185,13 @@ def run_simulation_detailed(bars, strategy_params):
     
     comm_cost = COMMISSION_PCT * 2 * leverage
 
-    for idx, bar in enumerate(bars):
-        ts, price, delta, _, large_buy, large_sell = bar
+    for idx in range(n):
+        bar = bars[idx]
+        ts = bar[0]
+        price = bar[1]
+        delta = bar[2]
+        large_buy = bar[4]
+        large_sell = bar[5]
 
         if in_position:
             # Update max price while in position
@@ -187,31 +210,33 @@ def run_simulation_detailed(bars, strategy_params):
                 last_exit_reason = "SL"
                 last_exit_price = price
                 last_exit_timestamp = ts
-                continue  # CRITICAL: continue, not break!
+                continue
 
             # Trailing / momentum exit
             if pnl_from_entry >= base_activation and drawdown_from_max >= base_callback:
+                # INDEX-BASED calculation - EXACTLY like optimizer
                 window_start_idx = max(0, idx - delta_window)
                 actual_window_size = idx - window_start_idx
-                r_delta = get_rolling_delta(bars, idx, delta_window)
-                a_delta = get_avg_delta(bars, idx)
-                threshold = a_delta * threshold_mult
+                rolling_delta = cumsum_delta[idx + 1] - cumsum_delta[window_start_idx]
+                
+                avg_delta = avg_delta_arr[idx]
+                threshold = avg_delta * threshold_mult
                 
                 # Proportional scaling when insufficient data
                 if actual_window_size < delta_window and delta_window > 0:
                     data_ratio = actual_window_size / delta_window
                     threshold = threshold * data_ratio
                 
-                if not (r_delta > threshold) and not (r_delta >= 0):
+                if not (rolling_delta > threshold) and not (rolling_delta >= 0):
                     total_pnl += (pnl_from_entry * leverage - comm_cost)
                     trade_count += 1
                     in_position = False
                     last_exit_ts = ts
-                    max_price = price  # Reset max_price after exit
+                    max_price = price
                     last_exit_reason = "Trailing/Momentum"
                     last_exit_price = price
                     last_exit_timestamp = ts
-                    continue  # CRITICAL: continue, not break!
+                    continue
         else:
             # Re-entry logic
             if ts - last_exit_ts >= base_cooldown:
@@ -239,11 +264,11 @@ def run_simulation_detailed(bars, strategy_params):
         last_exit_timestamp = bars[-1][0]
 
     return {
-        "entry_price": bars[0][1],  # First entry
+        "entry_price": bars[0][1],
         "exit_price": last_exit_price,
         "duration": last_exit_timestamp - first_entry_ts,
         "exit_reason": last_exit_reason,
-        "pnl": total_pnl,  # Total accumulated PnL
+        "pnl": total_pnl,
         "trade_count": trade_count,
     }
 
