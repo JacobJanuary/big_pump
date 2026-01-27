@@ -80,18 +80,53 @@ def load_rules_from_json(json_path: str = None) -> list:
 # Load rules at module level
 RULES = load_rules_from_json()
 
-def get_matching_rule(score, rsi, vol, oi):
-    """Find the correct rule for a signal based on Score and Filters."""
+# Track why signals are skipped (for diagnostics)
+SKIP_REASONS = {
+    "score_out_of_range": [],
+    "rsi_too_low": [],
+    "vol_too_low": [],
+    "oi_too_low": [],
+}
+
+def get_matching_rule(score, rsi, vol, oi, verbose=False):
+    """Find the correct rule for a signal based on Score and Filters.
+    
+    Returns (strategy_dict, matched_rule_info) or (None, skip_reason)
+    """
     for rule in RULES:
         s_min, s_max = rule["range"]
         f = rule["filters"]
         
         # Check Score Range
         if s_min <= score < s_max:
-            # Check Filters
-            if rsi >= f["rsi"] and vol >= f["vol"] and oi >= f["oi"]:
-                return rule["strategy"]
-    return None
+            # Check Filters - with detailed reason tracking
+            if rsi < f["rsi"]:
+                reason = f"score={score} in [{s_min},{s_max}), but rsi={rsi:.1f} < {f['rsi']}"
+                SKIP_REASONS["rsi_too_low"].append(reason)
+                if verbose:
+                    print(f"  SKIP: {reason}")
+                return None, f"rsi<{f['rsi']}"
+            if vol < f["vol"]:
+                reason = f"score={score} in [{s_min},{s_max}), but vol={vol:.1f} < {f['vol']}"
+                SKIP_REASONS["vol_too_low"].append(reason)
+                if verbose:
+                    print(f"  SKIP: {reason}")
+                return None, f"vol<{f['vol']}"
+            if oi < f["oi"]:
+                reason = f"score={score} in [{s_min},{s_max}), but oi={oi:.1f} < {f['oi']}"
+                SKIP_REASONS["oi_too_low"].append(reason)
+                if verbose:
+                    print(f"  SKIP: {reason}")
+                return None, f"oi<{f['oi']}"
+            
+            # All filters pass!
+            return rule["strategy"], None
+    
+    # Score not in any range
+    reason = f"score={score} not in any range (min=100, max=500)"
+    SKIP_REASONS["score_out_of_range"].append(reason)
+    return None, "score_out_of_range"
+
 
 def run_simulation_detailed(bars, strategy_params):
     """Run a single signal simulation and return detailed trade information.
@@ -311,7 +346,7 @@ def main():
                 continue
             
             # Use get_matching_rule to find strategy based on score/rsi/vol/oi
-            strat = get_matching_rule(score, rsi, vol_zscore, oi_delta)
+            strat, skip_reason = get_matching_rule(score, rsi, vol_zscore, oi_delta)
             if strat is None:
                 # No matching rule - skip this signal
                 skipped_no_matching_rule += 1
@@ -324,11 +359,21 @@ def main():
                 exit_epoch = entry_epoch + res["duration"]
                 active_positions[symbol] = exit_epoch
                 
+                # Build strategy string with activation/callback info
+                act = strat.get('activation', 10.0)
+                cb = strat.get('callback', 4.0)
+                strat_str = f"{strat['leverage']}x/SL{strat['sl']}/A{act}/C{cb}"
+                
                 trades.append({
                     "Date": ts,
                     "Symbol": symbol,
                     "Score": score,
-                    "Strategy": f"{strat['leverage']}x/SL{strat['sl']}",
+                    "RSI": round(rsi, 1),
+                    "Vol": round(vol_zscore, 1),
+                    "OI": round(oi_delta, 1),
+                    "Strategy": strat_str,
+                    "Activation": act,
+                    "Callback": cb,
                     "Entry": res["entry_price"],
                     "Exit": res["exit_price"],
                     "Duration(s)": res["duration"],
@@ -347,16 +392,27 @@ def main():
     # Sort trades by date
     trades.sort(key=lambda x: x["Date"])
     
-    print(f"\nSkipped due to occupied position: {skipped_due_to_position}")
+    # -----------------------------------------------------------------------
+    # SKIP STATISTICS (Detailed Diagnostics)
+    # -----------------------------------------------------------------------
+    print("\n" + "="*80)
+    print(f"{'FILTER STATISTICS (Why signals were skipped)':^80}")
+    print("="*80)
+    print(f"Skipped due to occupied position: {skipped_due_to_position}")
     print(f"Skipped due to no matching rule: {skipped_no_matching_rule}")
+    print(f"  - RSI too low: {len(SKIP_REASONS['rsi_too_low'])}")
+    print(f"  - Vol too low: {len(SKIP_REASONS['vol_too_low'])}")
+    print(f"  - OI too low: {len(SKIP_REASONS['oi_too_low'])}")
+    print(f"  - Score out of range: {len(SKIP_REASONS['score_out_of_range'])}")
     print(f"Actually traded: {len(trades)}")
+    print("="*80)
 
     # Console Output with Colors
-    print("\n" + "="*100)
-    print(f"{'DETAILED TRADE LOG':^100}")
-    print("="*100)
-    print(f"{'DATE':<20} | {'SYMBOL':<10} | {'SCORE':<5} | {'STRATEGY':<12} | {'ENTRY':<10} | {'EXIT':<10} | {'DUR(s)':<6} | {'PNL%':<8} | {'REASON'}")
-    print("-" * 100)
+    print("\n" + "="*140)
+    print(f"{'DETAILED TRADE LOG':^140}")
+    print("="*140)
+    print(f"{'DATE':<20} | {'SYMBOL':<12} | {'SCORE':<5} | {'RSI':<5} | {'VOL':<5} | {'OI':<5} | {'ACT%':<5} | {'CB%':<4} | {'ENTRY':<10} | {'EXIT':<10} | {'DUR':<5} | {'PNL%':<8} | {'REASON'}")
+    print("-" * 140)
 
     daily_pnl = {} # "YYYY-MM-DD": pnl
     
@@ -380,7 +436,7 @@ def main():
         pnl_str = f"{pnl:+.2f}%"
         color = GREEN if pnl > 0 else RED
         
-        print(f"{date_str:<20} | {t['Symbol']:<10} | {t['Score']:<5} | {t['Strategy']:<12} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<6} | {color}{pnl_str:<8}{RESET} | {t['Reason']}")
+        print(f"{date_str:<20} | {t['Symbol']:<12} | {t['Score']:<5} | {t['RSI']:<5} | {t['Vol']:<5} | {t['OI']:<5} | {t['Activation']:<5} | {t['Callback']:<4} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<5} | {color}{pnl_str:<8}{RESET} | {t['Reason']}")
 
     # -----------------------------------------------------------------------
     # 2. DAILY PERFORMANCE SUMMARY TABLE
@@ -416,7 +472,7 @@ def main():
 
     # Save CSV
     csv_path = "backtest_trades.csv"
-    keys = ["Date", "Symbol", "Score", "Strategy", "Entry", "Exit", "Duration(s)", "Reason", "PnL%"]
+    keys = ["Date", "Symbol", "Score", "RSI", "Vol", "OI", "Strategy", "Activation", "Callback", "Entry", "Exit", "Duration(s)", "Reason", "PnL%"]
     
     with open(csv_path, "w", newline='') as f:
         writer = csv.DictWriter(f, fieldnames=keys)
