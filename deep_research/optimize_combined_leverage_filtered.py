@@ -146,11 +146,19 @@ def run_strategy_fast(
     base_callback: float = BASE_CALLBACK,
     base_reentry_drop: float = BASE_REENTRY_DROP,
     base_cooldown: int = BASE_COOLDOWN,
+    max_reentry_seconds: int = 0,  # 0 = no limit (backwards compatibility)
+    max_position_seconds: int = 0,  # 0 = no limit (backwards compatibility)
 ) -> Tuple[float, int]:
     """Run strategy using precomputed bar data - FAST version.
     
     New in v2: Uses proportional threshold scaling when data < delta_window.
     This prevents false exits based on insufficient data.
+    
+    Args:
+        max_reentry_seconds: Maximum time from signal start for re-entry.
+                             0 = no limit (default for backwards compatibility).
+        max_position_seconds: Maximum time a position can stay open.
+                              0 = no limit (default for backwards compatibility).
     """
     if precomputed is None:
         return 0.0, 0
@@ -166,6 +174,8 @@ def run_strategy_fast(
     in_position = True
     total_pnl = 0.0
     comm_cost = COMMISSION_PCT * 2 * leverage
+    signal_start_ts = bars[0][0]  # Timestamp of signal start for reentry limit
+    position_entry_ts = signal_start_ts  # Track when current position was opened
     
     for idx in range(n):
         bar = bars[idx]
@@ -177,6 +187,13 @@ def run_strategy_fast(
                 max_price = price
             pnl_from_entry = (price - entry_price) / entry_price * 100
             drawdown_from_max = (max_price - price) / max_price * 100
+            
+            # Position timeout check
+            if max_position_seconds > 0 and (ts - position_entry_ts) >= max_position_seconds:
+                total_pnl += (pnl_from_entry * leverage - comm_cost)
+                in_position = False
+                last_exit_ts = ts
+                continue
             
             # Stop-loss
             if pnl_from_entry <= -sl_pct:
@@ -208,6 +225,10 @@ def run_strategy_fast(
                     continue
         else:
             # Re-entry logic (using parameterized constants)
+            # Check max_reentry_seconds limit (0 = no limit)
+            if max_reentry_seconds > 0 and (ts - signal_start_ts) > max_reentry_seconds:
+                continue  # Past the reentry window, skip
+            
             if ts - last_exit_ts >= base_cooldown:
                 if price < max_price:
                     drop_pct = (max_price - price) / max_price * 100
@@ -216,6 +237,7 @@ def run_strategy_fast(
                             in_position = True
                             entry_price = price
                             max_price = price
+                            position_entry_ts = ts  # Track new position entry time
                             last_exit_ts = 0
                 else:
                     max_price = price

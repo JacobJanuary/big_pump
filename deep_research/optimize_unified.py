@@ -85,20 +85,23 @@ def generate_filter_grid() -> List[Dict]:
 def generate_strategy_grid() -> List[Dict]:
     """Generate expanded strategy grid with parameterized BASE_* constants.
     
-    Three trailing exit profiles:
+    Four trailing exit profiles:
     1. SCALPING:     activation=0.4%, callback=0.2% (early exit, from scripts_v2)
     2. BALANCED:     activation=4.0%, callback=2.0% (middle ground)
-    3. CONSERVATIVE: activation=10.0%, callback=4.0% (hold longer)
+    3. MODERATE:     activation=7.0%, callback=3.0% (between balanced and conservative)
+    4. CONSERVATIVE: activation=10.0%, callback=4.0% (hold longer)
     
     Grid size calculation:
     - leverage: 2 options
     - sl_pct: 6 options  
     - delta_window: 10 options
     - threshold_mult: 5 options
-    - activation/callback pairs: 3 options
+    - activation/callback pairs: 4 options
     - base_cooldown: 3 options
+    - max_reentry_hours: 5 options [4, 6, 12, 24, 48]
+    - max_position_hours: 5 options [2, 4, 6, 12, 24]
     
-    Total: 2 * 6 * 10 * 5 * 3 * 3 = 5,400 combinations
+    Total: 2 * 6 * 10 * 5 * 4 * 3 * 5 * 5 = 180,000 combinations
     """
     leverage_opts = [5, 10]
     delta_window_opts = [5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200]
@@ -118,6 +121,8 @@ def generate_strategy_grid() -> List[Dict]:
     
     base_reentry_drop = 5.0  # Fixed
     base_cooldown_opts = [60, 300, 600]
+    max_reentry_hours_opts = [4, 6, 12, 24, 48]  # Hours limit for re-entry window
+    max_position_hours_opts = [2, 4, 6, 12, 24]  # Hours limit for position lifetime
     
     grid = []
     for lev in leverage_opts:
@@ -126,16 +131,20 @@ def generate_strategy_grid() -> List[Dict]:
                 for thresh in threshold_opts:
                     for (act, cb) in trailing_profiles:
                         for cool in base_cooldown_opts:
-                            grid.append({
-                                "leverage": lev,
-                                "sl_pct": sl,
-                                "delta_window": win,
-                                "threshold_mult": thresh,
-                                "base_activation": act,
-                                "base_callback": cb,
-                                "base_reentry_drop": base_reentry_drop,
-                                "base_cooldown": cool,
-                            })
+                            for reentry_h in max_reentry_hours_opts:
+                                for pos_h in max_position_hours_opts:
+                                    grid.append({
+                                        "leverage": lev,
+                                        "sl_pct": sl,
+                                        "delta_window": win,
+                                        "threshold_mult": thresh,
+                                        "base_activation": act,
+                                        "base_callback": cb,
+                                        "base_reentry_drop": base_reentry_drop,
+                                        "base_cooldown": cool,
+                                        "max_reentry_hours": reentry_h,
+                                        "max_position_hours": pos_h,
+                                    })
     return grid
 
 # ---------------------------------------------------------------------------
@@ -382,6 +391,8 @@ def process_single_signal(sig: SignalData) -> Tuple[int, Dict[int, Tuple[float, 
             sp.get("base_callback", 4.0),
             sp.get("base_reentry_drop", 5.0),
             sp.get("base_cooldown", 300),
+            sp.get("max_reentry_hours", 0) * 3600,  # Convert hours to seconds
+            sp.get("max_position_hours", 0) * 3600,  # Convert hours to seconds
         )
         sig_results[s_idx] = (pnl, last_ts)
     
@@ -495,6 +506,8 @@ def process_single_signal_sequential(
             sp.get("base_callback", 4.0),
             sp.get("base_reentry_drop", 5.0),
             sp.get("base_cooldown", 300),
+            sp.get("max_reentry_hours", 0) * 3600,  # Convert hours to seconds
+            sp.get("max_position_hours", 0) * 3600,  # Convert hours to seconds
         )
         sig_results[s_idx] = (pnl, last_ts)
     
