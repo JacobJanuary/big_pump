@@ -34,6 +34,11 @@ from scripts_v2.optimize_combined_leverage import (
 )
 
 # ---------------------------------------------------------------------------
+# Dollar-based P&L Tracking
+# ---------------------------------------------------------------------------
+POSITION_SIZE_USD = 100.0  # $100 per trade
+
+# ---------------------------------------------------------------------------
 # Composite Strategy Rules (Loaded from composite_strategy.json)
 # ---------------------------------------------------------------------------
 def load_rules_from_json(json_path: str = None) -> list:
@@ -399,6 +404,12 @@ def main():
                 strat_str = f"{strat['leverage']}x/SL{strat['sl']}/A{act}/C{cb}"
                 
                 dw = strat.get('window', 300)
+                leverage = strat.get('leverage', 10)
+                
+                # Calculate dollar P&L: $100 * leverage * (pnl% / 100)
+                pnl_pct = res["pnl"]
+                pnl_usd = POSITION_SIZE_USD * (pnl_pct / 100)  # Already includes leverage from backtest
+                
                 trades.append({
                     "Date": ts,
                     "Symbol": symbol,
@@ -414,7 +425,8 @@ def main():
                     "Exit": res["exit_price"],
                     "Duration(s)": res["duration"],
                     "Reason": res["exit_reason"],
-                    "PnL%": round(res["pnl"], 2),
+                    "PnL%": round(pnl_pct, 2),
+                    "PnL_USD": round(pnl_usd, 2),
                     "TradeCount": res.get("trade_count", 1)
                 })
         
@@ -445,48 +457,66 @@ def main():
     print("="*80)
 
     # Console Output with Colors
-    print("\n" + "="*140)
-    print(f"{'DETAILED TRADE LOG':^140}")
-    print("="*140)
-    print(f"{'DATE':<20} | {'SYMBOL':<12} | {'SCORE':<5} | {'DW':<5} | {'ACT%':<5} | {'CB%':<4} | {'ENTRY':<10} | {'EXIT':<10} | {'DUR':<5} | {'#TR':<3} | {'PNL%':<9} | {'REASON'}")
-    print("-" * 140)
+    print("\n" + "="*160)
+    print(f"{'DETAILED TRADE LOG (with Dollar P&L)':^160}")
+    print("="*160)
+    print(f"{'DATE':<20} | {'SYMBOL':<12} | {'SCORE':<5} | {'DW':<5} | {'ENTRY':<10} | {'EXIT':<10} | {'DUR':<5} | {'PNL%':<9} | {'PNL_$':<10} | {'BALANCE_$':<12} | {'REASON'}")
+    print("-" * 160)
 
-    daily_pnl = {} # "YYYY-MM-DD": pnl
+    daily_pnl = {}  # "YYYY-MM-DD": pnl%
+    daily_pnl_usd = {}  # "YYYY-MM-DD": $pnl
     
     total_pnl_cum = 0.0
+    running_balance = 0.0  # Start with $0 balance
+    min_balance = 0.0  # Track the lowest balance = max capital needed
     
     # ANSI Colors
     GREEN = '\033[92m'
     RED = '\033[91m'
+    YELLOW = '\033[93m'
     RESET = '\033[0m'
 
     for t in trades:
         date_str = str(t["Date"])[:19]
         day = str(t["Date"])[:10]
         pnl = t["PnL%"]
+        pnl_usd = t["PnL_USD"]
+        
+        # Update running balance
+        running_balance += pnl_usd
+        
+        # Track minimum balance (max capital needed)
+        if running_balance < min_balance:
+            min_balance = running_balance
         
         # Accumulate Daily
         daily_pnl[day] = daily_pnl.get(day, 0.0) + pnl
+        daily_pnl_usd[day] = daily_pnl_usd.get(day, 0.0) + pnl_usd
         total_pnl_cum += pnl
         
         # Colorize PnL
         pnl_str = f"{pnl:+.2f}%"
-        color = GREEN if pnl > 0 else RED
+        pnl_usd_str = f"${pnl_usd:+.2f}"
+        bal_str = f"${running_balance:+.2f}"
         
-        print(f"{date_str:<20} | {t['Symbol']:<12} | {t['Score']:<5} | {t['DeltaWindow']:<5} | {t['Activation']:<5} | {t['Callback']:<4} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<5} | {t['TradeCount']:<3} | {color}{pnl_str:<9}{RESET} | {t['Reason']}")
+        color = GREEN if pnl > 0 else RED
+        bal_color = GREEN if running_balance > 0 else RED
+        
+        print(f"{date_str:<20} | {t['Symbol']:<12} | {t['Score']:<5} | {t['DeltaWindow']:<5} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<5} | {color}{pnl_str:<9}{RESET} | {color}{pnl_usd_str:<10}{RESET} | {bal_color}{bal_str:<12}{RESET} | {t['Reason']}")
 
     # -----------------------------------------------------------------------
-    # 2. DAILY PERFORMANCE SUMMARY TABLE
+    # 2. DAILY PERFORMANCE SUMMARY TABLE (with $ amounts)
     # -----------------------------------------------------------------------
-    print("\n" + "="*80)
-    print(f"{'DAILY PERFORMANCE SUMMARY':^80}")
-    print("="*80)
-    print(f"{'DATE':<12} | {'TRADES':<6} | {'WINS':<4} | {'LOSS':<4} | {'WR%':<6} | {'DAILY PNL%':<12} | {'CUMULATIVE'}")
-    print("-" * 80)
+    print("\n" + "="*100)
+    print(f"{'DAILY PERFORMANCE SUMMARY (with Dollar P&L)':^100}")
+    print("="*100)
+    print(f"{'DATE':<12} | {'TRADES':<6} | {'WINS':<4} | {'LOSS':<4} | {'WR%':<6} | {'DAILY %':<12} | {'DAILY $':<12} | {'CUM $'}")
+    print("-" * 100)
     
     # Sort dates
     sorted_days = sorted(daily_pnl.keys())
-    running_total = 0.0
+    running_total_pct = 0.0
+    running_total_usd = 0.0
     
     for day in sorted_days:
         day_trades = [t for t in trades if str(t["Date"]).startswith(day)]
@@ -496,46 +526,73 @@ def main():
         wr = (wins / count * 100) if count > 0 else 0
         
         d_pnl = daily_pnl[day]
-        running_total += d_pnl
+        d_pnl_usd = daily_pnl_usd[day]
+        running_total_pct += d_pnl
+        running_total_usd += d_pnl_usd
         
         d_pnl_str = f"{d_pnl:+.2f}%"
-        cum_str = f"{running_total:+.2f}%"
+        d_pnl_usd_str = f"${d_pnl_usd:+.2f}"
+        cum_str = f"${running_total_usd:+.2f}"
         
         d_color = GREEN if d_pnl > 0 else RED
-        c_color = GREEN if running_total > 0 else RED
+        c_color = GREEN if running_total_usd > 0 else RED
         
-        print(f"{day:<12} | {count:<6} | {wins:<4} | {losses:<4} | {wr:5.1f}% | {d_color}{d_pnl_str:<12}{RESET} | {c_color}{cum_str}{RESET}")
-    print("="*80)
+        print(f"{day:<12} | {count:<6} | {wins:<4} | {losses:<4} | {wr:5.1f}% | {d_color}{d_pnl_str:<12}{RESET} | {d_color}{d_pnl_usd_str:<12}{RESET} | {c_color}{cum_str}{RESET}")
+    print("="*100)
 
     # Save CSV - include all fields from trades dict
     csv_path = "backtest_trades.csv"
-    keys = ["Date", "Symbol", "Score", "RSI", "Vol", "OI", "DeltaWindow", "Activation", "Callback", "Strategy", "Entry", "Exit", "Duration(s)", "TradeCount", "Reason", "PnL%"]
+    keys = ["Date", "Symbol", "Score", "RSI", "Vol", "OI", "DeltaWindow", "Activation", "Callback", "Strategy", "Entry", "Exit", "Duration(s)", "TradeCount", "Reason", "PnL%", "PnL_USD"]
     
     with open(csv_path, "w", newline='') as f:
         writer = csv.DictWriter(f, fieldnames=keys, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(trades)
         
-    # Summary similar to backtest_portfolio_realistic
+    # Summary with dollar calculations
     total_days = len(daily_pnl)
     avg_daily = sum(daily_pnl.values()) / total_days if total_days > 0 else 0
+    avg_daily_usd = sum(daily_pnl_usd.values()) / total_days if total_days > 0 else 0
     wins = [t for t in trades if t["PnL%"] > 0]
     wr = len(wins) / len(trades) if trades else 0
     
-    # Calculate Max Drawdown (on cumulative PnL curve)
-    # Simple check on daily sequence not strictly accurate for equity curve but approximate
+    # Capital calculations
+    initial_capital_needed = abs(min_balance) if min_balance < 0 else 0
+    final_balance = running_balance
+    total_pnl_usd = sum(t["PnL_USD"] for t in trades)
     
-    print("\n" + "="*60)
-    print(f"{'PORTFOLIO SUMMARY (30 Days)':^60}")
-    print("="*60)
-    print(f"Total Trades:      {len(trades)}")
-    print(f"Win Rate:          {wr*100:.1f}%")
-    print(f"Total PnL (Gross): {GREEN if total_pnl_cum > 0 else RED}{total_pnl_cum:.2f}%{RESET} (Sum of margin %)")
-    print("-" * 60)
-    print(f"Average Daily PnL: {avg_daily:.2f}%")
-    print(f"Best Day:          {max(daily_pnl.values(), default=0):.2f}%")
-    print(f"Worst Day:         {min(daily_pnl.values(), default=0):.2f}%")
-    print("="*60)
+    # Best/worst day in dollars
+    best_day_usd = max(daily_pnl_usd.values(), default=0)
+    worst_day_usd = min(daily_pnl_usd.values(), default=0)
+    
+    # ROI calculation
+    roi = (final_balance / initial_capital_needed * 100) if initial_capital_needed > 0 else 0
+    
+    print("\n" + "="*70)
+    print(f"{'💰 PORTFOLIO SUMMARY (Dollar-Based)':^70}")
+    print("="*70)
+    print(f"Position Size:            ${POSITION_SIZE_USD:.0f} per trade")
+    print(f"Total Trades:             {len(trades)}")
+    print(f"Win Rate:                 {wr*100:.1f}%")
+    print("-" * 70)
+    print(f"{'📊 P&L TRACKING':^70}")
+    print("-" * 70)
+    print(f"Total PnL (%):            {GREEN if total_pnl_cum > 0 else RED}{total_pnl_cum:+.2f}%{RESET}")
+    print(f"Total PnL ($):            {GREEN if total_pnl_usd > 0 else RED}${total_pnl_usd:+.2f}{RESET}")
+    print(f"Average Daily (%):        {avg_daily:+.2f}%")
+    print(f"Average Daily ($):        ${avg_daily_usd:+.2f}")
+    print("-" * 70)
+    print(f"{'💵 CAPITAL REQUIREMENTS':^70}")
+    print("-" * 70)
+    print(f"Max Drawdown (lowest $):  {RED}${min_balance:.2f}{RESET}")
+    print(f"Initial Capital Needed:   {YELLOW}${initial_capital_needed:.2f}{RESET}")
+    print(f"Final Balance:            {GREEN if final_balance > 0 else RED}${final_balance:+.2f}{RESET}")
+    if initial_capital_needed > 0:
+        print(f"ROI:                      {GREEN if roi > 0 else RED}{roi:+.1f}%{RESET}")
+    print("-" * 70)
+    print(f"Best Day ($):             {GREEN}${best_day_usd:+.2f}{RESET}")
+    print(f"Worst Day ($):            {RED}${worst_day_usd:+.2f}{RESET}")
+    print("="*70)
     print(f"Full details saved to: {csv_path}")
 
 if __name__ == "__main__":
