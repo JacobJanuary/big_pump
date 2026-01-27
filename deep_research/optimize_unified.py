@@ -342,63 +342,180 @@ def init_worker_lookup(signals: List[SignalData], results: Dict[int, Dict[int, T
     WORKER_SIGNALS = signals
     WORKER_RESULTS = results
 
+# ---------------------------------------------------------------------------
+# PHASE 1: Parallel Precomputation
+# ---------------------------------------------------------------------------
+# Shared data for Phase 1 workers
+PHASE1_BARS_CACHE: Dict[int, List[tuple]] = {}
+PHASE1_STRATEGY_GRID: List[Dict] = []
+
+def init_phase1_worker(bars_cache: Dict[int, List[tuple]], strategy_grid: List[Dict]):
+    """Initialize worker with shared read-only data."""
+    global PHASE1_BARS_CACHE, PHASE1_STRATEGY_GRID
+    PHASE1_BARS_CACHE = bars_cache
+    PHASE1_STRATEGY_GRID = strategy_grid
+
+def process_single_signal(sig: SignalData) -> Tuple[int, Dict[int, Tuple[float, int]]]:
+    """Worker function: process one signal through all strategies.
+    
+    Returns: (signal_id, {strategy_idx: (pnl, last_exit_ts)}) or (signal_id, None) if skipped
+    """
+    sid = sig.signal_id
+    bars = PHASE1_BARS_CACHE.get(sid, [])
+    
+    if len(bars) < 100:
+        return (sid, None)
+    
+    precomputed = precompute_bars(bars)
+    if not precomputed:
+        return (sid, None)
+    
+    sig_results = {}
+    for s_idx, sp in enumerate(PHASE1_STRATEGY_GRID):
+        pnl, last_ts = run_strategy_fast(
+            precomputed,
+            sp["sl_pct"],
+            sp["delta_window"],
+            sp["threshold_mult"],
+            sp["leverage"],
+            sp.get("base_activation", 10.0),
+            sp.get("base_callback", 4.0),
+            sp.get("base_reentry_drop", 5.0),
+            sp.get("base_cooldown", 300),
+        )
+        sig_results[s_idx] = (pnl, last_ts)
+    
+    return (sid, sig_results)
+
 def precompute_all_strategies(
     signals: List[SignalData],
     bars_cache: Dict[int, List[tuple]],
-    strategy_grid: List[Dict]
+    strategy_grid: List[Dict],
+    num_workers: int = 1
 ) -> Dict[int, Dict[int, Tuple[float, int]]]:
-    """Phase 1: Run ALL strategies for ALL signals.
+    """Phase 1: Run ALL strategies for ALL signals (PARALLEL).
+    
+    Args:
+        num_workers: Number of parallel workers (default 1 = sequential)
     
     Returns: {signal_id: {strategy_idx: (pnl, last_exit_ts)}}
     """
-    print(f"[PRECOMPUTE] Running {len(strategy_grid)} strategies for {len(signals)} signals...")
+    total_signals = len(signals)
+    total_strategies = len(strategy_grid)
+    total_iterations = total_signals * total_strategies
+    
+    print(f"\n{'='*70}")
+    print(f"[PRECOMPUTE] Phase 1: Strategy Pre-computation")
+    print(f"{'='*70}")
+    print(f"  Signals to process: {total_signals:,}")
+    print(f"  Strategies per signal: {total_strategies:,}")
+    print(f"  Total iterations: {total_iterations:,}")
+    print(f"  Workers: {num_workers}")
+    print(f"{'='*70}\n")
+    
     results_map = {}
-    
-    # We can use parallelization here too if needed, but sequential is fine for 300k items
-    # (~1ms per item = 300s. Parallel 12 workers = 25s)
-    
-    # Let's use a pool for this precomputation to make it super fast
-    # Map (signal, bars) -> {strat_idx: res}
-    
     start_time = datetime.now()
     processed_count = 0
+    skipped_count = 0
     
-    for sig in signals:
-        sid = sig.signal_id
-        bars = bars_cache.get(sid, [])
-        if len(bars) < 100:
-            continue
+    if num_workers <= 1:
+        # Sequential mode (original logic)
+        for sig in signals:
+            sid, sig_results = process_single_signal_sequential(sig, bars_cache, strategy_grid)
+            if sig_results is None:
+                skipped_count += 1
+            else:
+                results_map[sid] = sig_results
+                processed_count += 1
             
-        # Precompute cumsum once
-        precomputed = precompute_bars(bars)
-        if not precomputed:
-            continue
-            
-        sig_results = {}
-        for s_idx, sp in enumerate(strategy_grid):
-            # Run strategy with all parameters including BASE_*
-            pnl, last_ts = run_strategy_fast(
-                precomputed,
-                sp["sl_pct"],
-                sp["delta_window"],
-                sp["threshold_mult"],
-                sp["leverage"],
-                sp.get("base_activation", 10.0),
-                sp.get("base_callback", 4.0),
-                sp.get("base_reentry_drop", 5.0),
-                sp.get("base_cooldown", 300),
-            )
-            sig_results[s_idx] = (pnl, last_ts)
+            if processed_count % 10 == 0 and processed_count > 0:
+                _print_phase1_progress(processed_count, total_signals, skipped_count, start_time, total_strategies)
+    else:
+        # Parallel mode with Pool
+        print(f"[PRECOMPUTE] Starting {num_workers} parallel workers...\n")
         
-        results_map[sid] = sig_results
-        processed_count += 1
-        
-        if processed_count % 100 == 0:
-            print(f"[PRECOMPUTE] PROGESS: {processed_count}/{len(signals)} signals processed...", end='\r')
+        with mp.Pool(
+            processes=num_workers,
+            initializer=init_phase1_worker,
+            initargs=(bars_cache, strategy_grid)
+        ) as pool:
+            # Use imap for ordered results with progress tracking
+            for sid, sig_results in pool.imap(process_single_signal, signals, chunksize=5):
+                if sig_results is None:
+                    skipped_count += 1
+                else:
+                    results_map[sid] = sig_results
+                    processed_count += 1
+                
+                # Progress every 10 processed signals
+                if processed_count % 10 == 0 and processed_count > 0:
+                    _print_phase1_progress(processed_count, total_signals, skipped_count, start_time, total_strategies)
 
     elapsed = (datetime.now() - start_time).total_seconds()
-    print(f"\n[PRECOMPUTE] Done in {elapsed:.1f}s. Computed {len(results_map)} signals.")
+    final_iters = processed_count * total_strategies
+    final_speed = final_iters / elapsed if elapsed > 0 else 0
+    
+    print(f"\n{'='*70}")
+    print(f"[PRECOMPUTE] ✅ Phase 1 Complete!")
+    print(f"  Processed: {processed_count:,} signals")
+    print(f"  Skipped: {skipped_count:,} (insufficient bars)")
+    print(f"  Total time: {elapsed:.1f}s ({elapsed/60:.1f} min)")
+    print(f"  Final speed: {final_speed/1000:,.1f}k iterations/sec")
+    if num_workers > 1:
+        print(f"  Speedup vs single-thread: ~{num_workers}x (theoretical)")
+    print(f"{'='*70}\n")
+    
     return results_map
+
+def process_single_signal_sequential(
+    sig: SignalData, 
+    bars_cache: Dict[int, List[tuple]], 
+    strategy_grid: List[Dict]
+) -> Tuple[int, Dict[int, Tuple[float, int]]]:
+    """Sequential version for single-worker mode."""
+    sid = sig.signal_id
+    bars = bars_cache.get(sid, [])
+    
+    if len(bars) < 100:
+        return (sid, None)
+    
+    precomputed = precompute_bars(bars)
+    if not precomputed:
+        return (sid, None)
+    
+    sig_results = {}
+    for s_idx, sp in enumerate(strategy_grid):
+        pnl, last_ts = run_strategy_fast(
+            precomputed,
+            sp["sl_pct"],
+            sp["delta_window"],
+            sp["threshold_mult"],
+            sp["leverage"],
+            sp.get("base_activation", 10.0),
+            sp.get("base_callback", 4.0),
+            sp.get("base_reentry_drop", 5.0),
+            sp.get("base_cooldown", 300),
+        )
+        sig_results[s_idx] = (pnl, last_ts)
+    
+    return (sid, sig_results)
+
+def _print_phase1_progress(processed: int, total: int, skipped: int, start_time, total_strategies: int):
+    """Helper to print progress."""
+    elapsed = (datetime.now() - start_time).total_seconds()
+    speed = processed / elapsed if elapsed > 0 else 0
+    remaining = total - processed - skipped
+    eta_sec = remaining / speed if speed > 0 else 0
+    eta_min = eta_sec / 60
+    
+    iters_done = processed * total_strategies
+    iter_speed = iters_done / elapsed if elapsed > 0 else 0
+    
+    print(f"[PRECOMPUTE] {processed:>4}/{total} signals | "
+          f"{elapsed:>5.1f}s elapsed | "
+          f"{speed:>5.1f} sig/s | "
+          f"{iter_speed/1000:>6.1f}k iter/s | "
+          f"ETA: {eta_min:>4.1f}m", flush=True)
 
 def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, Dict[int, float]]:
     """Phase 2: Evaluate filter using LOOKUP TABLE (No calculation)."""
@@ -526,7 +643,7 @@ def main():
 
     # 4. PRECOMPUTE ALL STRATEGIES (Lookup Table Generation)
     # This runs 540 strategies for every signal once.
-    lookup_table = precompute_all_strategies(signals_with_bars, bars_cache, strategy_grid)
+    lookup_table = precompute_all_strategies(signals_with_bars, bars_cache, strategy_grid, num_workers=MAX_WORKERS)
     
     # Clean up bars_cache to free memory (we only need the lookup table now!)
     del bars_cache
