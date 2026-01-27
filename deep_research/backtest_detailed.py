@@ -132,19 +132,18 @@ def get_matching_rule(score, rsi, vol, oi, verbose=False):
 
 
 def run_simulation_detailed(bars, strategy_params):
-    """Run a single signal simulation and return detailed trade information.
-
-    CRITICAL: This now matches run_strategy_fast EXACTLY:
-    - Uses INDEX-BASED rolling delta (not time-based get_rolling_delta)
-    - Uses continue (not break) to allow re-entry
-    - Accumulates total_pnl across multiple trades
-    - Uses precomputed cumsum arrays like optimizer
+    """Run a single signal simulation - ONE trade only, no re-entry.
+    
+    Simple logic:
+    - Enter at first bar
+    - Exit on: SL hit, Trailing Stop, or Timeout (end of data)
+    - Returns single trade result
     """
     if not bars:
         return None
 
     n = len(bars)
-    if n < 100:
+    if n < 10:  # Need at least some data
         return None
 
     # Strategy parameters
@@ -153,20 +152,18 @@ def run_simulation_detailed(bars, strategy_params):
     threshold_mult = strategy_params["threshold"]
     leverage = strategy_params["leverage"]
     
-    # Dynamic parameters (with defaults)
+    # Trailing stop parameters
     base_activation = strategy_params.get("activation", BASE_ACTIVATION)
     base_callback = strategy_params.get("callback", BASE_CALLBACK)
-    base_cooldown = strategy_params.get("cooldown", BASE_COOLDOWN)
-    base_reentry_drop = strategy_params.get("reentry_drop", BASE_REENTRY_DROP)
 
-    # Precompute cumsum arrays EXACTLY like optimizer (precompute_bars)
+    # Precompute cumsum arrays for rolling delta
     cumsum_delta = [0.0] * (n + 1)
     cumsum_abs_delta = [0.0] * (n + 1)
     for i in range(n):
         cumsum_delta[i + 1] = cumsum_delta[i] + bars[i][2]
         cumsum_abs_delta[i + 1] = cumsum_abs_delta[i] + abs(bars[i][2])
     
-    # Precompute avg_delta for lookback=100 EXACTLY like optimizer
+    # Precompute avg_delta for lookback=100
     lookback = 100
     avg_delta_arr = [0.0] * n
     for i in range(n):
@@ -174,107 +171,78 @@ def run_simulation_detailed(bars, strategy_params):
         if lb > 0:
             avg_delta_arr[i] = (cumsum_abs_delta[i] - cumsum_abs_delta[i - lb]) / lb
 
-    # Initial state
+    # Trade state
     entry_price = bars[0][1]
-    first_entry_ts = bars[0][0]
+    entry_ts = bars[0][0]
     max_price = entry_price
-    in_position = True
-    last_exit_ts = 0
-    
-    # Accumulated results (like optimizer)
-    total_pnl = 0.0
-    trade_count = 0
-    last_exit_reason = "Timeout"
-    last_exit_price = bars[-1][1]
-    last_exit_timestamp = bars[-1][0]
     
     comm_cost = COMMISSION_PCT * 2 * leverage
 
+    # Scan through bars for exit condition
     for idx in range(n):
-        bar = bars[idx]
-        ts = bar[0]
-        price = bar[1]
-        delta = bar[2]
-        large_buy = bar[4]
-        large_sell = bar[5]
+        price = bars[idx][1]
+        ts = bars[idx][0]
+        
+        # Track max price for trailing stop
+        if price > max_price:
+            max_price = price
+        
+        # Calculate current PnL (% without leverage)
+        pnl_pct = (price - entry_price) / entry_price * 100
+        drawdown_from_max = (max_price - price) / max_price * 100 if max_price > 0 else 0
+        
+        # 1. Stop-Loss check
+        if pnl_pct <= -sl_pct:
+            # Exit at SL level (capped loss)
+            final_pnl = (-sl_pct * leverage) - comm_cost
+            return {
+                "entry_price": entry_price,
+                "exit_price": price,
+                "duration": ts - entry_ts,
+                "exit_reason": "SL",
+                "pnl": final_pnl,
+                "trade_count": 1,
+            }
+        
+        # 2. Trailing Stop check (only if in profit and pulled back)
+        if pnl_pct >= base_activation and drawdown_from_max >= base_callback:
+            # Check momentum condition
+            window_start_idx = max(0, idx - delta_window)
+            rolling_delta = cumsum_delta[idx + 1] - cumsum_delta[window_start_idx]
+            
+            avg_delta = avg_delta_arr[idx]
+            threshold = avg_delta * threshold_mult
+            
+            # Exit if momentum is negative
+            if rolling_delta < threshold and rolling_delta < 0:
+                final_pnl = (pnl_pct * leverage) - comm_cost
+                return {
+                    "entry_price": entry_price,
+                    "exit_price": price,
+                    "duration": ts - entry_ts,
+                    "exit_reason": "Trailing",
+                    "pnl": final_pnl,
+                    "trade_count": 1,
+                }
 
-        if in_position:
-            # Update max price while in position
-            if price > max_price:
-                max_price = price
-                
-            pnl_from_entry = (price - entry_price) / entry_price * 100
-            drawdown_from_max = (max_price - price) / max_price * 100
-
-            # Stop-loss
-            if pnl_from_entry <= -sl_pct:
-                total_pnl += (pnl_from_entry * leverage - comm_cost)
-                trade_count += 1
-                in_position = False
-                last_exit_ts = ts
-                last_exit_reason = "SL"
-                last_exit_price = price
-                last_exit_timestamp = ts
-                continue
-
-            # Trailing / momentum exit
-            if pnl_from_entry >= base_activation and drawdown_from_max >= base_callback:
-                # INDEX-BASED calculation - EXACTLY like optimizer
-                window_start_idx = max(0, idx - delta_window)
-                actual_window_size = idx - window_start_idx
-                rolling_delta = cumsum_delta[idx + 1] - cumsum_delta[window_start_idx]
-                
-                avg_delta = avg_delta_arr[idx]
-                threshold = avg_delta * threshold_mult
-                
-                # Proportional scaling when insufficient data
-                if actual_window_size < delta_window and delta_window > 0:
-                    data_ratio = actual_window_size / delta_window
-                    threshold = threshold * data_ratio
-                
-                if not (rolling_delta > threshold) and not (rolling_delta >= 0):
-                    total_pnl += (pnl_from_entry * leverage - comm_cost)
-                    trade_count += 1
-                    in_position = False
-                    last_exit_ts = ts
-                    max_price = price
-                    last_exit_reason = "Trailing/Momentum"
-                    last_exit_price = price
-                    last_exit_timestamp = ts
-                    continue
-        else:
-            # Re-entry logic
-            if ts - last_exit_ts >= base_cooldown:
-                if price < max_price:
-                    drop_pct = (max_price - price) / max_price * 100
-                    if drop_pct >= base_reentry_drop:
-                        if delta > 0 and large_buy > large_sell:
-                            # Re-enter position
-                            in_position = True
-                            entry_price = price
-                            max_price = price
-                            last_exit_ts = 0
-                else:
-                    # Update max_price when price goes above while OUT of position
-                    max_price = price
-
-    # If still in position after loop, close at last bar
-    if in_position:
-        final_price = bars[-1][1]
-        pnl = (final_price - entry_price) / entry_price * 100
-        total_pnl += (pnl * leverage - comm_cost)
-        trade_count += 1
-        last_exit_reason = "Timeout"
-        last_exit_price = final_price
-        last_exit_timestamp = bars[-1][0]
-
+    # 3. Timeout - close at last bar
+    final_price = bars[-1][1]
+    final_ts = bars[-1][0]
+    pnl_pct = (final_price - entry_price) / entry_price * 100
+    
+    # Cap timeout loss at SL level (shouldn't happen but safety)
+    if pnl_pct < -sl_pct:
+        pnl_pct = -sl_pct
+    
+    final_pnl = (pnl_pct * leverage) - comm_cost
+    
     return {
-        "entry_price": bars[0][1],
-        "exit_price": last_exit_price,
-        "duration": last_exit_timestamp - first_entry_ts,
-        "exit_reason": last_exit_reason,
-        "pnl": total_pnl,
-        "trade_count": trade_count,
+        "entry_price": entry_price,
+        "exit_price": final_price,
+        "duration": final_ts - entry_ts,
+        "exit_reason": "Timeout",
+        "pnl": final_pnl,
+        "trade_count": 1,
     }
 
 
