@@ -98,6 +98,11 @@ def create_composite_strategy(best_per_range: Dict[str, List[Dict]], min_pnl: fl
                 "sl_pct": s["sl_pct"],
                 "delta_window": s["delta_window"],
                 "threshold_mult": s["threshold_mult"],
+                # New trailing exit parameters (with defaults for backwards compatibility)
+                "base_activation": s.get("base_activation", 10.0),
+                "base_callback": s.get("base_callback", 4.0),
+                "base_reentry_drop": s.get("base_reentry_drop", 5.0),
+                "base_cooldown": s.get("base_cooldown", 300),
             },
             "expected_pnl": m["total_pnl"],
         }
@@ -149,6 +154,8 @@ Rule {rule['priority']}: Score {rule['score_range']}
      Stop Loss = {s['sl_pct']}%
      Exit Window = {s['delta_window']}s
      Threshold Mult = {s['threshold_mult']}
+     Trailing: activation={s.get('base_activation', 10.0)}%, callback={s.get('base_callback', 4.0)}%
+     Cooldown = {s.get('base_cooldown', 300)}s
 """)
     
     print("="*90)
