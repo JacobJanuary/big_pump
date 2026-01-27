@@ -131,8 +131,10 @@ def get_matching_rule(score, rsi, vol, oi, verbose=False):
 def run_simulation_detailed(bars, strategy_params):
     """Run a single signal simulation and return detailed trade information.
 
-    This mirrors the logic from ``run_strategy`` in ``optimize_combined_leverage.py``
-    but also records entry/exit timestamps, reason and PnL details.
+    CRITICAL: This now matches run_strategy_fast exactly:
+    - Uses continue (not break) to allow re-entry
+    - Accumulates total_pnl across multiple trades
+    - Tracks all entries/exits for detailed logging
     """
     if not bars:
         return None
@@ -151,61 +153,67 @@ def run_simulation_detailed(bars, strategy_params):
 
     # Initial state
     entry_price = bars[0][1]
-    entry_ts = bars[0][0]
+    first_entry_ts = bars[0][0]
     max_price = entry_price
     in_position = True
     last_exit_ts = 0
-    exit_price = entry_price
-    exit_reason = "Timeout"
-    exit_ts = bars[-1][0]
-
+    
+    # Accumulated results (like optimizer)
+    total_pnl = 0.0
+    trade_count = 0
+    last_exit_reason = "Timeout"
+    last_exit_price = bars[-1][1]
+    last_exit_timestamp = bars[-1][0]
+    
     comm_cost = COMMISSION_PCT * 2 * leverage
 
     for idx, bar in enumerate(bars):
         ts, price, delta, _, large_buy, large_sell = bar
 
-        # Update max price while in position
-        if in_position and price > max_price:
-            max_price = price
-
         if in_position:
+            # Update max price while in position
+            if price > max_price:
+                max_price = price
+                
             pnl_from_entry = (price - entry_price) / entry_price * 100
             drawdown_from_max = (max_price - price) / max_price * 100
 
             # Stop-loss
             if pnl_from_entry <= -sl_pct:
-                exit_price = price
-                exit_reason = "SL"
-                exit_ts = ts
+                total_pnl += (pnl_from_entry * leverage - comm_cost)
+                trade_count += 1
                 in_position = False
                 last_exit_ts = ts
-                break
+                last_exit_reason = "SL"
+                last_exit_price = price
+                last_exit_timestamp = ts
+                continue  # CRITICAL: continue, not break!
 
-            # Trailing / momentum exit (using parameterized constants)
+            # Trailing / momentum exit
             if pnl_from_entry >= base_activation and drawdown_from_max >= base_callback:
-                # Calculate window bounds like optimizer
                 window_start_idx = max(0, idx - delta_window)
                 actual_window_size = idx - window_start_idx
                 r_delta = get_rolling_delta(bars, idx, delta_window)
                 a_delta = get_avg_delta(bars, idx)
                 threshold = a_delta * threshold_mult
                 
-                # CRITICAL: Proportional scaling when insufficient data
-                # If we only have 50% of requested window, require 50% of threshold
+                # Proportional scaling when insufficient data
                 if actual_window_size < delta_window and delta_window > 0:
                     data_ratio = actual_window_size / delta_window
                     threshold = threshold * data_ratio
                 
                 if not (r_delta > threshold) and not (r_delta >= 0):
-                    exit_price = price
-                    exit_reason = "Trailing/Momentum"
-                    exit_ts = ts
+                    total_pnl += (pnl_from_entry * leverage - comm_cost)
+                    trade_count += 1
                     in_position = False
                     last_exit_ts = ts
-                    max_price = price  # CRITICAL: Reset max_price after exit
-                    break
+                    max_price = price  # Reset max_price after exit
+                    last_exit_reason = "Trailing/Momentum"
+                    last_exit_price = price
+                    last_exit_timestamp = ts
+                    continue  # CRITICAL: continue, not break!
         else:
-            # Re-entry logic (mirrors optimize_combined_leverage)
+            # Re-entry logic
             if ts - last_exit_ts >= base_cooldown:
                 if price < max_price:
                     drop_pct = (max_price - price) / max_price * 100
@@ -214,30 +222,31 @@ def run_simulation_detailed(bars, strategy_params):
                             # Re-enter position
                             in_position = True
                             entry_price = price
-                            entry_ts = ts
                             max_price = price
                             last_exit_ts = 0
-                            continue
                 else:
-                    # CRITICAL: Update max_price when price goes above while OUT of position
+                    # Update max_price when price goes above while OUT of position
                     max_price = price
 
-    # If still in position after loop, exit at last bar
+    # If still in position after loop, close at last bar
     if in_position:
-        exit_price = bars[-1][1]
-        exit_reason = "Timeout"
-        exit_ts = bars[-1][0]
-
-    raw_pnl = (exit_price - entry_price) / entry_price * 100
-    pnl_usd = raw_pnl * leverage - comm_cost
+        final_price = bars[-1][1]
+        pnl = (final_price - entry_price) / entry_price * 100
+        total_pnl += (pnl * leverage - comm_cost)
+        trade_count += 1
+        last_exit_reason = "Timeout"
+        last_exit_price = final_price
+        last_exit_timestamp = bars[-1][0]
 
     return {
-        "entry_price": entry_price,
-        "exit_price": exit_price,
-        "duration": exit_ts - entry_ts,
-        "exit_reason": exit_reason,
-        "pnl": pnl_usd,
+        "entry_price": bars[0][1],  # First entry
+        "exit_price": last_exit_price,
+        "duration": last_exit_timestamp - first_entry_ts,
+        "exit_reason": last_exit_reason,
+        "pnl": total_pnl,  # Total accumulated PnL
+        "trade_count": trade_count,
     }
+
 
 
 def get_all_signals_like_optimizer(conn) -> List[Tuple[int, str, datetime, int, float, float, float]]:
