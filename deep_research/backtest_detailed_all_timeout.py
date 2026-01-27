@@ -225,9 +225,7 @@ def get_signals_for_backtest(conn) -> List[Tuple[int, str, datetime, int, float,
                 AND i.timestamp = sa.signal_timestamp
                 AND i.timeframe = '15m'
             )
-            WHERE sa.total_score >= 100 
-              AND sa.total_score < 950
-              AND sa.signal_timestamp > NOW() - INTERVAL '30 days'
+            WHERE sa.total_score >= 100 AND sa.total_score < 950
             ORDER BY sa.signal_timestamp ASC
         """)
         rows = cur.fetchall()
