@@ -98,11 +98,14 @@ def create_composite_strategy(best_per_range: Dict[str, List[Dict]], min_pnl: fl
                 "sl_pct": s["sl_pct"],
                 "delta_window": s["delta_window"],
                 "threshold_mult": s["threshold_mult"],
-                # New trailing exit parameters (with defaults for backwards compatibility)
+                # Trailing exit parameters
                 "base_activation": s.get("base_activation", 10.0),
                 "base_callback": s.get("base_callback", 4.0),
                 "base_reentry_drop": s.get("base_reentry_drop", 5.0),
                 "base_cooldown": s.get("base_cooldown", 300),
+                # Time limits
+                "max_reentry_hours": s.get("max_reentry_hours", 48),
+                "max_position_hours": s.get("max_position_hours", 24),
             },
             "expected_pnl": m["total_pnl"],
         }
@@ -156,6 +159,8 @@ Rule {rule['priority']}: Score {rule['score_range']}
      Threshold Mult = {s['threshold_mult']}
      Trailing: activation={s.get('base_activation', 10.0)}%, callback={s.get('base_callback', 4.0)}%
      Cooldown = {s.get('base_cooldown', 300)}s
+     Max Reentry Window = {s.get('max_reentry_hours', 48)}h
+     Max Position Time = {s.get('max_position_hours', 24)}h
 """)
     
     print("="*90)
