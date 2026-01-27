@@ -467,8 +467,46 @@ def main():
     daily_pnl_usd = {}  # "YYYY-MM-DD": $pnl
     
     total_pnl_cum = 0.0
-    running_balance = 0.0  # Start with $0 balance
-    min_balance = 0.0  # Track the lowest balance = max capital needed
+    
+    # -------------------------------------------------------------------------
+    # PROPER CAPITAL TRACKING:
+    # Each trade requires $100 at OPEN, returns ($100 + pnl) at CLOSE
+    # We need to track concurrent open positions to find max capital needed
+    # -------------------------------------------------------------------------
+    
+    # Build timeline of events: (timestamp, event_type, amount)
+    # event_type: 'open' = -$100, 'close' = +($100 + pnl)
+    events = []
+    for t in trades:
+        entry_ts = t["Date"].timestamp() if hasattr(t["Date"], 'timestamp') else t["Date"]
+        exit_ts = entry_ts + t["Duration(s)"]
+        pnl_usd = t["PnL_USD"]
+        
+        events.append((entry_ts, 'open', -POSITION_SIZE_USD))  # Commit $100 at open
+        events.append((exit_ts, 'close', POSITION_SIZE_USD + pnl_usd))  # Get back $100 + pnl
+    
+    # Sort events by timestamp
+    events.sort(key=lambda x: (x[0], x[1] == 'open'))  # closes before opens at same timestamp
+    
+    # Calculate running balance and find minimum
+    sim_balance = 0.0
+    min_sim_balance = 0.0
+    max_concurrent_positions = 0
+    current_positions = 0
+    
+    for ts, event_type, amount in events:
+        sim_balance += amount
+        if event_type == 'open':
+            current_positions += 1
+            max_concurrent_positions = max(max_concurrent_positions, current_positions)
+        else:
+            current_positions -= 1
+        
+        if sim_balance < min_sim_balance:
+            min_sim_balance = sim_balance
+    
+    # Running balance for display (simplified - just show cumulative P&L)
+    running_balance = 0.0
     
     # ANSI Colors
     GREEN = '\033[92m'
@@ -482,12 +520,8 @@ def main():
         pnl = t["PnL%"]
         pnl_usd = t["PnL_USD"]
         
-        # Update running balance
+        # Running balance = cumulative P&L (after trade closes, we got our $100 back + profit/loss)
         running_balance += pnl_usd
-        
-        # Track minimum balance (max capital needed)
-        if running_balance < min_balance:
-            min_balance = running_balance
         
         # Accumulate Daily
         daily_pnl[day] = daily_pnl.get(day, 0.0) + pnl
@@ -556,8 +590,11 @@ def main():
     wins = [t for t in trades if t["PnL%"] > 0]
     wr = len(wins) / len(trades) if trades else 0
     
-    # Capital calculations
-    initial_capital_needed = abs(min_balance) if min_balance < 0 else 0
+    # Capital calculations (using proper timeline simulation)
+    initial_capital_needed = abs(min_sim_balance) if min_sim_balance < 0 else POSITION_SIZE_USD
+    # Minimum is at least $100 for the first trade
+    initial_capital_needed = max(initial_capital_needed, POSITION_SIZE_USD)
+    
     final_balance = running_balance
     total_pnl_usd = sum(t["PnL_USD"] for t in trades)
     
@@ -565,8 +602,8 @@ def main():
     best_day_usd = max(daily_pnl_usd.values(), default=0)
     worst_day_usd = min(daily_pnl_usd.values(), default=0)
     
-    # ROI calculation
-    roi = (final_balance / initial_capital_needed * 100) if initial_capital_needed > 0 else 0
+    # ROI calculation: profit relative to capital needed
+    roi = (total_pnl_usd / initial_capital_needed * 100) if initial_capital_needed > 0 else 0
     
     print("\n" + "="*70)
     print(f"{'💰 PORTFOLIO SUMMARY (Dollar-Based)':^70}")
@@ -574,6 +611,7 @@ def main():
     print(f"Position Size:            ${POSITION_SIZE_USD:.0f} per trade")
     print(f"Total Trades:             {len(trades)}")
     print(f"Win Rate:                 {wr*100:.1f}%")
+    print(f"Max Concurrent Positions: {max_concurrent_positions}")
     print("-" * 70)
     print(f"{'📊 P&L TRACKING':^70}")
     print("-" * 70)
@@ -584,11 +622,10 @@ def main():
     print("-" * 70)
     print(f"{'💵 CAPITAL REQUIREMENTS':^70}")
     print("-" * 70)
-    print(f"Max Drawdown (lowest $):  {RED}${min_balance:.2f}{RESET}")
+    print(f"Max Drawdown (lowest):    {RED}${min_sim_balance:.2f}{RESET}")
     print(f"Initial Capital Needed:   {YELLOW}${initial_capital_needed:.2f}{RESET}")
     print(f"Final Balance:            {GREEN if final_balance > 0 else RED}${final_balance:+.2f}{RESET}")
-    if initial_capital_needed > 0:
-        print(f"ROI:                      {GREEN if roi > 0 else RED}{roi:+.1f}%{RESET}")
+    print(f"ROI:                      {GREEN if roi > 0 else RED}{roi:+.1f}%{RESET}")
     print("-" * 70)
     print(f"Best Day ($):             {GREEN}${best_day_usd:+.2f}{RESET}")
     print(f"Worst Day ($):            {RED}${worst_day_usd:+.2f}{RESET}")
