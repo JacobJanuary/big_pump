@@ -398,6 +398,7 @@ def main():
                 cb = strat.get('callback', 4.0)
                 strat_str = f"{strat['leverage']}x/SL{strat['sl']}/A{act}/C{cb}"
                 
+                dw = strat.get('window', 300)
                 trades.append({
                     "Date": ts,
                     "Symbol": symbol,
@@ -406,13 +407,15 @@ def main():
                     "Vol": round(vol_zscore, 1),
                     "OI": round(oi_delta, 1),
                     "Strategy": strat_str,
+                    "DeltaWindow": dw,
                     "Activation": act,
                     "Callback": cb,
                     "Entry": res["entry_price"],
                     "Exit": res["exit_price"],
                     "Duration(s)": res["duration"],
                     "Reason": res["exit_reason"],
-                    "PnL%": round(res["pnl"], 2)
+                    "PnL%": round(res["pnl"], 2),
+                    "TradeCount": res.get("trade_count", 1)
                 })
         
         # Progress indicator
@@ -445,7 +448,7 @@ def main():
     print("\n" + "="*140)
     print(f"{'DETAILED TRADE LOG':^140}")
     print("="*140)
-    print(f"{'DATE':<20} | {'SYMBOL':<12} | {'SCORE':<5} | {'RSI':<5} | {'VOL':<5} | {'OI':<5} | {'ACT%':<5} | {'CB%':<4} | {'ENTRY':<10} | {'EXIT':<10} | {'DUR':<5} | {'PNL%':<8} | {'REASON'}")
+    print(f"{'DATE':<20} | {'SYMBOL':<12} | {'SCORE':<5} | {'DW':<5} | {'ACT%':<5} | {'CB%':<4} | {'ENTRY':<10} | {'EXIT':<10} | {'DUR':<5} | {'#TR':<3} | {'PNL%':<9} | {'REASON'}")
     print("-" * 140)
 
     daily_pnl = {} # "YYYY-MM-DD": pnl
@@ -470,7 +473,7 @@ def main():
         pnl_str = f"{pnl:+.2f}%"
         color = GREEN if pnl > 0 else RED
         
-        print(f"{date_str:<20} | {t['Symbol']:<12} | {t['Score']:<5} | {t['RSI']:<5} | {t['Vol']:<5} | {t['OI']:<5} | {t['Activation']:<5} | {t['Callback']:<4} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<5} | {color}{pnl_str:<8}{RESET} | {t['Reason']}")
+        print(f"{date_str:<20} | {t['Symbol']:<12} | {t['Score']:<5} | {t['DeltaWindow']:<5} | {t['Activation']:<5} | {t['Callback']:<4} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<5} | {t['TradeCount']:<3} | {color}{pnl_str:<9}{RESET} | {t['Reason']}")
 
     # -----------------------------------------------------------------------
     # 2. DAILY PERFORMANCE SUMMARY TABLE
@@ -506,7 +509,7 @@ def main():
 
     # Save CSV
     csv_path = "backtest_trades.csv"
-    keys = ["Date", "Symbol", "Score", "RSI", "Vol", "OI", "Strategy", "Activation", "Callback", "Entry", "Exit", "Duration(s)", "Reason", "PnL%"]
+    keys = ["Date", "Symbol", "Score", "DeltaWindow", "Activation", "Callback", "Strategy", "Entry", "Exit", "Duration(s)", "TradeCount", "Reason", "PnL%"]
     
     with open(csv_path, "w", newline='') as f:
         writer = csv.DictWriter(f, fieldnames=keys)
