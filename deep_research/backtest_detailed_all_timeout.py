@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from scripts_v2.db_batch_utils import fetch_bars_batch_extended
+from scripts_v2.db_batch_utils import fetch_bars_batch
 from scripts_v2.pump_analysis_lib import (
     get_db_connection,
     fetch_signals,
@@ -232,6 +232,43 @@ def get_signals_for_backtest(conn) -> List[Tuple[int, str, datetime, int, float,
         """)
         rows = cur.fetchall()
     return rows
+
+def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75600):
+    """Fetch bars with configurable time window (default 21 hours).
+    INLINED to avoid dependency on scripts_v2 updates.
+    """
+    if not signal_ids:
+        return {}
+
+    result: Dict[int, List[Tuple[int, float, float, float, int, int]]] = {}
+    chunk_size = 5
+    
+    print(f"Fetching bars for {len(signal_ids)} signals in batches of {chunk_size}...")
+    
+    sql = """
+        SELECT t.signal_analysis_id, t.second_ts, t.close_price, t.delta,
+               t.large_buy_count, t.large_sell_count
+        FROM web.agg_trades_1s t
+        JOIN web.signal_analysis s ON s.id = t.signal_analysis_id
+        WHERE t.signal_analysis_id = ANY(%s)
+          AND t.second_ts >= EXTRACT(EPOCH FROM s.entry_time)::bigint
+          AND t.second_ts <= (EXTRACT(EPOCH FROM s.entry_time)::bigint + %s)
+        ORDER BY t.signal_analysis_id, t.second_ts
+    """
+    
+    with conn.cursor() as cur:
+        for i in range(0, len(signal_ids), chunk_size):
+            chunk = signal_ids[i : i + chunk_size]
+            print(f"   Fetching chunk {i+1}-{min(i+chunk_size, len(signal_ids))}...", end='\r')
+            
+            cur.execute(sql, (chunk, max_seconds))
+            rows = cur.fetchall()
+            
+            for sid, ts, price, delta, buy_cnt, sell_cnt in rows:
+                result.setdefault(sid, []).append((ts, float(price), float(delta), 0.0, int(buy_cnt), int(sell_cnt)))
+                
+    print(f"\n   Data fetch complete. {len(result)} signals have data.")
+    return result
 
 # ---------------------------------------------------------------------------
 # MAIN OPTIMIZATION LOOP
