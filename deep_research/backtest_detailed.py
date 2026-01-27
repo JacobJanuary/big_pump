@@ -507,12 +507,12 @@ def main():
         print(f"{day:<12} | {count:<6} | {wins:<4} | {losses:<4} | {wr:5.1f}% | {d_color}{d_pnl_str:<12}{RESET} | {c_color}{cum_str}{RESET}")
     print("="*80)
 
-    # Save CSV
+    # Save CSV - include all fields from trades dict
     csv_path = "backtest_trades.csv"
-    keys = ["Date", "Symbol", "Score", "DeltaWindow", "Activation", "Callback", "Strategy", "Entry", "Exit", "Duration(s)", "TradeCount", "Reason", "PnL%"]
+    keys = ["Date", "Symbol", "Score", "RSI", "Vol", "OI", "DeltaWindow", "Activation", "Callback", "Strategy", "Entry", "Exit", "Duration(s)", "TradeCount", "Reason", "PnL%"]
     
     with open(csv_path, "w", newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=keys)
+        writer = csv.DictWriter(f, fieldnames=keys, extrasaction='ignore')
         writer.writeheader()
         writer.writerows(trades)
         
