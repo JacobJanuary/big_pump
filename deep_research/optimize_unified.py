@@ -14,11 +14,13 @@ Features:
 """
 
 import os
+import gc
 import itertools
 import json
+import pickle
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import List, Dict, Tuple, NamedTuple
+from typing import List, Dict, Tuple, NamedTuple, Optional
 import multiprocessing as mp
 
 # Ensure deep_research is FIRST in sys.path for imports (to use optimized run_strategy)
@@ -42,6 +44,63 @@ MIN_SIGNALS_FOR_EVAL = int(os.getenv("MIN_SIGNALS_FOR_EVAL", "0"))  # 0 = disabl
 MIN_WIN_RATE = float(os.getenv("MIN_WIN_RATE", "0.0"))  # disabled by default
 MAX_WORKERS = int(os.getenv("MAX_WORKERS", "4"))  # reduced to prevent DB connection exhaustion
 
+# Checkpoint configuration
+CHECKPOINT_DIR = Path("checkpoints")
+CHECKPOINT_PHASE1_FILE = CHECKPOINT_DIR / "phase1_lookup.pkl"
+CHECKPOINT_PROGRESS_FILE = CHECKPOINT_DIR / "phase1_progress.json"
+CHECKPOINT_INTERVAL = 25  # Save checkpoint every N signals
+OUTPUT_JSONL_FILE = Path("optimization_results.jsonl")
+
+# ---------------------------------------------------------------------------
+# Checkpoint helpers
+# ---------------------------------------------------------------------------
+def save_phase1_checkpoint(
+    lookup_table: Dict[int, Dict[int, Tuple[float, int]]],
+    processed_signal_ids: List[int],
+    progress_info: Dict
+):
+    """Save Phase 1 checkpoint to disk."""
+    CHECKPOINT_DIR.mkdir(exist_ok=True)
+    
+    # Save lookup table (binary pickle for speed)
+    with open(CHECKPOINT_PHASE1_FILE, "wb") as f:
+        pickle.dump({
+            "lookup_table": lookup_table,
+            "processed_signal_ids": processed_signal_ids,
+        }, f, protocol=pickle.HIGHEST_PROTOCOL)
+    
+    # Save progress info (JSON for readability)
+    with open(CHECKPOINT_PROGRESS_FILE, "w") as f:
+        json.dump(progress_info, f, indent=2)
+    
+    print(f"[CHECKPOINT] Saved: {len(lookup_table)} signals processed")
+
+def load_phase1_checkpoint() -> Optional[Tuple[Dict, List[int], Dict]]:
+    """Load Phase 1 checkpoint if exists."""
+    if not CHECKPOINT_PHASE1_FILE.exists() or not CHECKPOINT_PROGRESS_FILE.exists():
+        return None
+    
+    try:
+        with open(CHECKPOINT_PHASE1_FILE, "rb") as f:
+            data = pickle.load(f)
+        
+        with open(CHECKPOINT_PROGRESS_FILE, "r") as f:
+            progress_info = json.load(f)
+        
+        print(f"[CHECKPOINT] Loaded: {len(data['lookup_table'])} signals from checkpoint")
+        return data["lookup_table"], data["processed_signal_ids"], progress_info
+    except Exception as e:
+        print(f"[CHECKPOINT] Error loading checkpoint: {e}")
+        return None
+
+def clear_phase1_checkpoint():
+    """Remove Phase 1 checkpoint files."""
+    if CHECKPOINT_PHASE1_FILE.exists():
+        CHECKPOINT_PHASE1_FILE.unlink()
+    if CHECKPOINT_PROGRESS_FILE.exists():
+        CHECKPOINT_PROGRESS_FILE.unlink()
+    print("[CHECKPOINT] Cleared Phase 1 checkpoint files")
+
 # ---------------------------------------------------------------------------
 # Helper data structures
 # ---------------------------------------------------------------------------
@@ -50,6 +109,7 @@ class SignalInfo(NamedTuple):
     signal_id: int
     pair: str
     timestamp: datetime
+
 
 # ---------------------------------------------------------------------------
 # Filter grid generation
@@ -402,12 +462,14 @@ def precompute_all_strategies(
     signals: List[SignalData],
     bars_cache: Dict[int, List[tuple]],
     strategy_grid: List[Dict],
-    num_workers: int = 1
+    num_workers: int = 1,
+    resume: bool = True
 ) -> Dict[int, Dict[int, Tuple[float, int]]]:
     """Phase 1: Run ALL strategies for ALL signals (PARALLEL).
     
     Args:
         num_workers: Number of parallel workers (default 1 = sequential)
+        resume: If True, attempt to resume from checkpoint
     
     Returns: {signal_id: {strategy_idx: (pnl, last_exit_ts)}}
     """
@@ -422,25 +484,54 @@ def precompute_all_strategies(
     print(f"  Strategies per signal: {total_strategies:,}")
     print(f"  Total iterations: {total_iterations:,}")
     print(f"  Workers: {num_workers}")
+    print(f"  Checkpoint interval: every {CHECKPOINT_INTERVAL} signals")
     print(f"{'='*70}\n")
     
     results_map = {}
+    processed_signal_ids = []
     start_time = datetime.now()
     processed_count = 0
     skipped_count = 0
     
+    # Try to resume from checkpoint
+    if resume:
+        checkpoint_data = load_phase1_checkpoint()
+        if checkpoint_data:
+            results_map, processed_signal_ids, progress_info = checkpoint_data
+            processed_count = progress_info.get("processed_count", len(results_map))
+            skipped_count = progress_info.get("skipped_count", 0)
+            print(f"[RESUME] Resuming from checkpoint: {processed_count} signals already processed")
+    
+    # Filter out already processed signals
+    if processed_signal_ids:
+        processed_set = set(processed_signal_ids)
+        signals_to_process = [s for s in signals if s.signal_id not in processed_set]
+        print(f"[RESUME] {len(signals_to_process)} signals remaining")
+    else:
+        signals_to_process = signals
+    
     if num_workers <= 1:
         # Sequential mode (original logic)
-        for sig in signals:
+        for i, sig in enumerate(signals_to_process):
             sid, sig_results = process_single_signal_sequential(sig, bars_cache, strategy_grid)
             if sig_results is None:
                 skipped_count += 1
             else:
                 results_map[sid] = sig_results
+                processed_signal_ids.append(sid)
                 processed_count += 1
             
             if processed_count % 10 == 0 and processed_count > 0:
                 _print_phase1_progress(processed_count, total_signals, skipped_count, start_time, total_strategies)
+            
+            # Checkpoint every CHECKPOINT_INTERVAL signals
+            if processed_count % CHECKPOINT_INTERVAL == 0 and processed_count > 0:
+                save_phase1_checkpoint(results_map, processed_signal_ids, {
+                    "processed_count": processed_count,
+                    "skipped_count": skipped_count,
+                    "timestamp": datetime.now().isoformat(),
+                    "total_signals": total_signals,
+                })
     else:
         # Parallel mode with Pool
         print(f"[PRECOMPUTE] Starting {num_workers} parallel workers...\n")
@@ -451,16 +542,26 @@ def precompute_all_strategies(
             initargs=(bars_cache, strategy_grid)
         ) as pool:
             # Use imap for ordered results with progress tracking
-            for sid, sig_results in pool.imap(process_single_signal, signals, chunksize=5):
+            for sid, sig_results in pool.imap(process_single_signal, signals_to_process, chunksize=5):
                 if sig_results is None:
                     skipped_count += 1
                 else:
                     results_map[sid] = sig_results
+                    processed_signal_ids.append(sid)
                     processed_count += 1
                 
                 # Progress every 10 processed signals
                 if processed_count % 10 == 0 and processed_count > 0:
                     _print_phase1_progress(processed_count, total_signals, skipped_count, start_time, total_strategies)
+                
+                # Checkpoint every CHECKPOINT_INTERVAL signals
+                if processed_count % CHECKPOINT_INTERVAL == 0 and processed_count > 0:
+                    save_phase1_checkpoint(results_map, processed_signal_ids, {
+                        "processed_count": processed_count,
+                        "skipped_count": skipped_count,
+                        "timestamp": datetime.now().isoformat(),
+                        "total_signals": total_signals,
+                    })
 
     elapsed = (datetime.now() - start_time).total_seconds()
     final_iters = processed_count * total_strategies
@@ -475,6 +576,9 @@ def precompute_all_strategies(
     if num_workers > 1:
         print(f"  Speedup vs single-thread: ~{num_workers}x (theoretical)")
     print(f"{'='*70}\n")
+    
+    # Clear checkpoint after successful completion
+    clear_phase1_checkpoint()
     
     return results_map
 
@@ -668,7 +772,13 @@ def main():
     print("PHASE 2: Running optimization (Lookup Table Mode - Ultra Fast)")
     print("="*70 + "\n")
 
-    all_results = []
+    # Prepare output file (streaming JSONL - write immediately, no memory accumulation)
+    output_jsonl = OUTPUT_JSONL_FILE
+    if output_jsonl.exists():
+        output_jsonl.unlink()  # Clear previous results
+    
+    results_count = 0
+    best_results = []  # Keep only top 10 for final display
     
     # Parallel processing of filter combinations
     tasks = [(cfg, strategy_grid) for cfg in filter_grid]
@@ -695,13 +805,18 @@ def main():
                     "strategy": best_params,
                     "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
                 }
-                all_results.append(result_entry)
-                # Save immediately for seq mode
-                try:
-                    with open("intermediate_results.jsonl", "a", encoding="utf-8") as f:
-                        f.write(json.dumps(result_entry) + "\n")
-                except Exception:
-                    pass
+                
+                # Stream to JSONL immediately (no memory accumulation)
+                with open(output_jsonl, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(result_entry) + "\n")
+                
+                results_count += 1
+                
+                # Track top 10 for display
+                best_results.append(result_entry)
+                if len(best_results) > 100:
+                    best_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
+                    best_results = best_results[:10]
     else:
         # Multiprocessing with Initializer
         with mp.Pool(processes=MAX_WORKERS, initializer=init_worker_lookup, initargs=(signals_with_bars, lookup_table)) as pool:
@@ -722,48 +837,66 @@ def main():
                         "strategy": best_params,
                         "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
                     }
-                    all_results.append(result_entry)
-                    # Save occasionally
-                    if len(all_results) % 500 == 0:
-                        try:
-                            with open("intermediate_results.jsonl", "a", encoding="utf-8") as f:
-                                f.write(json.dumps(result_entry) + "\n")
-                        except Exception:
-                            pass
+                    
+                    # Stream to JSONL immediately (no memory accumulation)
+                    with open(output_jsonl, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(result_entry) + "\n")
+                    
+                    results_count += 1
+                    
+                    # Track top 10 for display
+                    best_results.append(result_entry)
+                    if len(best_results) > 100:
+                        best_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
+                        best_results = best_results[:10]
+                    
+                    # Periodic memory cleanup
+                    if results_count % 5000 == 0:
+                        gc.collect()
 
     # -----------------------------------------------------------------------
-    # Save results
+    # Final results
     # -----------------------------------------------------------------------
     print("\n" + "="*70)
-    print(f"Optimization complete. Found {len(all_results)} valid configurations.")
+    print(f"Optimization complete. Found {results_count} valid configurations.")
+    print(f"Results saved to: {output_jsonl}")
     
-    if not all_results:
+    if results_count == 0:
         print("No valid results found.")
         return
 
-    # Sort by Total PnL
-    all_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
+    # Sort top results for display
+    best_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
     
     # Print Top 10
     print("\n🏆 TOP 10 CONFIGURATIONS:")
     print(f"{'#':<3} {'Score':<12} {'RSI':<5} {'Vol':<5} {'OI':<5} | {'Lev':<4} {'SL%':<5} {'Win':<4} {'Mult':<5} | {'Total PnL %':<12}")
     print("-" * 85)
     
-    for i, res in enumerate(all_results[:10], 1):
+    for i, res in enumerate(best_results[:10], 1):
         f = res["filter"]
         s = res["strategy"]
         m = res["metrics"]
         print(f"{i:<3} {f['score_min']}-{f['score_max']:<5} {f['rsi_min']:<5} {f['vol_min']:<5} {f['oi_min']:<5} | "
               f"{s['leverage']:<4} {s['sl_pct']:<5} {s['delta_window']:<4} {s['threshold_mult']:<5} | {m['total_pnl']:<12.2f}")
     
-    # Save JSON
-    output_file = "optimization_results_unified.json"
+    # Also save as JSON for backwards compatibility (load from JSONL)
+    print("\nConverting JSONL to JSON for backwards compatibility...")
     try:
-        with open(output_file, "w") as f:
+        all_results = []
+        with open(output_jsonl, "r", encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    all_results.append(json.loads(line))
+        
+        all_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
+        
+        output_json = "optimization_results_unified.json"
+        with open(output_json, "w") as f:
             json.dump(all_results, f, indent=2)
-        print(f"\nSaved full results to {output_file}")
+        print(f"Saved sorted results to {output_json}")
     except Exception as e:
-        print(f"Error saving results: {e}")
+        print(f"Warning: Could not convert to JSON: {e}")
 
 if __name__ == "__main__":
     mp.freeze_support()
