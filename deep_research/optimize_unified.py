@@ -634,12 +634,12 @@ def _print_phase1_progress(processed: int, total: int, skipped: int, start_time,
           f"{iter_speed/1000:>6.1f}k iter/s | "
           f"ETA: {eta_min:>4.1f}m", flush=True)
 
-def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, Dict[int, float]]:
+def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, Dict[int, float], int]:
     """Phase 2: Evaluate filter using LOOKUP TABLE (No calculation)."""
     # 1. Filter signals (InMemory)
     matched_signals = filter_signals_in_memory(WORKER_SIGNALS, filter_cfg)
     if len(matched_signals) < MIN_SIGNALS_FOR_EVAL:
-        return filter_cfg, {}
+        return filter_cfg, {}, 0
 
     # 2. Group by pair
     by_pair: Dict[str, List[SignalInfo]] = {}
@@ -648,6 +648,7 @@ def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple
 
     # 3. Sum results from LOOKUP TABLE
     aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
+    total_processed_signals = 0
     
     for pair, pair_signals in by_pair.items():
         # Sequential check for pair position tracking
@@ -663,6 +664,8 @@ def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple
             if not sig_res:
                 continue
                 
+            total_processed_signals += 1
+            
             # Add PnL for all strategies
             max_last_ts = position_tracker_ts
             for s_idx, (pnl, last_ts) in sig_res.items():
@@ -672,7 +675,7 @@ def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple
                     
             position_tracker_ts = max_last_ts
 
-    return filter_cfg, aggregated
+    return filter_cfg, aggregated, total_processed_signals
 
 # ---------------------------------------------------------------------------
 # Evaluate a single filter configuration (PRELOADED VERSION - no SQL)
@@ -682,19 +685,11 @@ PRELOADED_SIGNALS: List[SignalData] = []
 PRELOADED_BARS: Dict[int, List[tuple]] = {}
 # (MAX_SIGNALS_PER_FILTER removed - run_strategy is now O(n) instead of O(n²))
 
-# (evaluate_filter_preloaded removed - using Lookup Table architecture)
-# ---------------------------------------------------------------------------
-# Evaluate a single filter configuration (LOOKUP TABLE WRAPPER)
-# ---------------------------------------------------------------------------
-def _evaluate_filter_wrapper_lookup(args):
-    """Wrapper for multiprocessing with Lookup Table."""
-    filter_cfg, strategy_grid = args
-    return evaluate_filter_lookup(filter_cfg, strategy_grid)
-
 # ---------------------------------------------------------------------------
 # Main optimisation loop
 # ---------------------------------------------------------------------------
 DEBUG_LOGGING = False
+
 
 def _evaluate_filter_wrapper_lookup(args):
     """Wrapper for multiprocessing with Lookup Table."""
@@ -706,7 +701,7 @@ def main():
     parser = argparse.ArgumentParser(description="Unified optimizer with global position tracking")
     parser.add_argument("--workers", type=int, default=12, help="Number of parallel workers (default 12)")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of filter configs (for testing)")
-    parser.add_argument("--min-signals", type=int, default=50, help="Minimum signals required per filter (default 50)")
+    parser.add_argument("--min-signals", type=int, default=5, help="Minimum signals required per filter (default 5)")
     args = parser.parse_args()
 
     global MAX_WORKERS, MIN_SIGNALS_FOR_EVAL
@@ -796,14 +791,14 @@ def main():
         init_worker_lookup(signals_with_bars, lookup_table)
         
         for task in iterator:
-            cfg, agg = _evaluate_filter_wrapper_lookup(task)
+            cfg, agg, count = _evaluate_filter_wrapper_lookup(task)
             if agg:
                 best_sid = max(agg, key=lambda k: agg[k])
                 best_params = strategy_grid[best_sid]
                 result_entry = {
                     "filter": cfg,
                     "strategy": best_params,
-                    "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
+                    "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid, "signal_count": count},
                 }
                 
                 # Stream to JSONL immediately (no memory accumulation)
@@ -828,14 +823,14 @@ def main():
                 iterator = pool.imap_unordered(_evaluate_filter_wrapper_lookup, tasks, chunksize=1000)
                 print(f"Optimizing {len(filter_grid)} filter configurations...")
 
-            for cfg, agg in iterator:
+            for cfg, agg, count in iterator:
                 if agg:
                     best_sid = max(agg, key=lambda k: agg[k])
                     best_params = strategy_grid[best_sid]
                     result_entry = {
                         "filter": cfg,
                         "strategy": best_params,
-                        "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid},
+                        "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid, "signal_count": count},
                     }
                     
                     # Stream to JSONL immediately (no memory accumulation)
