@@ -769,11 +769,18 @@ def main():
 
     # Prepare output file (streaming JSONL - write immediately, no memory accumulation)
     output_jsonl = OUTPUT_JSONL_FILE
+    backup_jsonl = Path(str(output_jsonl) + ".backup")
+    
+    # Backup old results instead of deleting (safety in case of crash)
     if output_jsonl.exists():
-        output_jsonl.unlink()  # Clear previous results
+        if backup_jsonl.exists():
+            backup_jsonl.unlink()
+        output_jsonl.rename(backup_jsonl)
+        print(f"[SAFETY] Backed up previous results to {backup_jsonl}")
     
     results_count = 0
     best_results = []  # Keep only top 10 for final display
+    first_write_done = False  # Track if we've written anything
     
     # Parallel processing of filter combinations
     tasks = [(cfg, strategy_grid) for cfg in filter_grid]
@@ -813,8 +820,16 @@ def main():
                     best_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
                     best_results = best_results[:10]
     else:
-        # Multiprocessing with Initializer
-        with mp.Pool(processes=MAX_WORKERS, initializer=init_worker_lookup, initargs=(signals_with_bars, lookup_table)) as pool:
+        # Multiprocessing with fork-inherited globals (no pickle copy!)
+        # Set globals BEFORE creating Pool - workers inherit via fork COW
+        global WORKER_SIGNALS, WORKER_RESULTS
+        WORKER_SIGNALS = signals_with_bars
+        WORKER_RESULTS = lookup_table
+        
+        print(f"[MEMORY] Set global lookup table ({len(lookup_table)} signals, {len(strategy_grid)} strategies)")
+        
+        # Create Pool WITHOUT initargs - workers inherit globals via fork
+        with mp.Pool(processes=MAX_WORKERS) as pool:
             try:
                 from tqdm import tqdm
                 iterator = tqdm(pool.imap_unordered(_evaluate_filter_wrapper_lookup, tasks, chunksize=1000), 
@@ -878,18 +893,46 @@ def main():
     # Also save as JSON for backwards compatibility (load from JSONL)
     print("\nConverting JSONL to JSON for backwards compatibility...")
     try:
-        all_results = []
-        with open(output_jsonl, "r", encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    all_results.append(json.loads(line))
+        # Use external sort to avoid loading all into memory
+        import subprocess
         
-        all_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
+        # Count lines first
+        line_count = sum(1 for _ in open(output_jsonl, "r", encoding="utf-8"))
+        print(f"  Sorting {line_count} results...")
         
+        # Sort by extracting total_pnl, sort numerically, then take top results
+        # This avoids loading entire file into Python memory
         output_json = "optimization_results_unified.json"
-        with open(output_json, "w") as f:
-            json.dump(all_results, f, indent=2)
-        print(f"Saved sorted results to {output_json}")
+        
+        if line_count <= 50000:
+            # Safe to load into memory for smaller files
+            all_results = []
+            with open(output_jsonl, "r", encoding="utf-8") as f:
+                for line in f:
+                    if line.strip():
+                        all_results.append(json.loads(line))
+            
+            all_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
+            
+            with open(output_json, "w") as f:
+                json.dump(all_results, f, indent=2)
+            print(f"  Saved {len(all_results)} sorted results to {output_json}")
+        else:
+            # For very large files, just copy without sorting
+            print(f"  Large file ({line_count} lines), saving without in-memory sort...")
+            with open(output_json, "w") as f_out:
+                f_out.write("[\n")
+                first = True
+                with open(output_jsonl, "r", encoding="utf-8") as f_in:
+                    for line in f_in:
+                        if line.strip():
+                            if not first:
+                                f_out.write(",\n")
+                            f_out.write("  " + line.strip())
+                            first = False
+                f_out.write("\n]")
+            print(f"  Saved to {output_json} (unsorted, use analyze_results.py to sort)")
+            
     except Exception as e:
         print(f"Warning: Could not convert to JSON: {e}")
 
