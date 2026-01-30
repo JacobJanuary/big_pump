@@ -567,6 +567,7 @@ def precompute_all_strategies(
         PHASE1_BARS_CACHE = bars_cache
         PHASE1_STRATEGY_GRID = strategy_grid
         
+        crash_log(f"PHASE 1 START: {len(signals_to_process)} signals, {num_workers} workers")
         print(f"[PRECOMPUTE] Starting {num_workers} parallel workers...")
         print(f"[MEMORY] Set globals for fork inheritance ({len(bars_cache)} signals, {len(strategy_grid)} strategies)\n")
         
@@ -587,6 +588,7 @@ def precompute_all_strategies(
                 
                 # Checkpoint every CHECKPOINT_INTERVAL signals
                 if processed_count % CHECKPOINT_INTERVAL == 0 and processed_count > 0:
+                    crash_log(f"Phase 1 progress: {processed_count}/{total_signals} signals")
                     save_phase1_checkpoint(results_map, processed_signal_ids, {
                         "processed_count": processed_count,
                         "skipped_count": skipped_count,
@@ -859,11 +861,11 @@ def main():
                 
                 results_count += 1
                 
-                # CRITICAL: Clear checkpoints ONLY after first successful write
+                # Track first write (checkpoints now kept permanently)
                 if not first_write_done:
                     first_write_done = True
-                    clear_phase1_checkpoint()
-                    print("[SAFETY] First result written - checkpoints cleared")
+                    # clear_phase1_checkpoint()  # DISABLED - keep checkpoints
+                    print("[SAFETY] First result written - checkpoints KEPT for safety")
                 
                 # Track top 10 for display
                 best_results.append(result_entry)
@@ -912,11 +914,11 @@ def main():
                     
                     results_count += 1
                     
-                    # CRITICAL: Clear checkpoints ONLY after first successful write
+                    # Track first write (checkpoints now kept permanently)
                     if not first_write_done:
                         first_write_done = True
-                        clear_phase1_checkpoint()
-                        print("[SAFETY] First result written - checkpoints cleared")
+                        # clear_phase1_checkpoint()  # DISABLED - keep checkpoints
+                        print("[SAFETY] First result written - checkpoints KEPT for safety")
                     
                     # Track top 10 for display
                     best_results.append(result_entry)
