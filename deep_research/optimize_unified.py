@@ -50,6 +50,17 @@ CHECKPOINT_PHASE1_FILE = CHECKPOINT_DIR / "phase1_lookup.pkl"
 CHECKPOINT_PROGRESS_FILE = CHECKPOINT_DIR / "phase1_progress.json"
 CHECKPOINT_INTERVAL = 25  # Save checkpoint every N signals
 OUTPUT_JSONL_FILE = Path("optimization_results.jsonl")
+CRASH_LOG_FILE = Path("optimize_crash.log")
+
+def crash_log(msg: str):
+    """Write message to crash log file with immediate flush. Survives OOM kills."""
+    import resource
+    mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024  # KB to MB on Linux
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(CRASH_LOG_FILE, "a") as f:
+        f.write(f"[{timestamp}] [MEM:{mem_mb:.0f}MB] {msg}\n")
+        f.flush()
+        os.fsync(f.fileno())  # Force write to disk
 
 # ---------------------------------------------------------------------------
 # Checkpoint helpers
@@ -94,12 +105,29 @@ def load_phase1_checkpoint() -> Optional[Tuple[Dict, List[int], Dict]]:
         return None
 
 def clear_phase1_checkpoint():
-    """Remove Phase 1 checkpoint files."""
+    """Remove Phase 1 checkpoint files including lookup table."""
     if CHECKPOINT_PHASE1_FILE.exists():
         CHECKPOINT_PHASE1_FILE.unlink()
     if CHECKPOINT_PROGRESS_FILE.exists():
         CHECKPOINT_PROGRESS_FILE.unlink()
+    lookup_file = CHECKPOINT_DIR / "phase1_lookup_table.pkl"
+    if lookup_file.exists():
+        lookup_file.unlink()
     print("[CHECKPOINT] Cleared Phase 1 checkpoint files")
+
+def load_lookup_table() -> Optional[Dict[int, Dict[int, Tuple[float, int]]]]:
+    """Load saved lookup table for Phase 2 crash recovery."""
+    lookup_file = CHECKPOINT_DIR / "phase1_lookup_table.pkl"
+    if not lookup_file.exists():
+        return None
+    try:
+        with open(lookup_file, "rb") as f:
+            lookup_table = pickle.load(f)
+        print(f"[RECOVERY] Loaded lookup table: {len(lookup_table)} signals")
+        return lookup_table
+    except Exception as e:
+        print(f"[RECOVERY] Error loading lookup table: {e}")
+        return None
 
 # ---------------------------------------------------------------------------
 # Helper data structures
@@ -580,8 +608,14 @@ def precompute_all_strategies(
         print(f"  Speedup vs single-thread: ~{num_workers}x (theoretical)")
     print(f"{'='*70}\n")
     
-    # Clear checkpoint after successful completion
-    clear_phase1_checkpoint()
+    # CRITICAL: Save lookup table to separate file for crash recovery
+    # DO NOT delete checkpoints yet - wait until Phase 2 writes first result!
+    lookup_file = CHECKPOINT_DIR / "phase1_lookup_table.pkl"
+    CHECKPOINT_DIR.mkdir(exist_ok=True)
+    with open(lookup_file, "wb") as f:
+        pickle.dump(results_map, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print(f"[SAFETY] Saved lookup table to {lookup_file} ({len(results_map)} signals)")
+    print("[SAFETY] Checkpoints will be cleared AFTER Phase 2 writes first result")
     
     return results_map
 
@@ -757,18 +791,26 @@ def main():
         return
 
     # 4. PRECOMPUTE ALL STRATEGIES (Lookup Table Generation)
-    # This runs 540 strategies for every signal once.
-    lookup_table = precompute_all_strategies(signals_with_bars, bars_cache, strategy_grid, num_workers=MAX_WORKERS)
+    # Check for saved lookup_table first (Phase 2 crash recovery)
+    lookup_table = load_lookup_table()
+    if lookup_table:
+        print(f"[RECOVERY] Using saved lookup table - skipping Phase 1!")
+        print(f"[RECOVERY] This saves ~10 hours of computation!")
+    else:
+        # This runs 540 strategies for every signal once.
+        lookup_table = precompute_all_strategies(signals_with_bars, bars_cache, strategy_grid, num_workers=MAX_WORKERS)
     
     # Clean up bars_cache to free memory (we only need the lookup table now!)
     del bars_cache
     import gc
     gc.collect()
     print("[MEMORY] Cleared bars cache. Ready for optimization.")
+    crash_log("Phase 1 complete. bars_cache cleared.")
 
     print("="*70)
     print("PHASE 2: Running optimization (Lookup Table Mode - Ultra Fast)")
     print("="*70 + "\n")
+    crash_log("PHASE 2 START")
 
     # Prepare output file (streaming JSONL - write immediately, no memory accumulation)
     output_jsonl = OUTPUT_JSONL_FILE
@@ -817,6 +859,12 @@ def main():
                 
                 results_count += 1
                 
+                # CRITICAL: Clear checkpoints ONLY after first successful write
+                if not first_write_done:
+                    first_write_done = True
+                    clear_phase1_checkpoint()
+                    print("[SAFETY] First result written - checkpoints cleared")
+                
                 # Track top 10 for display
                 best_results.append(result_entry)
                 if len(best_results) > 100:
@@ -829,10 +877,17 @@ def main():
         WORKER_SIGNALS = signals_with_bars
         WORKER_RESULTS = lookup_table
         
+        crash_log(f"Set globals: signals={len(signals_with_bars)}, lookup={len(lookup_table)}")
         print(f"[MEMORY] Set global lookup table ({len(lookup_table)} signals, {len(strategy_grid)} strategies)")
         
-        # Create Pool WITHOUT initargs - workers inherit globals via fork
-        with mp.Pool(processes=MAX_WORKERS) as pool:
+        try:
+            # Create Pool WITHOUT initargs - workers inherit globals via fork
+            crash_log(f"BEFORE Pool creation (workers={MAX_WORKERS})")
+            print("[PHASE2] Creating worker pool...")
+            with mp.Pool(processes=MAX_WORKERS) as pool:
+                crash_log("Pool CREATED successfully")
+                print(f"[PHASE2] Pool created with {MAX_WORKERS} workers")
+                print("[PHASE2] Starting filter optimization...")
             try:
                 from tqdm import tqdm
                 iterator = tqdm(pool.imap_unordered(_evaluate_filter_wrapper_lookup, tasks, chunksize=1000), 
@@ -857,6 +912,12 @@ def main():
                     
                     results_count += 1
                     
+                    # CRITICAL: Clear checkpoints ONLY after first successful write
+                    if not first_write_done:
+                        first_write_done = True
+                        clear_phase1_checkpoint()
+                        print("[SAFETY] First result written - checkpoints cleared")
+                    
                     # Track top 10 for display
                     best_results.append(result_entry)
                     if len(best_results) > 100:
@@ -866,6 +927,17 @@ def main():
                     # Periodic memory cleanup
                     if results_count % 5000 == 0:
                         gc.collect()
+        except Exception as e:
+            import traceback
+            print("\n" + "="*70)
+            print("[PHASE2 CRASH] An error occurred in Phase 2!")
+            print(f"[PHASE2 CRASH] Error: {e}")
+            print("[PHASE2 CRASH] Traceback:")
+            traceback.print_exc()
+            print("="*70)
+            print("[PHASE2 CRASH] Lookup table is saved - you can re-run to resume!")
+            print(f"[PHASE2 CRASH] Results written so far: {results_count}")
+            raise  # Re-raise to exit
 
     # -----------------------------------------------------------------------
     # Final results
