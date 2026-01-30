@@ -533,14 +533,17 @@ def precompute_all_strategies(
                     "total_signals": total_signals,
                 })
     else:
-        # Parallel mode with Pool
-        print(f"[PRECOMPUTE] Starting {num_workers} parallel workers...\n")
+        # Parallel mode with fork-inherited globals (no pickle copy!)
+        # Set globals BEFORE creating Pool - workers inherit via fork COW
+        global PHASE1_BARS_CACHE, PHASE1_STRATEGY_GRID
+        PHASE1_BARS_CACHE = bars_cache
+        PHASE1_STRATEGY_GRID = strategy_grid
         
-        with mp.Pool(
-            processes=num_workers,
-            initializer=init_phase1_worker,
-            initargs=(bars_cache, strategy_grid)
-        ) as pool:
+        print(f"[PRECOMPUTE] Starting {num_workers} parallel workers...")
+        print(f"[MEMORY] Set globals for fork inheritance ({len(bars_cache)} signals, {len(strategy_grid)} strategies)\n")
+        
+        # Create Pool WITHOUT initargs - workers inherit globals via fork
+        with mp.Pool(processes=num_workers) as pool:
             # Use imap for ordered results with progress tracking
             for sid, sig_results in pool.imap(process_single_signal, signals_to_process, chunksize=5):
                 if sig_results is None:
