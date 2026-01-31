@@ -190,14 +190,29 @@ def run_strategy_fast(
             
             # Position timeout check
             if max_position_seconds > 0 and (ts - position_entry_ts) >= max_position_seconds:
-                total_pnl += (pnl_from_entry * leverage - comm_cost)
+                # Check liquidation first
+                liquidation_threshold = 100.0 / leverage
+                if pnl_from_entry <= -liquidation_threshold:
+                    total_pnl += -100.0
+                else:
+                    realized_pnl = max(pnl_from_entry * leverage, -100.0)
+                    total_pnl += (realized_pnl - comm_cost)
                 in_position = False
                 last_exit_ts = ts
                 continue
             
-            # Stop-loss
+            # LIQUIDATION CHECK: position wiped out at 100/leverage % price drop
+            liquidation_threshold = 100.0 / leverage  # e.g. 10% for lev=10
+            if pnl_from_entry <= -liquidation_threshold:
+                total_pnl += -100.0  # Liquidated = 100% loss (no commission matters)
+                in_position = False
+                last_exit_ts = ts
+                continue
+            
+            # Stop-loss (only triggers if not liquidated first)
             if pnl_from_entry <= -sl_pct:
-                total_pnl += (pnl_from_entry * leverage - comm_cost)
+                realized_pnl = max(pnl_from_entry * leverage, -100.0)  # Cap at -100%
+                total_pnl += (realized_pnl - comm_cost)
                 in_position = False
                 last_exit_ts = ts
                 continue
@@ -218,7 +233,8 @@ def run_strategy_fast(
                     threshold = threshold * data_ratio
                 
                 if not (rolling_delta > threshold) and not (rolling_delta >= 0):
-                    total_pnl += (pnl_from_entry * leverage - comm_cost)
+                    realized_pnl = max(pnl_from_entry * leverage, -100.0)  # Cap at -100%
+                    total_pnl += (realized_pnl - comm_cost)
                     in_position = False
                     last_exit_ts = ts
                     max_price = price
@@ -246,7 +262,13 @@ def run_strategy_fast(
     if in_position:
         final_price = bars[-1][1]
         pnl = (final_price - entry_price) / entry_price * 100
-        total_pnl += (pnl * leverage - comm_cost)
+        # Check for liquidation during hold period
+        liquidation_threshold = 100.0 / leverage
+        if pnl <= -liquidation_threshold:
+            total_pnl += -100.0
+        else:
+            realized_pnl = max(pnl * leverage, -100.0)  # Cap at -100%
+            total_pnl += (realized_pnl - comm_cost)
         last_exit_ts = bars[-1][0]
     
     return total_pnl, last_exit_ts
