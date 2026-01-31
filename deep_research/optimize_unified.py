@@ -890,45 +890,46 @@ def main():
                 crash_log("Pool CREATED successfully")
                 print(f"[PHASE2] Pool created with {MAX_WORKERS} workers")
                 print("[PHASE2] Starting filter optimization...")
-            try:
-                from tqdm import tqdm
-                iterator = tqdm(pool.imap_unordered(_evaluate_filter_wrapper_lookup, tasks, chunksize=1000), 
-                              total=len(tasks), desc="Optimizing filters")
-            except ImportError:
-                iterator = pool.imap_unordered(_evaluate_filter_wrapper_lookup, tasks, chunksize=1000)
-                print(f"Optimizing {len(filter_grid)} filter configurations...")
+                
+                try:
+                    from tqdm import tqdm
+                    iterator = tqdm(pool.imap_unordered(_evaluate_filter_wrapper_lookup, tasks, chunksize=1000), 
+                                  total=len(tasks), desc="Optimizing filters")
+                except ImportError:
+                    iterator = pool.imap_unordered(_evaluate_filter_wrapper_lookup, tasks, chunksize=1000)
+                    print(f"Optimizing {len(filter_grid)} filter configurations...")
 
-            for cfg, agg, count in iterator:
-                if agg:
-                    best_sid = max(agg, key=lambda k: agg[k])
-                    best_params = strategy_grid[best_sid]
-                    result_entry = {
-                        "filter": cfg,
-                        "strategy": best_params,
-                        "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid, "signal_count": count},
-                    }
-                    
-                    # Stream to JSONL immediately (no memory accumulation)
-                    with open(output_jsonl, "a", encoding="utf-8") as f:
-                        f.write(json.dumps(result_entry) + "\n")
-                    
-                    results_count += 1
-                    
-                    # Track first write (checkpoints now kept permanently)
-                    if not first_write_done:
-                        first_write_done = True
-                        # clear_phase1_checkpoint()  # DISABLED - keep checkpoints
-                        print("[SAFETY] First result written - checkpoints KEPT for safety")
-                    
-                    # Track top 10 for display
-                    best_results.append(result_entry)
-                    if len(best_results) > 100:
-                        best_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
-                        best_results = best_results[:10]
-                    
-                    # Periodic memory cleanup
-                    if results_count % 5000 == 0:
-                        gc.collect()
+                for cfg, agg, count in iterator:
+                    if agg:
+                        best_sid = max(agg, key=lambda k: agg[k])
+                        best_params = strategy_grid[best_sid]
+                        result_entry = {
+                            "filter": cfg,
+                            "strategy": best_params,
+                            "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid, "signal_count": count},
+                        }
+                        
+                        # Stream to JSONL immediately (no memory accumulation)
+                        with open(output_jsonl, "a", encoding="utf-8") as f:
+                            f.write(json.dumps(result_entry) + "\n")
+                        
+                        results_count += 1
+                        
+                        # Track first write (checkpoints now kept permanently)
+                        if not first_write_done:
+                            first_write_done = True
+                            # clear_phase1_checkpoint()  # DISABLED - keep checkpoints
+                            print("[SAFETY] First result written - checkpoints KEPT for safety")
+                        
+                        # Track top 10 for display
+                        best_results.append(result_entry)
+                        if len(best_results) > 100:
+                            best_results.sort(key=lambda x: x["metrics"]["total_pnl"], reverse=True)
+                            best_results = best_results[:10]
+                        
+                        # Periodic memory cleanup
+                        if results_count % 5000 == 0:
+                            gc.collect()
         except Exception as e:
             import traceback
             print("\n" + "="*70)
