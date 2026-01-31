@@ -882,13 +882,16 @@ def main():
         crash_log(f"Set globals: signals={len(signals_with_bars)}, lookup={len(lookup_table)}")
         print(f"[MEMORY] Set global lookup table ({len(lookup_table)} signals, {len(strategy_grid)} strategies)")
         
+        # Phase 2 uses max 4 workers to prevent OOM (Phase 1 can use more)
+        phase2_workers = min(MAX_WORKERS, 4)
+        
         try:
             # Create Pool WITHOUT initargs - workers inherit globals via fork
-            crash_log(f"BEFORE Pool creation (workers={MAX_WORKERS})")
+            crash_log(f"BEFORE Pool creation (workers={phase2_workers})")
             print("[PHASE2] Creating worker pool...")
-            with mp.Pool(processes=MAX_WORKERS) as pool:
+            with mp.Pool(processes=phase2_workers) as pool:
                 crash_log("Pool CREATED successfully")
-                print(f"[PHASE2] Pool created with {MAX_WORKERS} workers")
+                print(f"[PHASE2] Pool created with {phase2_workers} workers (capped at 4)")
                 print("[PHASE2] Starting filter optimization...")
                 
                 try:
