@@ -196,7 +196,7 @@ def generate_strategy_grid() -> List[Dict]:
     threshold_opts = [1.0, 2.0, 3.0]  # Reduced from 5 to 3
     sl_by_leverage = {
         5: [3, 4, 5, 7, 10, 15],
-        10: [3, 4, 5, 7, 10, 15],
+        10: [3, 4, 5, 7, 10],  # No 15 - liquidation happens at 10% price drop
     }
     
     # Four trailing exit profiles (activation, callback) pairs

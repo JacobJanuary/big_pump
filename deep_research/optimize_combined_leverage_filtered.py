@@ -195,10 +195,8 @@ def run_strategy_fast(
                 last_exit_ts = ts
                 continue
             
-            # Stop-loss: sl_pct is position loss %, so divide by leverage for price threshold
-            # Example: sl_pct=15, leverage=10 → triggers at 1.5% price drop (15% position loss)
-            sl_price_threshold = sl_pct / leverage
-            if pnl_from_entry <= -sl_price_threshold:
+            # Stop-loss
+            if pnl_from_entry <= -sl_pct:
                 total_pnl += (pnl_from_entry * leverage - comm_cost)
                 in_position = False
                 last_exit_ts = ts
