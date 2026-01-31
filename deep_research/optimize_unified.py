@@ -915,6 +915,10 @@ def main():
                         
                         results_count += 1
                         
+                        # Log progress every 1000 results
+                        if results_count % 1000 == 0:
+                            crash_log(f"Phase 2 progress: {results_count} results written")
+                        
                         # Track first write (checkpoints now kept permanently)
                         if not first_write_done:
                             first_write_done = True
