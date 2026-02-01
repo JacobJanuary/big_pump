@@ -463,7 +463,9 @@ def process_single_signal(sig: SignalData) -> Tuple[int, Dict[int, Tuple[float, 
     if len(bars) < 100:
         return (sid, None)
     
-    precomputed = precompute_bars(bars)
+    # Convert signal timestamp to unix epoch for entry_idx calculation
+    entry_ts = int(sig.timestamp.timestamp())
+    precomputed = precompute_bars(bars, entry_ts)
     if not precomputed:
         return (sid, None)
     
@@ -633,7 +635,9 @@ def process_single_signal_sequential(
     if len(bars) < 100:
         return (sid, None)
     
-    precomputed = precompute_bars(bars)
+    # Convert signal timestamp to unix epoch for entry_idx calculation
+    entry_ts = int(sig.timestamp.timestamp())
+    precomputed = precompute_bars(bars, entry_ts)
     if not precomputed:
         return (sid, None)
     

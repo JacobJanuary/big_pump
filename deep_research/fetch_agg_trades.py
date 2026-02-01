@@ -47,7 +47,7 @@ def get_signals_for_loading(conn, limit=None):
 
 def get_required_dates(signal_timestamp):
     """
-    Определить какие дни нужно скачать для 48ч окна.
+    Определить какие дни нужно скачать для lookback + 48ч окна.
     
     Returns: list of date strings ['2025-01-01', '2025-01-02', '2025-01-03']
     """
@@ -55,7 +55,8 @@ def get_required_dates(signal_timestamp):
     if signal_timestamp.tzinfo is None:
         signal_timestamp = signal_timestamp.replace(tzinfo=timezone.utc)
     
-    start_date = signal_timestamp.date()
+    # Include day BEFORE for 3700s lookback
+    start_date = (signal_timestamp - timedelta(seconds=3700)).date()
     end_date = (signal_timestamp + timedelta(hours=48)).date()
     
     # Собираем все даты в диапазоне
@@ -181,11 +182,12 @@ def process_signal(sig):
     symbol = sig['pair_symbol']
     signal_ts = sig['signal_timestamp']
     
-    # Вычисляем временное окно (48ч после сигнала)
+    # Вычисляем временное окно: 3700s ДО сигнала (для delta_window lookback) + 48ч ПОСЛЕ
     if signal_ts.tzinfo is None:
         signal_ts = signal_ts.replace(tzinfo=timezone.utc)
     
-    start_ms = int(signal_ts.timestamp() * 1000)
+    LOOKBACK_SECONDS = 3700  # max delta_window (3600) + 100s buffer
+    start_ms = int((signal_ts - timedelta(seconds=LOOKBACK_SECONDS)).timestamp() * 1000)
     end_ms = int((signal_ts + timedelta(hours=48)).timestamp() * 1000)
     
     # Определяем нужные даты

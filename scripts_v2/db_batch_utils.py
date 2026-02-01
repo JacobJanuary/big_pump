@@ -77,9 +77,11 @@ def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75
 
     result: Dict[int, List[Tuple[int, float, float, float, int, int, float, float]]] = {}
     chunk_size = 5
+    lookback_seconds = 3600  # For delta_window pre-calculation
     
-    print(f"Fetching bars for {len(signal_ids)} signals in batches of {chunk_size}...")
+    print(f"Fetching bars for {len(signal_ids)} signals with {lookback_seconds}s lookback...")
     
+    # Modified: start from entry_time - lookback_seconds for delta pre-fill
     sql = """
         SELECT t.signal_analysis_id, t.second_ts, t.close_price, t.delta,
                t.large_buy_count, t.large_sell_count,
@@ -87,7 +89,7 @@ def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75
         FROM web.agg_trades_1s t
         JOIN web.signal_analysis s ON s.id = t.signal_analysis_id
         WHERE t.signal_analysis_id = ANY(%s)
-          AND t.second_ts >= EXTRACT(EPOCH FROM s.entry_time)::bigint
+          AND t.second_ts >= (EXTRACT(EPOCH FROM s.entry_time)::bigint - %s)
           AND t.second_ts <= (EXTRACT(EPOCH FROM s.entry_time)::bigint + %s)
         ORDER BY t.signal_analysis_id, t.second_ts
     """
@@ -97,7 +99,7 @@ def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75
             chunk = signal_ids[i : i + chunk_size]
             print(f"   Fetching chunk {i+1}-{min(i+chunk_size, len(signal_ids))}...", end='\r')
             
-            cur.execute(sql, (chunk, max_seconds))
+            cur.execute(sql, (chunk, lookback_seconds, max_seconds))
             rows = cur.fetchall()
             
             # Bar tuple: (ts, price, delta, 0.0, large_buy, large_sell, buy_volume, sell_volume)

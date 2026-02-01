@@ -106,14 +106,28 @@ def get_avg_delta(bars: List[tuple], idx: int, lookback: int = 100) -> float:
 # Core strategy execution – now returns PnL и timestamp последнего бара
 # ---------------------------------------------------------------------------
 
-def precompute_bars(bars: List[tuple]) -> Dict:
-    """Precompute cumsum arrays for bars - call ONCE per signal, reuse for all strategies."""
+def precompute_bars(bars: List[tuple], entry_ts: int = 0) -> Dict:
+    """Precompute cumsum arrays for bars - call ONCE per signal, reuse for all strategies.
+    
+    Args:
+        bars: List of bar tuples, may include lookback bars BEFORE entry_ts
+        entry_ts: Unix timestamp of entry time. Trading starts from first bar >= entry_ts.
+                  If 0, assume first bar is entry (backwards compatibility).
+    """
     if not bars:
         return None
     
     n = len(bars)
     
-    # Cumulative delta sums
+    # Find entry_idx - first bar where ts >= entry_ts
+    entry_idx = 0
+    if entry_ts > 0:
+        for i, bar in enumerate(bars):
+            if bar[0] >= entry_ts:
+                entry_idx = i
+                break
+    
+    # Cumulative delta sums (include ALL bars for lookback)
     cumsum_delta = [0.0] * (n + 1)
     cumsum_abs_delta = [0.0] * (n + 1)
     for i in range(n):
@@ -131,6 +145,7 @@ def precompute_bars(bars: List[tuple]) -> Dict:
     return {
         'bars': bars,
         'n': n,
+        'entry_idx': entry_idx,  # NEW: trading starts from this index
         'cumsum_delta': cumsum_delta,
         'avg_delta_arr': avg_delta_arr,
     }
@@ -167,17 +182,23 @@ def run_strategy_fast(
     n = precomputed['n']
     cumsum_delta = precomputed['cumsum_delta']
     avg_delta_arr = precomputed['avg_delta_arr']
+    entry_idx = precomputed.get('entry_idx', 0)  # NEW: start trading from this index
     
-    entry_price = bars[0][1]
+    # Skip if no trading bars after entry point
+    if entry_idx >= n:
+        return 0.0, 0
+    
+    # Trading starts from entry_idx (lookback bars [0:entry_idx] are for delta calculation only)
+    entry_price = bars[entry_idx][1]
     max_price = entry_price
     last_exit_ts = 0
     in_position = True
     total_pnl = 0.0
     comm_cost = COMMISSION_PCT * 2 * leverage
-    signal_start_ts = bars[0][0]  # Timestamp of signal start for reentry limit
+    signal_start_ts = bars[entry_idx][0]  # Timestamp of signal start for reentry limit
     position_entry_ts = signal_start_ts  # Track when current position was opened
     
-    for idx in range(n):
+    for idx in range(entry_idx, n):  # NEW: loop starts from entry_idx
         bar = bars[idx]
         ts = bar[0]
         price = bar[1]
