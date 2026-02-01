@@ -47,11 +47,11 @@ EXCHANGE_IDS = {
 }
 
 # --- Indicator Filter Configuration ---
-# Set to 0 to disable a specific filter
+# Set to 0 to disable a specific filter (filtering done via composite_strategy.json in Python)
 INDICATOR_FILTERS = {
-    'rsi_threshold': 1,            # DISABLED
-    'volume_zscore_threshold': 12,  # Volume Z-Score > 12
-    'oi_delta_threshold': 20,       # OI Delta % > 20
+    'rsi_threshold': 0,              # DISABLED - use composite_strategy.json rules
+    'volume_zscore_threshold': 0,    # DISABLED - use composite_strategy.json rules
+    'oi_delta_threshold': 0,         # DISABLED - use composite_strategy.json rules
 }
 
 
