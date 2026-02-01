@@ -402,8 +402,8 @@ def main():
         batch = signals[i : i+batch_size]
         sids = [b[0] for b in batch]
         
-        # Fetch bars for this batch (24 hours = 86400 seconds to support max_position_hours up to 24)
-        bars_dict = fetch_bars_batch_extended(conn, sids, max_seconds=86400)
+        # Fetch bars for this batch (48 hours = 172800s to cover max_reentry + max_position)
+        bars_dict = fetch_bars_batch_extended(conn, sids, max_seconds=172800)
         
         for item in batch:
             sid, symbol, ts, score, rsi, vol_zscore, oi_delta = item
