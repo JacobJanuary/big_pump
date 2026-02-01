@@ -1,0 +1,200 @@
+{
+  "version": "1.0",
+  "description": "Composite trading strategy combining best configs per score range",
+  "rules": [
+    {
+      "priority": 1,
+      "score_range": "100-150",
+      "filter": {
+        "score_min": 100,
+        "score_max": 150,
+        "rsi_min": 25,
+        "vol_min": 3,
+        "oi_min": 5
+      },
+      "strategy": {
+        "leverage": 10,
+        "sl_pct": 10,
+        "delta_window": 120,
+        "threshold_mult": 1.0,
+        "base_activation": 4.0,
+        "base_callback": 2.0,
+        "base_reentry_drop": 5.0,
+        "base_cooldown": 60,
+        "max_reentry_hours": 24,
+        "max_position_hours": 24
+      },
+      "expected_pnl": 2792.8598914087343
+    },
+    {
+      "priority": 2,
+      "score_range": "150-200",
+      "filter": {
+        "score_min": 150,
+        "score_max": 200,
+        "rsi_min": 0,
+        "vol_min": 0,
+        "oi_min": 8
+      },
+      "strategy": {
+        "leverage": 10,
+        "sl_pct": 5,
+        "delta_window": 1800,
+        "threshold_mult": 1.0,
+        "base_activation": 10.0,
+        "base_callback": 4.0,
+        "base_reentry_drop": 5.0,
+        "base_cooldown": 60,
+        "max_reentry_hours": 12,
+        "max_position_hours": 4
+      },
+      "expected_pnl": 3060.0850548949766
+    },
+    {
+      "priority": 3,
+      "score_range": "200-250",
+      "filter": {
+        "score_min": 200,
+        "score_max": 250,
+        "rsi_min": 25,
+        "vol_min": 0,
+        "oi_min": 3
+      },
+      "strategy": {
+        "leverage": 10,
+        "sl_pct": 5,
+        "delta_window": 30,
+        "threshold_mult": 1.0,
+        "base_activation": 0.4,
+        "base_callback": 0.2,
+        "base_reentry_drop": 5.0,
+        "base_cooldown": 300,
+        "max_reentry_hours": 8,
+        "max_position_hours": 2
+      },
+      "expected_pnl": 1457.5442043634557
+    },
+    {
+      "priority": 4,
+      "score_range": "250-300",
+      "filter": {
+        "score_min": 250,
+        "score_max": 300,
+        "rsi_min": 30,
+        "vol_min": 1,
+        "oi_min": 6
+      },
+      "strategy": {
+        "leverage": 10,
+        "sl_pct": 4,
+        "delta_window": 5,
+        "threshold_mult": 1.0,
+        "base_activation": 10.0,
+        "base_callback": 4.0,
+        "base_reentry_drop": 5.0,
+        "base_cooldown": 60,
+        "max_reentry_hours": 12,
+        "max_position_hours": 6
+      },
+      "expected_pnl": 1437.0339290577776
+    },
+    {
+      "priority": 5,
+      "score_range": "300-350",
+      "filter": {
+        "score_min": 300,
+        "score_max": 350,
+        "rsi_min": 65,
+        "vol_min": 1,
+        "oi_min": 4
+      },
+      "strategy": {
+        "leverage": 10,
+        "sl_pct": 3,
+        "delta_window": 1800,
+        "threshold_mult": 1.0,
+        "base_activation": 4.0,
+        "base_callback": 2.0,
+        "base_reentry_drop": 5.0,
+        "base_cooldown": 600,
+        "max_reentry_hours": 8,
+        "max_position_hours": 2
+      },
+      "expected_pnl": 1164.2299325093518
+    },
+    {
+      "priority": 6,
+      "score_range": "350-400",
+      "filter": {
+        "score_min": 350,
+        "score_max": 400,
+        "rsi_min": 35,
+        "vol_min": 0,
+        "oi_min": 0
+      },
+      "strategy": {
+        "leverage": 10,
+        "sl_pct": 7,
+        "delta_window": 1800,
+        "threshold_mult": 1.0,
+        "base_activation": 0.4,
+        "base_callback": 0.2,
+        "base_reentry_drop": 5.0,
+        "base_cooldown": 300,
+        "max_reentry_hours": 24,
+        "max_position_hours": 24
+      },
+      "expected_pnl": 1515.3818292711526
+    },
+    {
+      "priority": 7,
+      "score_range": "400-450",
+      "filter": {
+        "score_min": 400,
+        "score_max": 450,
+        "rsi_min": 5,
+        "vol_min": 0,
+        "oi_min": 4
+      },
+      "strategy": {
+        "leverage": 10,
+        "sl_pct": 5,
+        "delta_window": 600,
+        "threshold_mult": 1.0,
+        "base_activation": 0.4,
+        "base_callback": 0.2,
+        "base_reentry_drop": 5.0,
+        "base_cooldown": 300,
+        "max_reentry_hours": 8,
+        "max_position_hours": 24
+      },
+      "expected_pnl": 384.39392834157235
+    },
+    {
+      "priority": 8,
+      "score_range": "450-500",
+      "filter": {
+        "score_min": 450,
+        "score_max": 500,
+        "rsi_min": 10,
+        "vol_min": 0,
+        "oi_min": 0
+      },
+      "strategy": {
+        "leverage": 10,
+        "sl_pct": 10,
+        "delta_window": 30,
+        "threshold_mult": 1.0,
+        "base_activation": 4.0,
+        "base_callback": 2.0,
+        "base_reentry_drop": 5.0,
+        "base_cooldown": 600,
+        "max_reentry_hours": 8,
+        "max_position_hours": 24
+      },
+      "expected_pnl": 952.6327869467098
+    }
+  ],
+  "total_expected_pnl": 340,
+  "note": "Expected PnL is realistic backtest result with cross-range position blocking. Per-rule expected_pnl values assume independence and sum to ~12764%, but actual trading blocks overlapping positions across score ranges."
+}

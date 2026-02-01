@@ -140,6 +140,9 @@ def print_composite_report(rules: List[Dict], best_per_range: Dict[str, List[Dic
     print("-"*90)
     print(f"{'COMBINED EXPECTED PnL:':<69} | {total_expected_pnl:<12.2f}")
     print("="*90)
+    print("\n⚠️  WARNING: Above sum assumes score ranges are INDEPENDENT.")
+    print("   In real trading, positions block overlapping signals across ALL ranges.")
+    print("   Realistic expected PnL is ~3-5x lower due to cross-range blocking.")
     
     print("\n📋 STRATEGY EXECUTION LOGIC:")
     print("─"*60)
