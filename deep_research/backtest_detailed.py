@@ -307,6 +307,7 @@ def run_simulation_detailed(bars, strategy_params):
         trade_count += 1
         last_exit_reason = "Timeout"
         last_exit_price = final_price
+        last_exit_ts = bars[-1][0]  # Set exit time to last bar
 
     # Calculate average PnL per trade
     avg_pnl_per_trade = total_pnl / trade_count if trade_count > 0 else 0
@@ -314,7 +315,8 @@ def run_simulation_detailed(bars, strategy_params):
     return {
         "entry_price": bars[0][1],
         "exit_price": last_exit_price,
-        "duration": bars[-1][0] - first_entry_ts,
+        "duration": bars[-1][0] - first_entry_ts,  # For display only
+        "last_exit_ts": last_exit_ts,  # Actual exit timestamp for position tracking
         "exit_reason": last_exit_reason,
         "pnl": total_pnl,  # Total accumulated PnL
         "avg_pnl": avg_pnl_per_trade,  # Average per trade
@@ -438,9 +440,8 @@ def main():
             res = run_simulation_detailed(bars, strat)
             
             if res:
-                # Calculate exit timestamp and update active_positions
-                exit_epoch = entry_epoch + res["duration"]
-                active_positions[symbol] = exit_epoch
+                # Use actual exit timestamp for position tracking (not duration!)
+                active_positions[symbol] = res["last_exit_ts"]
                 
                 # Build strategy string with activation/callback info
                 act = strat.get('activation', 10.0)
