@@ -514,8 +514,8 @@ def main():
     print("\n" + "="*160)
     print(f"{'DETAILED TRADE LOG (with Dollar P&L)':^160}")
     print("="*160)
-    print(f"{'DATE':<20} | {'SYMBOL':<12} | {'SCORE':<5} | {'DW':<5} | {'ENTRY':<10} | {'EXIT':<10} | {'DUR':<5} | {'PNL%':<9} | {'PNL_$':<10} | {'BALANCE_$':<12} | {'REASON'}")
-    print("-" * 160)
+    print(f"{'DATE':<20} | {'SYMBOL':<12} | {'SCORE':<5} | {'DW':<5} | {'ENTRY':<10} | {'EXIT':<10} | {'DUR':<5} | {'TRADES':<6} | {'PNL%':<9} | {'PNL_$':<10} | {'BALANCE_$':<12} | {'REASON'}")
+    print("-" * 170)
 
     daily_pnl = {}  # "YYYY-MM-DD": pnl%
     daily_pnl_usd = {}  # "YYYY-MM-DD": $pnl
@@ -590,7 +590,7 @@ def main():
         color = GREEN if pnl > 0 else RED
         bal_color = GREEN if running_balance > 0 else RED
         
-        print(f"{date_str:<20} | {t['Symbol']:<12} | {t['Score']:<5} | {t['DeltaWindow']:<5} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<5} | {color}{pnl_str:<9}{RESET} | {color}{pnl_usd_str:<10}{RESET} | {bal_color}{bal_str:<12}{RESET} | {t['Reason']}")
+        print(f"{date_str:<20} | {t['Symbol']:<12} | {t['Score']:<5} | {t['DeltaWindow']:<5} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<5} | {t['TradeCount']:<6} | {color}{pnl_str:<9}{RESET} | {color}{pnl_usd_str:<10}{RESET} | {bal_color}{bal_str:<12}{RESET} | {t['Reason']}")
 
     # -----------------------------------------------------------------------
     # 2. DAILY PERFORMANCE SUMMARY TABLE (with $ amounts)
