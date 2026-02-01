@@ -204,6 +204,8 @@ def run_simulation_detailed(bars, strategy_params):
         delta = bar[2]
         large_buy = bar[4]
         large_sell = bar[5]
+        buy_volume = bar[6] if len(bar) > 6 else 0
+        sell_volume = bar[7] if len(bar) > 7 else 0
 
         if in_position:
             if price > max_price:
@@ -284,7 +286,8 @@ def run_simulation_detailed(bars, strategy_params):
                 if price < max_price:
                     drop_pct = (max_price - price) / max_price * 100
                     if drop_pct >= base_reentry_drop:
-                        if delta > 0 and large_buy > large_sell:
+                        # Re-entry condition: delta > 0 AND buy_volume > sell_volume (parity with optimize)
+                        if delta > 0 and buy_volume > sell_volume:
                             in_position = True
                             entry_price = price
                             max_price = price

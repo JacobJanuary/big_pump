@@ -75,14 +75,15 @@ def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75
     if not signal_ids:
         return {}
 
-    result: Dict[int, List[Tuple[int, float, float, float, int, int]]] = {}
+    result: Dict[int, List[Tuple[int, float, float, float, int, int, float, float]]] = {}
     chunk_size = 5
     
     print(f"Fetching bars for {len(signal_ids)} signals in batches of {chunk_size}...")
     
     sql = """
         SELECT t.signal_analysis_id, t.second_ts, t.close_price, t.delta,
-               t.large_buy_count, t.large_sell_count
+               t.large_buy_count, t.large_sell_count,
+               t.buy_volume, t.sell_volume
         FROM web.agg_trades_1s t
         JOIN web.signal_analysis s ON s.id = t.signal_analysis_id
         WHERE t.signal_analysis_id = ANY(%s)
@@ -99,8 +100,9 @@ def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75
             cur.execute(sql, (chunk, max_seconds))
             rows = cur.fetchall()
             
-            for sid, ts, price, delta, buy_cnt, sell_cnt in rows:
-                result.setdefault(sid, []).append((ts, float(price), float(delta), 0.0, int(buy_cnt), int(sell_cnt)))
+            # Bar tuple: (ts, price, delta, 0.0, large_buy, large_sell, buy_volume, sell_volume)
+            for sid, ts, price, delta, buy_cnt, sell_cnt, buy_vol, sell_vol in rows:
+                result.setdefault(sid, []).append((ts, float(price), float(delta), 0.0, int(buy_cnt), int(sell_cnt), float(buy_vol or 0), float(sell_vol or 0)))
                 
     print(f"\n   Data fetch complete. {len(result)} signals have data.")
     return result
