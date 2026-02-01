@@ -189,11 +189,11 @@ def generate_strategy_grid() -> List[Dict]:
     - max_reentry_hours: 4 options [4, 8, 12, 24]
     - max_position_hours: 5 options [2, 4, 6, 12, 24]
     
-    Total: 2 * 6 * 9 * 3 * 4 * 3 * 4 * 5 = 77,760 combinations
+    Total: 1 * 5 * 8 * 1 * 4 * 3 * 4 * 5 = 9,600 combinations (was 77,760)
     """
-    leverage_opts = [5, 10]
-    delta_window_opts = [5, 10, 30, 60, 120, 300, 600, 1800, 3600]  # Removed 7200
-    threshold_opts = [1.0, 2.0, 3.0]  # Reduced from 5 to 3
+    leverage_opts = [10]  # 5 never wins, removed
+    delta_window_opts = [5, 30, 60, 120, 300, 600, 1800, 3600]  # 10 never wins, removed
+    threshold_opts = [1.0]  # 2.0, 3.0 never win, removed
     sl_by_leverage = {
         5: [3, 4, 5, 7, 10, 15],
         10: [3, 4, 5, 7, 10],  # No 15 - liquidation happens at 10% price drop
