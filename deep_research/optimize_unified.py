@@ -242,7 +242,8 @@ class SignalData(NamedTuple):
     """Extended signal info with indicator values for in-memory filtering"""
     signal_id: int
     pair: str
-    timestamp: datetime
+    timestamp: datetime  # signal_timestamp (when pattern was detected)
+    entry_time: datetime  # entry_time = signal_timestamp + 17 min (when position opens)
     score: int
     rsi: float
     vol_zscore: float
@@ -259,7 +260,7 @@ def preload_all_signals() -> List[SignalData]:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT sa.id, sa.pair_symbol, sa.signal_timestamp, sa.total_score,
+                    SELECT sa.id, sa.pair_symbol, sa.signal_timestamp, sa.entry_time, sa.total_score,
                            i.rsi, i.volume_zscore, i.oi_delta_pct
                     FROM web.signal_analysis AS sa
                     JOIN fas_v2.indicators AS i ON (
@@ -270,11 +271,13 @@ def preload_all_signals() -> List[SignalData]:
                     WHERE sa.total_score >= 100 AND sa.total_score < 950
                 """)
                 for row in cur.fetchall():
-                    sid, sym, ts, score, rsi, vol, oi = row
+                    sid, sym, ts, entry_t, score, rsi, vol, oi = row
                     if ts.tzinfo is None:
                         ts = ts.replace(tzinfo=timezone.utc)
+                    if entry_t.tzinfo is None:
+                        entry_t = entry_t.replace(tzinfo=timezone.utc)
                     signals.append(SignalData(
-                        signal_id=sid, pair=sym, timestamp=ts,
+                        signal_id=sid, pair=sym, timestamp=ts, entry_time=entry_t,
                         score=score, rsi=rsi or 0, vol_zscore=vol or 0, oi_delta=oi or 0
                     ))
         print(f"[PRELOAD] Loaded {len(signals)} signals")
@@ -463,8 +466,8 @@ def process_single_signal(sig: SignalData) -> Tuple[int, Dict[int, Tuple[float, 
     if len(bars) < 100:
         return (sid, None)
     
-    # Convert signal timestamp to unix epoch for entry_idx calculation
-    entry_ts = int(sig.timestamp.timestamp())
+    # Use entry_time (signal + 17 min), matches db_batch_utils fetch
+    entry_ts = int(sig.entry_time.timestamp())
     precomputed = precompute_bars(bars, entry_ts)
     if not precomputed:
         return (sid, None)
@@ -635,8 +638,8 @@ def process_single_signal_sequential(
     if len(bars) < 100:
         return (sid, None)
     
-    # Convert signal timestamp to unix epoch for entry_idx calculation
-    entry_ts = int(sig.timestamp.timestamp())
+    # Use entry_time (signal + 17 min), matches db_batch_utils fetch
+    entry_ts = int(sig.entry_time.timestamp())
     precomputed = precompute_bars(bars, entry_ts)
     if not precomputed:
         return (sid, None)
