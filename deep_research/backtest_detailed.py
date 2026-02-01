@@ -73,6 +73,9 @@ def load_rules_from_json(json_path: str = None) -> list:
                         "callback": s.get("base_callback", BASE_CALLBACK),
                         "cooldown": s.get("base_cooldown", BASE_COOLDOWN),
                         "reentry_drop": s.get("base_reentry_drop", BASE_REENTRY_DROP),
+                        # Time limits (hours -> seconds for simulation)
+                        "max_reentry_seconds": s.get("max_reentry_hours", 48) * 3600,
+                        "max_position_seconds": s.get("max_position_hours", 24) * 3600,
                     }
                 })
             return rules
@@ -160,6 +163,10 @@ def run_simulation_detailed(bars, strategy_params):
     base_callback = strategy_params.get("callback", BASE_CALLBACK)
     base_cooldown = strategy_params.get("cooldown", BASE_COOLDOWN)
     base_reentry_drop = strategy_params.get("reentry_drop", BASE_REENTRY_DROP)
+    
+    # Time limits (from composite_strategy.json)
+    max_reentry_seconds = strategy_params.get("max_reentry_seconds", 0)
+    max_position_seconds = strategy_params.get("max_position_seconds", 0)
 
     # Precompute cumsum arrays
     cumsum_delta = [0.0] * (n + 1)
@@ -178,6 +185,7 @@ def run_simulation_detailed(bars, strategy_params):
     # State
     entry_price = bars[0][1]
     first_entry_ts = bars[0][0]
+    position_entry_ts = first_entry_ts  # Track current position entry time
     max_price = entry_price
     in_position = True
     last_exit_ts = 0
@@ -204,11 +212,37 @@ def run_simulation_detailed(bars, strategy_params):
             pnl_from_entry = (price - entry_price) / entry_price * 100
             drawdown_from_max = (max_price - price) / max_price * 100 if max_price > 0 else 0
 
-            # Stop-loss - CAP at sl_pct!
+            # Position timeout check (max_position_seconds)
+            if max_position_seconds > 0 and (ts - position_entry_ts) >= max_position_seconds:
+                # Check liquidation first
+                liquidation_threshold = 100.0 / leverage
+                if pnl_from_entry <= -liquidation_threshold:
+                    total_pnl += -100.0
+                else:
+                    realized_pnl = max(pnl_from_entry * leverage, -100.0)
+                    total_pnl += (realized_pnl - comm_cost)
+                trade_count += 1
+                in_position = False
+                last_exit_ts = ts
+                last_exit_reason = "Timeout"
+                last_exit_price = price
+                continue
+
+            # LIQUIDATION CHECK: position wiped out at 100/leverage % price drop
+            liquidation_threshold = 100.0 / leverage  # e.g. 10% for lev=10
+            if pnl_from_entry <= -liquidation_threshold:
+                total_pnl += -100.0  # Liquidated = 100% loss
+                trade_count += 1
+                in_position = False
+                last_exit_ts = ts
+                last_exit_reason = "LIQUIDATED"
+                last_exit_price = price
+                continue
+
+            # Stop-loss (only triggers if not liquidated first)
             if pnl_from_entry <= -sl_pct:
-                # Use -sl_pct, not actual pnl (which could be worse)
-                capped_pnl = -sl_pct
-                total_pnl += (capped_pnl * leverage - comm_cost)
+                realized_pnl = max(-sl_pct * leverage, -100.0)  # Cap at -100%
+                total_pnl += (realized_pnl - comm_cost)
                 trade_count += 1
                 in_position = False
                 last_exit_ts = ts
@@ -225,7 +259,8 @@ def run_simulation_detailed(bars, strategy_params):
                 threshold = avg_delta * threshold_mult
                 
                 if rolling_delta < threshold and rolling_delta < 0:
-                    total_pnl += (pnl_from_entry * leverage - comm_cost)
+                    realized_pnl = max(pnl_from_entry * leverage, -100.0)  # Cap at -100%
+                    total_pnl += (realized_pnl - comm_cost)
                     trade_count += 1
                     in_position = False
                     last_exit_ts = ts
@@ -235,6 +270,10 @@ def run_simulation_detailed(bars, strategy_params):
                     continue
         else:
             # Re-entry logic
+            # Check max_reentry_seconds limit (0 = no limit)
+            if max_reentry_seconds > 0 and (ts - first_entry_ts) > max_reentry_seconds:
+                continue  # Past the reentry window, skip
+            
             if ts - last_exit_ts >= base_cooldown:
                 if price < max_price:
                     drop_pct = (max_price - price) / max_price * 100
@@ -243,6 +282,7 @@ def run_simulation_detailed(bars, strategy_params):
                             in_position = True
                             entry_price = price
                             max_price = price
+                            position_entry_ts = ts  # Track new position entry time
                             last_exit_ts = 0
                 else:
                     max_price = price
@@ -251,10 +291,13 @@ def run_simulation_detailed(bars, strategy_params):
     if in_position:
         final_price = bars[-1][1]
         pnl_pct = (final_price - entry_price) / entry_price * 100
-        # Cap loss at SL level
-        if pnl_pct < -sl_pct:
-            pnl_pct = -sl_pct
-        total_pnl += (pnl_pct * leverage - comm_cost)
+        # Check for liquidation during hold period
+        liquidation_threshold = 100.0 / leverage
+        if pnl_pct <= -liquidation_threshold:
+            total_pnl += -100.0
+        else:
+            realized_pnl = max(pnl_pct * leverage, -100.0)  # Cap at -100%
+            total_pnl += (realized_pnl - comm_cost)
         trade_count += 1
         last_exit_reason = "Timeout"
         last_exit_price = final_price
