@@ -253,10 +253,16 @@ def run_simulation_detailed(bars, strategy_params):
             # Trailing exit
             if pnl_from_entry >= base_activation and drawdown_from_max >= base_callback:
                 window_start_idx = max(0, idx - delta_window)
+                actual_window_size = idx - window_start_idx
                 rolling_delta = cumsum_delta[idx + 1] - cumsum_delta[window_start_idx]
                 
                 avg_delta = avg_delta_arr[idx]
                 threshold = avg_delta * threshold_mult
+                
+                # Proportional scaling when insufficient data (match optimization logic)
+                if actual_window_size < delta_window and delta_window > 0:
+                    data_ratio = actual_window_size / delta_window
+                    threshold = threshold * data_ratio
                 
                 if rolling_delta < threshold and rolling_delta < 0:
                     realized_pnl = max(pnl_from_entry * leverage, -100.0)  # Cap at -100%
