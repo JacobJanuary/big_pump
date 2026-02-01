@@ -608,10 +608,12 @@ def main():
     
     for day in sorted_days:
         day_trades = [t for t in trades if str(t["Date"]).startswith(day)]
-        count = len(day_trades)
+        # Count total re-entries (TradeCount), not just signals
+        total_reentries = sum(t.get("TradeCount", 1) for t in day_trades)
+        signals_count = len(day_trades)
         wins = len([t for t in day_trades if t["PnL%"] > 0])
-        losses = count - wins
-        wr = (wins / count * 100) if count > 0 else 0
+        losses = signals_count - wins
+        wr = (wins / signals_count * 100) if signals_count > 0 else 0
         
         d_pnl = daily_pnl[day]
         d_pnl_usd = daily_pnl_usd[day]
@@ -625,7 +627,7 @@ def main():
         d_color = GREEN if d_pnl > 0 else RED
         c_color = GREEN if running_total_usd > 0 else RED
         
-        print(f"{day:<12} | {count:<6} | {wins:<4} | {losses:<4} | {wr:5.1f}% | {d_color}{d_pnl_str:<12}{RESET} | {d_color}{d_pnl_usd_str:<12}{RESET} | {c_color}{cum_str}{RESET}")
+        print(f"{day:<12} | {total_reentries:<6} | {wins:<4} | {losses:<4} | {wr:5.1f}% | {d_color}{d_pnl_str:<12}{RESET} | {d_color}{d_pnl_usd_str:<12}{RESET} | {c_color}{cum_str}{RESET}")
     print("="*100)
 
     # Save CSV - include all fields from trades dict
