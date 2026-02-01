@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 # Add parent directory to path to allow imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from scripts_v2.db_batch_utils import fetch_bars_batch
+from scripts_v2.db_batch_utils import fetch_bars_batch_extended
 from scripts_v2.pump_analysis_lib import (
     get_db_connection,
     fetch_signals,
@@ -402,8 +402,8 @@ def main():
         batch = signals[i : i+batch_size]
         sids = [b[0] for b in batch]
         
-        # Fetch bars for this batch
-        bars_dict = fetch_bars_batch(conn, sids)
+        # Fetch bars for this batch (24 hours = 86400 seconds to support max_position_hours up to 24)
+        bars_dict = fetch_bars_batch_extended(conn, sids, max_seconds=86400)
         
         for item in batch:
             sid, symbol, ts, score, rsi, vol_zscore, oi_delta = item
