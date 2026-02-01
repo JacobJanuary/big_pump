@@ -134,22 +134,38 @@ def get_matching_rule(score, rsi, vol, oi, verbose=False):
     return None, "score_out_of_range"
 
 
-def run_simulation_detailed(bars, strategy_params):
+def run_simulation_detailed(bars, strategy_params, entry_ts=0):
     """Run simulation with re-entry support.
     
     Logic:
-    1. Enter at first bar
+    1. Enter at first bar >= entry_ts (or bars[0] if entry_ts=0)
     2. Exit on SL (capped at sl_pct) or Trailing
     3. After exit, can re-enter if conditions met
     4. Returns total_pnl (sum of all trades) and trade_count
     
     IMPORTANT: Each trade's SL is capped at -sl_pct, not actual price drop!
+    
+    Args:
+        entry_ts: Unix timestamp of entry time. Trading starts from first bar >= entry_ts.
+                  If 0, assume first bar is entry (backwards compatibility).
     """
     if not bars:
         return None
 
     n = len(bars)
     if n < 10:
+        return None
+
+    # Find entry_idx - first bar where ts >= entry_ts
+    entry_idx = 0
+    if entry_ts > 0:
+        for i, bar in enumerate(bars):
+            if bar[0] >= entry_ts:
+                entry_idx = i
+                break
+    
+    # Skip if no trading bars after entry point
+    if entry_idx >= n:
         return None
 
     # Strategy parameters
@@ -168,7 +184,7 @@ def run_simulation_detailed(bars, strategy_params):
     max_reentry_seconds = strategy_params.get("max_reentry_seconds", 0)
     max_position_seconds = strategy_params.get("max_position_seconds", 0)
 
-    # Precompute cumsum arrays
+    # Precompute cumsum arrays (include ALL bars for lookback delta calculation)
     cumsum_delta = [0.0] * (n + 1)
     cumsum_abs_delta = [0.0] * (n + 1)
     for i in range(n):
@@ -182,9 +198,9 @@ def run_simulation_detailed(bars, strategy_params):
         if lb > 0:
             avg_delta_arr[i] = (cumsum_abs_delta[i] - cumsum_abs_delta[i - lb]) / lb
 
-    # State
-    entry_price = bars[0][1]
-    first_entry_ts = bars[0][0]
+    # State - trading starts from entry_idx (lookback bars [0:entry_idx] are for delta only)
+    entry_price = bars[entry_idx][1]
+    first_entry_ts = bars[entry_idx][0]
     position_entry_ts = first_entry_ts  # Track current position entry time
     max_price = entry_price
     in_position = True
@@ -197,7 +213,7 @@ def run_simulation_detailed(bars, strategy_params):
     
     comm_cost = COMMISSION_PCT * 2 * leverage
 
-    for idx in range(n):
+    for idx in range(entry_idx, n):  # Start from entry_idx
         bar = bars[idx]
         ts = bar[0]
         price = bar[1]
@@ -328,7 +344,7 @@ def run_simulation_detailed(bars, strategy_params):
 
 
 
-def get_all_signals_like_optimizer(conn) -> List[Tuple[int, str, datetime, int, float, float, float]]:
+def get_all_signals_like_optimizer(conn) -> List[Tuple[int, str, datetime, datetime, int, float, float, float]]:
     """
     Load ALL signals using SAME logic as optimize_unified.py
     
@@ -337,14 +353,14 @@ def get_all_signals_like_optimizer(conn) -> List[Tuple[int, str, datetime, int, 
     - score >= 100, score < 950
     - NO additional vol/oi/rsi filters (those are applied via get_matching_rule)
     
-    Returns list of (signal_id, symbol, timestamp, score, rsi, vol_zscore, oi_delta) tuples
+    Returns list of (signal_id, symbol, timestamp, entry_time, score, rsi, vol_zscore, oi_delta) tuples
     """
     print("   Loading signals using same logic as optimize_unified.py...")
     
     signals = []
     with conn.cursor() as cur:
         cur.execute("""
-            SELECT sa.id, sa.pair_symbol, sa.signal_timestamp, sa.total_score,
+            SELECT sa.id, sa.pair_symbol, sa.signal_timestamp, sa.entry_time, sa.total_score,
                    i.rsi, i.volume_zscore, i.oi_delta_pct
             FROM web.signal_analysis AS sa
             JOIN fas_v2.indicators AS i ON (
@@ -356,11 +372,13 @@ def get_all_signals_like_optimizer(conn) -> List[Tuple[int, str, datetime, int, 
         """)
         
         for row in cur.fetchall():
-            sid, sym, ts, score, rsi, vol, oi = row
+            sid, sym, ts, entry_t, score, rsi, vol, oi = row
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
+            if entry_t.tzinfo is None:
+                entry_t = entry_t.replace(tzinfo=timezone.utc)
             signals.append((
-                sid, sym, ts, score,
+                sid, sym, ts, entry_t, score,
                 rsi or 0, vol or 0, oi or 0
             ))
     
@@ -417,10 +435,11 @@ def main():
         bars_dict = fetch_bars_batch_extended(conn, sids, max_seconds=172800)
         
         for item in batch:
-            sid, symbol, ts, score, rsi, vol_zscore, oi_delta = item
+            sid, symbol, ts, entry_time, score, rsi, vol_zscore, oi_delta = item
             
-            # Convert timestamp to epoch for comparison
-            entry_epoch = ts.timestamp() if hasattr(ts, 'timestamp') else ts
+            # Convert entry_time to epoch for comparison and entry_idx calculation
+            entry_epoch = entry_time.timestamp() if hasattr(entry_time, 'timestamp') else entry_time
+            entry_ts = int(entry_epoch)
             
             # Check if position is occupied
             if symbol in active_positions:
@@ -440,7 +459,7 @@ def main():
                 skipped_no_matching_rule += 1
                 continue
             
-            res = run_simulation_detailed(bars, strat)
+            res = run_simulation_detailed(bars, strat, entry_ts=entry_ts)
             
             if res:
                 # Use actual exit timestamp for position tracking (not duration!)
