@@ -301,19 +301,34 @@ def preload_all_signals() -> List[SignalData]:
         print(f"Error preloading signals: {e}")
     return signals
 
-def preload_all_bars(signal_ids: List[int]) -> Dict[int, List[tuple]]:
-    """Load ALL bars for all signals in chunks.
+def preload_all_bars(signal_ids: List[int], preload_workers: int = 8) -> Dict[int, List[tuple]]:
+    """Load ALL bars for all signals in chunks (PARALLEL - uses ThreadPoolExecutor).
+    
+    Args:
+        signal_ids: List of signal IDs to load bars for.
+        preload_workers: Number of parallel DB connections for loading (default 8).
     
     Returns dict: {signal_id: [(ts, price, delta, 0, buy, sell), ...]}
     """
-    print(f"[PRELOAD] Loading bars for {len(signal_ids)} signals...")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+    
+    print(f"[PRELOAD] Loading bars for {len(signal_ids)} signals using {preload_workers} workers...")
     bars_map: Dict[int, List[tuple]] = {}
+    bars_lock = threading.Lock()
     chunk_size = 10  # Smaller chunks for better progress visibility
     total_chunks = (len(signal_ids) + chunk_size - 1) // chunk_size
     
-    for chunk_idx, i in enumerate(range(0, len(signal_ids), chunk_size)):
-        chunk = signal_ids[i:i + chunk_size]
-        print(f"[PRELOAD] Loading chunk {chunk_idx + 1}/{total_chunks} (signals {i+1}-{min(i+chunk_size, len(signal_ids))})...", end=" ", flush=True)
+    # Split into chunks
+    chunks = []
+    for i in range(0, len(signal_ids), chunk_size):
+        chunks.append((i // chunk_size, signal_ids[i:i + chunk_size]))
+    
+    completed = [0]  # Mutable counter for progress
+    
+    def load_chunk(args):
+        chunk_idx, chunk = args
+        local_bars = {}
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cur:
@@ -327,12 +342,28 @@ def preload_all_bars(signal_ids: List[int]) -> Dict[int, List[tuple]]:
                     rows = cur.fetchall()
                     for row in rows:
                         sid, ts, price, delta, buy, sell = row
-                        bars_map.setdefault(sid, []).append(
+                        local_bars.setdefault(sid, []).append(
                             (ts, float(price), float(delta), 0.0, buy, sell)
                         )
-                    print(f"{len(rows):,} rows", flush=True)
+            return (chunk_idx, local_bars, len(rows))
         except Exception as e:
-            print(f"ERROR: {e}")
+            print(f"[PRELOAD] Chunk {chunk_idx} error: {e}")
+            return (chunk_idx, {}, 0)
+    
+    # Parallel execution
+    with ThreadPoolExecutor(max_workers=preload_workers) as executor:
+        futures = [executor.submit(load_chunk, chunk) for chunk in chunks]
+        
+        for future in as_completed(futures):
+            chunk_idx, local_bars, row_count = future.result()
+            with bars_lock:
+                for sid, bars in local_bars.items():
+                    bars_map.setdefault(sid, []).extend(bars)
+                completed[0] += 1
+            
+            # Progress every 10 chunks or at completion
+            if completed[0] % 10 == 0 or completed[0] == total_chunks:
+                print(f"[PRELOAD] Progress: {completed[0]}/{total_chunks} chunks ({completed[0]*100//total_chunks}%)", flush=True)
     
     print(f"[PRELOAD] Bars loaded for {len(bars_map)} signals")
     return bars_map
@@ -764,6 +795,7 @@ def main():
     parser.add_argument("--workers", type=int, default=12, help="Number of parallel workers (default 12)")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of filter configs (for testing)")
     parser.add_argument("--min-signals", type=int, default=5, help="Minimum signals required per filter (default 5)")
+    parser.add_argument("--preload-workers", type=int, default=8, help="Number of DB connections for preload (default 8)")
     args = parser.parse_args()
 
     global MAX_WORKERS, MIN_SIGNALS_FOR_EVAL
@@ -796,7 +828,7 @@ def main():
     
     # 2. Load Bars
     all_signal_ids = [s.signal_id for s in all_signals]
-    bars_cache = preload_all_bars(all_signal_ids)
+    bars_cache = preload_all_bars(all_signal_ids, preload_workers=args.preload_workers)
     
     # 3. Filter signals with sufficient bars
     signals_with_bars = [s for s in all_signals if s.signal_id in bars_cache and len(bars_cache[s.signal_id]) >= 100]
