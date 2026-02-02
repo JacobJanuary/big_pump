@@ -70,21 +70,37 @@ def save_phase1_checkpoint(
     processed_signal_ids: List[int],
     progress_info: Dict
 ):
-    """Save Phase 1 checkpoint to disk."""
+    """Save Phase 1 checkpoint to disk (ATOMIC - crash-safe)."""
     CHECKPOINT_DIR.mkdir(exist_ok=True)
     
-    # Save lookup table (binary pickle for speed)
-    with open(CHECKPOINT_PHASE1_FILE, "wb") as f:
-        pickle.dump({
-            "lookup_table": lookup_table,
-            "processed_signal_ids": processed_signal_ids,
-        }, f, protocol=pickle.HIGHEST_PROTOCOL)
+    # Atomic write: temp file + rename (survives OOM kills)
+    temp_pkl = CHECKPOINT_PHASE1_FILE.with_suffix('.tmp')
+    temp_json = CHECKPOINT_PROGRESS_FILE.with_suffix('.tmp')
     
-    # Save progress info (JSON for readability)
-    with open(CHECKPOINT_PROGRESS_FILE, "w") as f:
-        json.dump(progress_info, f, indent=2)
-    
-    print(f"[CHECKPOINT] Saved: {len(lookup_table)} signals processed")
+    try:
+        # Save lookup table (binary pickle for speed)
+        with open(temp_pkl, "wb") as f:
+            pickle.dump({
+                "lookup_table": lookup_table,
+                "processed_signal_ids": processed_signal_ids,
+            }, f, protocol=pickle.HIGHEST_PROTOCOL)
+        
+        # Atomic rename (POSIX guarantees atomicity)
+        temp_pkl.rename(CHECKPOINT_PHASE1_FILE)
+        
+        # Save progress info (JSON for readability)
+        with open(temp_json, "w") as f:
+            json.dump(progress_info, f, indent=2)
+        temp_json.rename(CHECKPOINT_PROGRESS_FILE)
+        
+        print(f"[CHECKPOINT] Saved: {len(lookup_table)} signals processed")
+    except Exception as e:
+        print(f"[CHECKPOINT] Error saving: {e}")
+        # Clean up temp files if they exist
+        if temp_pkl.exists():
+            temp_pkl.unlink()
+        if temp_json.exists():
+            temp_json.unlink()
 
 def load_phase1_checkpoint() -> Optional[Tuple[Dict, List[int], Dict]]:
     """Load Phase 1 checkpoint if exists."""
