@@ -775,6 +775,7 @@ def precompute_all_strategies_batched(
         else:
             # Parallel processing
             print(f"[BATCH {batch_idx + 1}] Starting {num_workers} workers...")
+            batch_start_compute = datetime.now()
             with mp.Pool(processes=num_workers) as pool:
                 for sid, sig_results in pool.imap(process_single_signal, batch_signals, chunksize=5):
                     if sig_results is None:
@@ -783,6 +784,15 @@ def precompute_all_strategies_batched(
                         results_map[sid] = sig_results
                         processed_signal_ids.append(sid)
                         batch_processed += 1
+                    
+                    # Progress every 10 signals within batch
+                    batch_total = batch_processed + batch_skipped
+                    if batch_total % 10 == 0 and batch_total > 0:
+                        elapsed = (datetime.now() - batch_start_compute).total_seconds()
+                        speed = batch_total / elapsed if elapsed > 0 else 0
+                        remaining = len(batch_signals) - batch_total
+                        eta = remaining / speed if speed > 0 else 0
+                        print(f"[BATCH {batch_idx + 1}] {batch_total}/{len(batch_signals)} signals | {speed:.2f} sig/s | ETA: {eta:.0f}s", flush=True)
         
         total_processed += batch_processed
         total_skipped += batch_skipped
