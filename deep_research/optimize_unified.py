@@ -673,6 +673,165 @@ def precompute_all_strategies(
     
     return results_map
 
+def precompute_all_strategies_batched(
+    signals: List[SignalData],
+    strategy_grid: List[Dict],
+    num_workers: int = 8,
+    batch_size: int = 200,
+    preload_workers: int = 8,
+    resume: bool = True
+) -> Dict[int, Dict[int, Tuple[float, int]]]:
+    """Phase 1 BATCHED: Process signals in memory-efficient batches.
+    
+    Instead of loading ALL bars upfront (56GB), loads bars for batch_size signals at a time,
+    processes them with num_workers, then clears memory before next batch.
+    
+    Args:
+        signals: All signals to process
+        strategy_grid: All strategy combinations
+        num_workers: Workers for strategy computation (8 recommended)
+        batch_size: Signals per batch (200 = ~6GB memory)
+        preload_workers: DB connections for parallel bar loading
+        resume: Resume from checkpoint if available
+    
+    Returns: {signal_id: {strategy_idx: (pnl, last_exit_ts)}}
+    """
+    import gc
+    
+    total_signals = len(signals)
+    total_strategies = len(strategy_grid)
+    total_iterations = total_signals * total_strategies
+    num_batches = (total_signals + batch_size - 1) // batch_size
+    
+    print(f"\n{'='*70}")
+    print(f"[BATCHED] Phase 1: Strategy Pre-computation (Memory-Efficient Mode)")
+    print(f"{'='*70}")
+    print(f"  Signals: {total_signals:,} in {num_batches} batches of {batch_size}")
+    print(f"  Strategies per signal: {total_strategies:,}")
+    print(f"  Total iterations: {total_iterations:,}")
+    print(f"  Compute workers: {num_workers}")
+    print(f"  Preload workers: {preload_workers}")
+    print(f"  Expected memory: ~{batch_size * 30 // 1000}GB per batch (vs 56GB all at once)")
+    print(f"{'='*70}\n")
+    
+    results_map: Dict[int, Dict[int, Tuple[float, int]]] = {}
+    processed_signal_ids: List[int] = []
+    start_time = datetime.now()
+    total_processed = 0
+    total_skipped = 0
+    
+    # Try to resume from checkpoint
+    if resume:
+        checkpoint_data = load_phase1_checkpoint()
+        if checkpoint_data:
+            results_map, processed_signal_ids, progress_info = checkpoint_data
+            total_processed = progress_info.get("processed_count", len(results_map))
+            total_skipped = progress_info.get("skipped_count", 0)
+            print(f"[RESUME] Loaded checkpoint: {total_processed} signals already processed")
+    
+    # Filter out already processed signals
+    processed_set = set(processed_signal_ids)
+    signals_to_process = [s for s in signals if s.signal_id not in processed_set]
+    print(f"[BATCHED] {len(signals_to_process)} signals remaining to process\n")
+    
+    if not signals_to_process:
+        print("[BATCHED] All signals already processed!")
+        return results_map
+    
+    # Split into batches
+    batches = []
+    for i in range(0, len(signals_to_process), batch_size):
+        batches.append(signals_to_process[i:i + batch_size])
+    
+    global PHASE1_BARS_CACHE, PHASE1_STRATEGY_GRID
+    PHASE1_STRATEGY_GRID = strategy_grid
+    
+    for batch_idx, batch_signals in enumerate(batches):
+        batch_start = datetime.now()
+        batch_sids = [s.signal_id for s in batch_signals]
+        
+        print(f"\n{'='*50}")
+        print(f"[BATCH {batch_idx + 1}/{len(batches)}] Processing {len(batch_signals)} signals")
+        print(f"{'='*50}")
+        
+        # 1. Load bars for this batch only
+        print(f"[BATCH {batch_idx + 1}] Loading bars...")
+        batch_bars = preload_all_bars(batch_sids, preload_workers=preload_workers)
+        PHASE1_BARS_CACHE = batch_bars
+        
+        batch_processed = 0
+        batch_skipped = 0
+        
+        if num_workers <= 1:
+            # Sequential processing
+            for sig in batch_signals:
+                sid, sig_results = process_single_signal_sequential(sig, batch_bars, strategy_grid)
+                if sig_results is None:
+                    batch_skipped += 1
+                else:
+                    results_map[sid] = sig_results
+                    processed_signal_ids.append(sid)
+                    batch_processed += 1
+        else:
+            # Parallel processing
+            print(f"[BATCH {batch_idx + 1}] Starting {num_workers} workers...")
+            with mp.Pool(processes=num_workers) as pool:
+                for sid, sig_results in pool.imap(process_single_signal, batch_signals, chunksize=5):
+                    if sig_results is None:
+                        batch_skipped += 1
+                    else:
+                        results_map[sid] = sig_results
+                        processed_signal_ids.append(sid)
+                        batch_processed += 1
+        
+        total_processed += batch_processed
+        total_skipped += batch_skipped
+        
+        # 3. Clear batch memory
+        del batch_bars
+        PHASE1_BARS_CACHE = {}
+        gc.collect()
+        
+        batch_time = (datetime.now() - batch_start).total_seconds()
+        total_elapsed = (datetime.now() - start_time).total_seconds()
+        remaining_batches = len(batches) - batch_idx - 1
+        eta_seconds = (total_elapsed / (batch_idx + 1)) * remaining_batches if batch_idx > 0 else 0
+        
+        print(f"[BATCH {batch_idx + 1}] ✓ Done: {batch_processed:,} processed, {batch_skipped} skipped in {batch_time:.1f}s")
+        print(f"[PROGRESS] Total: {total_processed:,}/{total_signals:,} ({100*total_processed//total_signals}%) | ETA: {eta_seconds/60:.1f}m")
+        
+        # Save checkpoint after each batch
+        save_phase1_checkpoint(results_map, processed_signal_ids, {
+            "processed_count": total_processed,
+            "skipped_count": total_skipped,
+            "timestamp": datetime.now().isoformat(),
+            "total_signals": total_signals,
+            "batch_idx": batch_idx + 1,
+            "total_batches": len(batches),
+        })
+    
+    # Final summary
+    elapsed = (datetime.now() - start_time).total_seconds()
+    final_iters = total_processed * total_strategies
+    final_speed = final_iters / elapsed if elapsed > 0 else 0
+    
+    print(f"\n{'='*70}")
+    print(f"[BATCHED] ✅ Phase 1 Complete!")
+    print(f"  Processed: {total_processed:,} signals in {len(batches)} batches")
+    print(f"  Skipped: {total_skipped:,} (insufficient bars)")
+    print(f"  Total time: {elapsed:.1f}s ({elapsed/60:.1f} min)")
+    print(f"  Final speed: {final_speed/1000:,.1f}k iterations/sec")
+    print(f"{'='*70}\n")
+    
+    # Save final lookup table
+    lookup_file = CHECKPOINT_DIR / "phase1_lookup_table.pkl"
+    CHECKPOINT_DIR.mkdir(exist_ok=True)
+    with open(lookup_file, "wb") as f:
+        pickle.dump(results_map, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print(f"[SAFETY] Saved lookup table to {lookup_file} ({len(results_map)} signals)")
+    
+    return results_map
+
 def process_single_signal_sequential(
     sig: SignalData, 
     bars_cache: Dict[int, List[tuple]], 
@@ -796,6 +955,8 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="Limit number of filter configs (for testing)")
     parser.add_argument("--min-signals", type=int, default=5, help="Minimum signals required per filter (default 5)")
     parser.add_argument("--preload-workers", type=int, default=8, help="Number of DB connections for preload (default 8)")
+    parser.add_argument("--batched", action="store_true", help="Use memory-efficient batch processing (recommended)")
+    parser.add_argument("--batch-size", type=int, default=200, help="Signals per batch when --batched (default 200)")
     args = parser.parse_args()
 
     global MAX_WORKERS, MIN_SIGNALS_FOR_EVAL
@@ -826,43 +987,65 @@ def main():
         print("ERROR: No signals loaded. Exiting.")
         return
     
-    # 2. Load Bars
-    all_signal_ids = [s.signal_id for s in all_signals]
-    bars_cache = preload_all_bars(all_signal_ids, preload_workers=args.preload_workers)
-    
-    # 3. Filter signals with sufficient bars
-    signals_with_bars = [s for s in all_signals if s.signal_id in bars_cache and len(bars_cache[s.signal_id]) >= 100]
-    print(f"[PRELOAD] Signals with sufficient bars (>=100): {len(signals_with_bars)}")
-    
-    # Log score distribution to understand data
-    score_dist = {}
-    for s in signals_with_bars:
-        bucket = (s.score // 50) * 50
-        score_dist[bucket] = score_dist.get(bucket, 0) + 1
-    print("[PRELOAD] Score distribution:")
-    for score in sorted(score_dist.keys()):
-        print(f"  {score}-{score+49}: {score_dist[score]} signals")
-    
-    if not signals_with_bars:
-        print("No signals with sufficient data.")
-        return
-
     # 4. PRECOMPUTE ALL STRATEGIES (Lookup Table Generation)
     # Check for saved lookup_table first (Phase 2 crash recovery)
     lookup_table = load_lookup_table()
     if lookup_table:
         print(f"[RECOVERY] Using saved lookup table - skipping Phase 1!")
         print(f"[RECOVERY] This saves ~10 hours of computation!")
+        # Still need signals_with_bars for Phase 2
+        signals_with_bars = [s for s in all_signals if s.signal_id in lookup_table]
+    elif args.batched:
+        # BATCHED MODE: Memory-efficient, loads bars per batch
+        print(f"\n[MODE] Using BATCHED processing (--batched)")
+        print(f"[MODE] Batch size: {args.batch_size}, Workers: {MAX_WORKERS}\n")
+        
+        lookup_table = precompute_all_strategies_batched(
+            all_signals,
+            strategy_grid,
+            num_workers=MAX_WORKERS,
+            batch_size=args.batch_size,
+            preload_workers=args.preload_workers,
+            resume=True
+        )
+        # In batched mode, signals_with_bars = signals that have results
+        signals_with_bars = [s for s in all_signals if s.signal_id in lookup_table]
     else:
+        # ORIGINAL MODE: Load all bars upfront (requires lots of RAM)
+        print(f"\n[MODE] Using ORIGINAL processing (all bars in memory)")
+        print(f"[MODE] Consider --batched if running out of memory\n")
+        
+        # 2. Load Bars
+        all_signal_ids = [s.signal_id for s in all_signals]
+        bars_cache = preload_all_bars(all_signal_ids, preload_workers=args.preload_workers)
+        
+        # 3. Filter signals with sufficient bars
+        signals_with_bars = [s for s in all_signals if s.signal_id in bars_cache and len(bars_cache[s.signal_id]) >= 100]
+        print(f"[PRELOAD] Signals with sufficient bars (>=100): {len(signals_with_bars)}")
+        
+        # Log score distribution to understand data
+        score_dist = {}
+        for s in signals_with_bars:
+            bucket = (s.score // 50) * 50
+            score_dist[bucket] = score_dist.get(bucket, 0) + 1
+        print("[PRELOAD] Score distribution:")
+        for score in sorted(score_dist.keys()):
+            print(f"  {score}-{score+49}: {score_dist[score]} signals")
+        
+        if not signals_with_bars:
+            print("No signals with sufficient data.")
+            return
+
         # This runs 540 strategies for every signal once.
         lookup_table = precompute_all_strategies(signals_with_bars, bars_cache, strategy_grid, num_workers=MAX_WORKERS)
     
-    # Clean up bars_cache to free memory (we only need the lookup table now!)
-    del bars_cache
-    import gc
-    gc.collect()
-    print("[MEMORY] Cleared bars cache. Ready for optimization.")
-    crash_log("Phase 1 complete. bars_cache cleared.")
+        # Clean up bars_cache to free memory (we only need the lookup table now!)
+        del bars_cache
+        import gc
+        gc.collect()
+        print("[MEMORY] Cleared bars cache. Ready for optimization.")
+    
+    crash_log("Phase 1 complete.")
 
     print("="*70)
     print("PHASE 2: Running optimization (Lookup Table Mode - Ultra Fast)")
