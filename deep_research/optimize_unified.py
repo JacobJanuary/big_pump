@@ -696,7 +696,6 @@ def precompute_all_strategies_batched(
     
     Returns: {signal_id: {strategy_idx: (pnl, last_exit_ts)}}
     """
-    import gc
     
     total_signals = len(signals)
     total_strategies = len(strategy_grid)
@@ -1051,7 +1050,6 @@ def main():
     
         # Clean up bars_cache to free memory (we only need the lookup table now!)
         del bars_cache
-        import gc
         gc.collect()
         print("[MEMORY] Cleared bars cache. Ready for optimization.")
     
