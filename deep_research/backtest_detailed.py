@@ -431,8 +431,9 @@ def main():
         batch = signals[i : i+batch_size]
         sids = [b[0] for b in batch]
         
-        # Fetch bars for this batch (48 hours = 172800s to cover max_reentry + max_position)
-        bars_dict = fetch_bars_batch_extended(conn, sids, max_seconds=172800)
+        # Fetch bars for this batch (2 hours = 7200s to match optimizer's data window)
+        # CRITICAL: Optimizer uses 7200s limit in db_batch_utils.fetch_bars_batch()
+        bars_dict = fetch_bars_batch_extended(conn, sids, max_seconds=7200)
         
         for item in batch:
             sid, symbol, ts, entry_time, score, rsi, vol_zscore, oi_delta = item
