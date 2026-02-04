@@ -212,6 +212,11 @@ def run_simulation_detailed(bars, strategy_params, entry_ts=0):
     last_exit_price = bars[-1][1]
     
     comm_cost = COMMISSION_PCT * 2 * leverage
+    
+    # NEW: Track each individual trade for detailed logging
+    trades_log = []
+    current_trade_entry_price = entry_price
+    current_trade_entry_ts = first_entry_ts
 
     for idx in range(entry_idx, n):  # Start from entry_idx
         bar = bars[idx]
@@ -235,21 +240,36 @@ def run_simulation_detailed(bars, strategy_params, entry_ts=0):
                 # Check liquidation first
                 liquidation_threshold = 100.0 / leverage
                 if pnl_from_entry <= -liquidation_threshold:
-                    total_pnl += -100.0
+                    trade_pnl = -100.0
+                    total_pnl += trade_pnl
+                    exit_reason = "LIQ+TO"
                 else:
                     realized_pnl = max(pnl_from_entry * leverage, -100.0)
-                    total_pnl += (realized_pnl - comm_cost)
+                    trade_pnl = realized_pnl - comm_cost
+                    total_pnl += trade_pnl
+                    exit_reason = "Timeout"
+                trades_log.append({
+                    "entry_ts": current_trade_entry_ts, "entry_price": current_trade_entry_price,
+                    "exit_ts": ts, "exit_price": price, "duration": ts - current_trade_entry_ts,
+                    "pnl_pct": pnl_from_entry, "pnl_lev": trade_pnl, "reason": exit_reason
+                })
                 trade_count += 1
                 in_position = False
                 last_exit_ts = ts
-                last_exit_reason = "Timeout"
+                last_exit_reason = exit_reason
                 last_exit_price = price
                 continue
 
             # LIQUIDATION CHECK: position wiped out at 100/leverage % price drop
             liquidation_threshold = 100.0 / leverage  # e.g. 10% for lev=10
             if pnl_from_entry <= -liquidation_threshold:
-                total_pnl += -100.0  # Liquidated = 100% loss
+                trade_pnl = -100.0
+                total_pnl += trade_pnl
+                trades_log.append({
+                    "entry_ts": current_trade_entry_ts, "entry_price": current_trade_entry_price,
+                    "exit_ts": ts, "exit_price": price, "duration": ts - current_trade_entry_ts,
+                    "pnl_pct": pnl_from_entry, "pnl_lev": trade_pnl, "reason": "LIQUIDATED"
+                })
                 trade_count += 1
                 in_position = False
                 last_exit_ts = ts
@@ -259,8 +279,14 @@ def run_simulation_detailed(bars, strategy_params, entry_ts=0):
 
             # Stop-loss (only triggers if not liquidated first)
             if pnl_from_entry <= -sl_pct:
-                realized_pnl = max(pnl_from_entry * leverage, -100.0)  # Cap at -100% (use actual PnL, not sl_pct)
-                total_pnl += (realized_pnl - comm_cost)
+                realized_pnl = max(pnl_from_entry * leverage, -100.0)
+                trade_pnl = realized_pnl - comm_cost
+                total_pnl += trade_pnl
+                trades_log.append({
+                    "entry_ts": current_trade_entry_ts, "entry_price": current_trade_entry_price,
+                    "exit_ts": ts, "exit_price": price, "duration": ts - current_trade_entry_ts,
+                    "pnl_pct": pnl_from_entry, "pnl_lev": trade_pnl, "reason": "SL"
+                })
                 trade_count += 1
                 in_position = False
                 last_exit_ts = ts
@@ -283,8 +309,14 @@ def run_simulation_detailed(bars, strategy_params, entry_ts=0):
                     threshold = threshold * data_ratio
                 
                 if not (rolling_delta > threshold) and not (rolling_delta >= 0):
-                    realized_pnl = max(pnl_from_entry * leverage, -100.0)  # Cap at -100%
-                    total_pnl += (realized_pnl - comm_cost)
+                    realized_pnl = max(pnl_from_entry * leverage, -100.0)
+                    trade_pnl = realized_pnl - comm_cost
+                    total_pnl += trade_pnl
+                    trades_log.append({
+                        "entry_ts": current_trade_entry_ts, "entry_price": current_trade_entry_price,
+                        "exit_ts": ts, "exit_price": price, "duration": ts - current_trade_entry_ts,
+                        "pnl_pct": pnl_from_entry, "pnl_lev": trade_pnl, "reason": "Trailing"
+                    })
                     trade_count += 1
                     in_position = False
                     last_exit_ts = ts
@@ -307,7 +339,10 @@ def run_simulation_detailed(bars, strategy_params, entry_ts=0):
                             in_position = True
                             entry_price = price
                             max_price = price
-                            position_entry_ts = ts  # Track new position entry time
+                            position_entry_ts = ts
+                            # NEW: Update current trade tracking
+                            current_trade_entry_price = price
+                            current_trade_entry_ts = ts
                             last_exit_ts = 0
                 else:
                     max_price = price
@@ -315,18 +350,28 @@ def run_simulation_detailed(bars, strategy_params, entry_ts=0):
     # Close if still in position
     if in_position:
         final_price = bars[-1][1]
+        final_ts = bars[-1][0]
         pnl_pct = (final_price - entry_price) / entry_price * 100
         # Check for liquidation during hold period
         liquidation_threshold = 100.0 / leverage
         if pnl_pct <= -liquidation_threshold:
-            total_pnl += -100.0
+            trade_pnl = -100.0
+            total_pnl += trade_pnl
+            exit_reason = "LIQ+END"
         else:
-            realized_pnl = max(pnl_pct * leverage, -100.0)  # Cap at -100%
-            total_pnl += (realized_pnl - comm_cost)
+            realized_pnl = max(pnl_pct * leverage, -100.0)
+            trade_pnl = realized_pnl - comm_cost
+            total_pnl += trade_pnl
+            exit_reason = "EndData"
+        trades_log.append({
+            "entry_ts": current_trade_entry_ts, "entry_price": current_trade_entry_price,
+            "exit_ts": final_ts, "exit_price": final_price, "duration": final_ts - current_trade_entry_ts,
+            "pnl_pct": pnl_pct, "pnl_lev": trade_pnl, "reason": exit_reason
+        })
         trade_count += 1
-        last_exit_reason = "Timeout"
+        last_exit_reason = exit_reason
         last_exit_price = final_price
-        last_exit_ts = bars[-1][0]  # Set exit time to last bar
+        last_exit_ts = final_ts
 
     # Calculate average PnL per trade
     avg_pnl_per_trade = total_pnl / trade_count if trade_count > 0 else 0
@@ -340,6 +385,7 @@ def run_simulation_detailed(bars, strategy_params, entry_ts=0):
         "pnl": total_pnl,  # Total accumulated PnL
         "avg_pnl": avg_pnl_per_trade,  # Average per trade
         "trade_count": trade_count,
+        "trades_log": trades_log,  # NEW: Detailed per-trade log
     }
 
 
@@ -505,7 +551,8 @@ def main():
                     "TotalPnL%": round(total_pnl_pct, 2),  # Total accumulated
                     "PnL_USD": round(pnl_usd, 2),
                     "Capital_USD": round(capital_used, 2),
-                    "TradeCount": trade_count
+                    "TradeCount": trade_count,
+                    "trades_log": res.get("trades_log", [])  # NEW: Detailed per-trade log
                 })
         
         # Progress indicator
@@ -536,10 +583,10 @@ def main():
 
     # Console Output with Colors
     print("\n" + "="*160)
-    print(f"{'DETAILED TRADE LOG (with Dollar P&L)':^160}")
+    print(f"{'DETAILED TRADE LOG (with Individual Trades)':^160}")
     print("="*160)
-    print(f"{'DATE':<20} | {'SYMBOL':<12} | {'SCORE':<5} | {'DW':<5} | {'ENTRY':<10} | {'EXIT':<10} | {'DUR':<5} | {'TRADES':<6} | {'PNL%':<9} | {'PNL_$':<10} | {'BALANCE_$':<12} | {'REASON'}")
-    print("-" * 170)
+    print(f"{'DATE':<20} | {'SYMBOL':<12} | {'SCORE':<5} | {'DW':<5} | {'ENTRY':<10} | {'EXIT':<10} | {'TRADES':<6} | {'PNL%':<9} | {'PNL_$':<10} | {'BALANCE_$':<12} | {'REASON'}")
+    print("-" * 160)
 
     daily_pnl = {}  # "YYYY-MM-DD": pnl%
     daily_pnl_usd = {}  # "YYYY-MM-DD": $pnl
@@ -614,7 +661,21 @@ def main():
         color = GREEN if pnl > 0 else RED
         bal_color = GREEN if running_balance > 0 else RED
         
-        print(f"{date_str:<20} | {t['Symbol']:<12} | {t['Score']:<5} | {t['DeltaWindow']:<5} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['Duration(s)']:<5} | {t['TradeCount']:<6} | {color}{pnl_str:<9}{RESET} | {color}{pnl_usd_str:<10}{RESET} | {bal_color}{bal_str:<12}{RESET} | {t['Reason']}")
+        # Print signal header
+        print(f"{date_str:<20} | {t['Symbol']:<12} | {t['Score']:<5} | {t['DeltaWindow']:<5} | {t['Entry']:<10.5f} | {t['Exit']:<10.5f} | {t['TradeCount']:<6} | {color}{pnl_str:<9}{RESET} | {color}{pnl_usd_str:<10}{RESET} | {bal_color}{bal_str:<12}{RESET} | {t['Reason']}")
+        
+        # NEW: Print each individual trade from trades_log
+        trades_log = t.get("trades_log", [])
+        if trades_log:
+            for i, tl in enumerate(trades_log, 1):
+                entry_dt = datetime.fromtimestamp(tl["entry_ts"], tz=timezone.utc).strftime("%H:%M:%S")
+                exit_dt = datetime.fromtimestamp(tl["exit_ts"], tz=timezone.utc).strftime("%H:%M:%S")
+                dur_mins = int(tl["duration"] / 60)
+                dur_str = f"{dur_mins}m" if dur_mins < 60 else f"{dur_mins//60}h{dur_mins%60:02d}m"
+                tl_pnl_str = f"{tl['pnl_pct']:+.2f}%"
+                tl_lev_str = f"{tl['pnl_lev']:+.2f}%"
+                tl_color = GREEN if tl["pnl_lev"] > 0 else RED
+                print(f"   └─ Trade {i}: {entry_dt} → {exit_dt} ({dur_str}) | Entry: {tl['entry_price']:.6f} Exit: {tl['exit_price']:.6f} | {tl_color}PnL: {tl_pnl_str} x Lev = {tl_lev_str}{RESET} | {tl['reason']}")
 
     # -----------------------------------------------------------------------
     # 2. DAILY PERFORMANCE SUMMARY TABLE (with $ amounts)
