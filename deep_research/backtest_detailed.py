@@ -259,7 +259,7 @@ def run_simulation_detailed(bars, strategy_params, entry_ts=0):
 
             # Stop-loss (only triggers if not liquidated first)
             if pnl_from_entry <= -sl_pct:
-                realized_pnl = max(-sl_pct * leverage, -100.0)  # Cap at -100%
+                realized_pnl = max(pnl_from_entry * leverage, -100.0)  # Cap at -100% (use actual PnL, not sl_pct)
                 total_pnl += (realized_pnl - comm_cost)
                 trade_count += 1
                 in_position = False
@@ -282,7 +282,7 @@ def run_simulation_detailed(bars, strategy_params, entry_ts=0):
                     data_ratio = actual_window_size / delta_window
                     threshold = threshold * data_ratio
                 
-                if rolling_delta < threshold and rolling_delta < 0:
+                if not (rolling_delta > threshold) and not (rolling_delta >= 0):
                     realized_pnl = max(pnl_from_entry * leverage, -100.0)  # Cap at -100%
                     total_pnl += (realized_pnl - comm_cost)
                     trade_count += 1
