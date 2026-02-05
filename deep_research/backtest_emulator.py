@@ -402,15 +402,13 @@ class Backtester:
     @staticmethod
     def _fetch_chunk_bars(args):
         """Worker function for ThreadPoolExecutor"""
-        chunk_id, signal_ids, max_seconds = args
+        chunk_id, signal_ids = args
         try:
-            # print(f"   [Worker] Chunk {chunk_id}: Starting ({len(signal_ids)} signals)...")
             # Create NEW connection for this thread
             conn = get_db_connection()
             try:
-                # Use extended fetch with larger window
-                res = fetch_bars_batch_extended(conn, signal_ids, max_seconds=max_seconds)
-                # print(f"   [Worker] Chunk {chunk_id}: Finished ({sum(len(v) for v in res.values())} bars)")
+                # Use simplified fetch (no time filter, matches optimizer)
+                res = fetch_bars_batch_extended(conn, signal_ids)
                 return res
             finally:
                 conn.close()
@@ -422,19 +420,15 @@ class Backtester:
         """Fetch bars for all signals in parallel using threads."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
-        # 8h window (28800s) - covers max_position(4h) + re-entry buffer
-        # Was 48h but that's ~172k rows/signal - way too much
-        MAX_SECONDS = 28800 
-        
-        # Chunk logic - 10 signals per call to parallel worker
-        chunk_size = 10 
+        # Chunk logic - larger chunks for fewer DB round-trips
+        chunk_size = 50  # Match optimize_unified.py 
         chunks = []
         for i in range(0, len(signal_ids), chunk_size):
             # Pass chunk ID for debugging
-            chunks.append((i//chunk_size, signal_ids[i:i+chunk_size], MAX_SECONDS))
+            chunks.append((i//chunk_size, signal_ids[i:i+chunk_size]))
             
         print(f"[MEMORY] Preloading bars for {len(signal_ids)} signals using {workers} workers...")
-        print(f"[MEMORY] Chunk size: {chunk_size} signals/query. Target window: 8h.")
+        print(f"[MEMORY] Chunk size: {chunk_size} signals/query.")
         
         results_map = {}
         total_bars = 0
@@ -454,8 +448,8 @@ class Backtester:
                         total_bars += len(bars)
                 
                 completed += 1
-                if completed % 10 == 0 or completed == total_chunks:
-                    print(f"   Usage: {completed}/{total_chunks} chunks loaded ({len(results_map)} signals, {total_bars} bars)...", end='\r')
+                if completed % 5 == 0 or completed == total_chunks:
+                    print(f"   Loaded: {completed}/{total_chunks} chunks ({len(results_map)} signals, {total_bars:,} bars)...", end='\r')
                     
         print(f"\n[MEMORY] Loaded {total_bars:,} bars for {len(results_map)} signals.")
         return results_map

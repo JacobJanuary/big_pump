@@ -58,40 +58,30 @@ def fetch_bars_batch(conn, signal_ids: List[int]):
 
 
 def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75600):
-    """Fetch bars with configurable time window (default 21 hours).
+    """Fetch bars following optimize_unified.py approach.
     
-    Same as fetch_bars_batch but allows extending the time window for
-    timeout optimization testing.
-    PROCESSED IN CHUNKS to avoid timeouts.
+    Key insight: optimize_unified.py fetches ALL bars for a signal without SQL time filters,
+    as the bars in agg_trades_1s are already pre-aggregated per signal. Time filtering
+    happens in Python simulation, not in SQL.
     
-    Args:
-        conn: Database connection
-        signal_ids: List of signal IDs to fetch
-        max_seconds: Maximum seconds from entry_time (default 75600 = 21 hours)
-    
-    Returns:
-        Dict mapping signal_id to list of bar tuples
+    This approach is MUCH faster because it uses a simple index lookup on signal_analysis_id.
     """
     if not signal_ids:
         return {}
 
     result: Dict[int, List[Tuple[int, float, float, float, int, int, float, float]]] = {}
-    chunk_size = 20  # Was 5, increased to reduce query overhead
-    lookback_seconds = 3600  # For delta_window pre-calculation
+    chunk_size = 50  # Match optimize_unified.py chunk size
     
-    print(f"Fetching bars for {len(signal_ids)} signals with {lookback_seconds}s lookback...")
+    print(f"Fetching bars for {len(signal_ids)} signals...")
     
-    # Modified: start from entry_time - lookback_seconds for delta pre-fill
+    # SIMPLIFIED QUERY matching optimize_unified.py (no time filter!)
     sql = """
-        SELECT t.signal_analysis_id, t.second_ts, t.close_price, t.delta,
-               t.large_buy_count, t.large_sell_count,
-               t.buy_volume, t.sell_volume
-        FROM web.agg_trades_1s t
-        JOIN web.signal_analysis s ON s.id = t.signal_analysis_id
-        WHERE t.signal_analysis_id = ANY(%s)
-          AND t.second_ts >= (EXTRACT(EPOCH FROM s.entry_time)::bigint - %s)
-          AND t.second_ts <= (EXTRACT(EPOCH FROM s.entry_time)::bigint + %s)
-        ORDER BY t.signal_analysis_id, t.second_ts
+        SELECT signal_analysis_id, second_ts, close_price, delta,
+               large_buy_count, large_sell_count,
+               COALESCE(buy_volume, 0), COALESCE(sell_volume, 0)
+        FROM web.agg_trades_1s
+        WHERE signal_analysis_id = ANY(%s)
+        ORDER BY signal_analysis_id, second_ts
     """
     
     with conn.cursor() as cur:
@@ -99,12 +89,12 @@ def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75
             chunk = signal_ids[i : i + chunk_size]
             print(f"   Fetching chunk {i+1}-{min(i+chunk_size, len(signal_ids))}...", end='\r')
             
-            cur.execute(sql, (chunk, lookback_seconds, max_seconds))
+            cur.execute(sql, (chunk,))
             rows = cur.fetchall()
             
             # Bar tuple: (ts, price, delta, 0.0, large_buy, large_sell, buy_volume, sell_volume)
             for sid, ts, price, delta, buy_cnt, sell_cnt, buy_vol, sell_vol in rows:
-                result.setdefault(sid, []).append((ts, float(price), float(delta), 0.0, int(buy_cnt), int(sell_cnt), float(buy_vol or 0), float(sell_vol or 0)))
+                result.setdefault(sid, []).append((ts, float(price), float(delta), 0.0, int(buy_cnt), int(sell_cnt), float(buy_vol), float(sell_vol)))
                 
     print(f"\n   Data fetch complete. {len(result)} signals have data.")
     return result
