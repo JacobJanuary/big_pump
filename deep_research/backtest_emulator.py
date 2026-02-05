@@ -575,9 +575,11 @@ class Backtester:
     def _generate_report(self):
         from collections import defaultdict
         
-        print("\n" + "="*80)
-        print("BACKTEST RESULTS (AUDITED LOGIC)")
-        print("="*80)
+        print("\n" + "="*120)
+        print("DETAILED TRADE LOG")
+        print("="*120)
+        print(f"{'#':<5} {'Symbol':<12} {'Type':<10} {'Entry Time':<20} {'Entry $':<12} {'Exit Time':<20} {'Exit $':<12} {'Duration':<10} {'PnL %':<10} {'PnL $':<10} {'Reason':<15}")
+        print("-"*120)
         
         total_pnl_usd = 0.0
         total_trades = 0
@@ -585,10 +587,12 @@ class Backtester:
         
         csv_rows = []
         daily_pnl = defaultdict(float)  # {date_str: pnl_usd}
+        trade_num = 0
         
         for res in self.results:
             trade_seq = 0  # 0 = Initial entry, 1+ = Re-entry
             for t in res.trades:
+                trade_num += 1
                 pnl_dollars = POSITION_SIZE_USD * (t.pnl_realized_pct / 100.0)
                 total_pnl_usd += pnl_dollars
                 total_trades += 1
@@ -596,21 +600,34 @@ class Backtester:
                     winning_trades += 1
                 
                 # Extract date for daily grouping
+                entry_dt = datetime.fromtimestamp(t.entry_ts, tz=timezone.utc)
                 exit_dt = datetime.fromtimestamp(t.exit_ts, tz=timezone.utc)
                 date_str = exit_dt.strftime("%Y-%m-%d")
                 daily_pnl[date_str] += pnl_dollars
                 
+                # Calculate duration
+                duration_sec = t.exit_ts - t.entry_ts
+                hours = int(duration_sec // 3600)
+                mins = int((duration_sec % 3600) // 60)
+                duration_str = f"{hours}h {mins}m"
+                
                 # Determine trade type
                 trade_type = "INITIAL" if trade_seq == 0 else f"REENTRY_{trade_seq}"
+                
+                # Print trade details
+                pnl_sign = "+" if t.pnl_realized_pct >= 0 else ""
+                usd_sign = "+" if pnl_dollars >= 0 else ""
+                print(f"{trade_num:<5} {res.symbol:<12} {trade_type:<10} {entry_dt.strftime('%Y-%m-%d %H:%M'):<20} {t.entry_price:<12.4f} {exit_dt.strftime('%Y-%m-%d %H:%M'):<20} {t.exit_price:<12.4f} {duration_str:<10} {pnl_sign}{t.pnl_realized_pct:<9.2f} {usd_sign}${abs(pnl_dollars):<9.2f} {t.exit_reason:<15}")
                 
                 csv_rows.append({
                     "SignalID": res.signal_id,
                     "Symbol": res.symbol,
                     "TradeSeq": trade_seq,
                     "TradeType": trade_type,
-                    "EntryTime": datetime.fromtimestamp(t.entry_ts, tz=timezone.utc).isoformat(),
+                    "EntryTime": entry_dt.isoformat(),
                     "ExitTime": exit_dt.isoformat(),
                     "ExitDate": date_str,
+                    "DurationSec": duration_sec,
                     "EntryPrice": f"{t.entry_price:.6f}",
                     "ExitPrice": f"{t.exit_price:.6f}",
                     "PnL_Raw_Pct": f"{t.pnl_raw_pct:.2f}",
@@ -620,7 +637,9 @@ class Backtester:
                     "IsLiquidation": t.is_liquidated
                 })
                 trade_seq += 1
-
+        
+        print("="*120)
+        
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
         
         # Count re-entries
