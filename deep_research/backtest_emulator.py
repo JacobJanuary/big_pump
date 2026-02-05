@@ -422,20 +422,19 @@ class Backtester:
         """Fetch bars for all signals in parallel using threads."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
-        # 48h window (172800s)
-        MAX_SECONDS = 172800 
+        # 8h window (28800s) - covers max_position(4h) + re-entry buffer
+        # Was 48h but that's ~172k rows/signal - way too much
+        MAX_SECONDS = 28800 
         
-        # Chunk logic
-        # 50 was WAY too large (50 * 172k rows = 8.6M rows per query).
-        # Reduced to 4 signals per chunk (~700k rows/query), which is manageable.
-        chunk_size = 4 
+        # Chunk logic - 10 signals per call to parallel worker
+        chunk_size = 10 
         chunks = []
         for i in range(0, len(signal_ids), chunk_size):
             # Pass chunk ID for debugging
             chunks.append((i//chunk_size, signal_ids[i:i+chunk_size], MAX_SECONDS))
             
         print(f"[MEMORY] Preloading bars for {len(signal_ids)} signals using {workers} workers...")
-        print(f"[MEMORY] Chunk size: {chunk_size} signals/query. Target window: 48h.")
+        print(f"[MEMORY] Chunk size: {chunk_size} signals/query. Target window: 8h.")
         
         results_map = {}
         total_bars = 0

@@ -76,7 +76,7 @@ def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75
         return {}
 
     result: Dict[int, List[Tuple[int, float, float, float, int, int, float, float]]] = {}
-    chunk_size = 5
+    chunk_size = 20  # Was 5, increased to reduce query overhead
     lookback_seconds = 3600  # For delta_window pre-calculation
     
     print(f"Fetching bars for {len(signal_ids)} signals with {lookback_seconds}s lookback...")
