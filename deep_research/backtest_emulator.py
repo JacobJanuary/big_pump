@@ -573,6 +573,8 @@ class Backtester:
             self.stats["skipped_no_data"] += 1 
 
     def _generate_report(self):
+        from collections import defaultdict
+        
         print("\n" + "="*80)
         print("BACKTEST RESULTS (AUDITED LOGIC)")
         print("="*80)
@@ -582,34 +584,53 @@ class Backtester:
         winning_trades = 0
         
         csv_rows = []
+        daily_pnl = defaultdict(float)  # {date_str: pnl_usd}
         
         for res in self.results:
-            net_pnl_usd = 0.0
+            trade_seq = 0  # 0 = Initial entry, 1+ = Re-entry
             for t in res.trades:
                 pnl_dollars = POSITION_SIZE_USD * (t.pnl_realized_pct / 100.0)
-                net_pnl_usd += pnl_dollars
+                total_pnl_usd += pnl_dollars
                 total_trades += 1
                 if t.pnl_realized_pct > 0:
                     winning_trades += 1
                 
+                # Extract date for daily grouping
+                exit_dt = datetime.fromtimestamp(t.exit_ts, tz=timezone.utc)
+                date_str = exit_dt.strftime("%Y-%m-%d")
+                daily_pnl[date_str] += pnl_dollars
+                
+                # Determine trade type
+                trade_type = "INITIAL" if trade_seq == 0 else f"REENTRY_{trade_seq}"
+                
                 csv_rows.append({
                     "SignalID": res.signal_id,
                     "Symbol": res.symbol,
-                    "EntryTime": datetime.fromtimestamp(t.entry_ts, tz=timezone.utc),
-                    "ExitTime": datetime.fromtimestamp(t.exit_ts, tz=timezone.utc),
-                    "Type": "TRADE",
-                    "EntryPrice": t.entry_price,
-                    "ExitPrice": t.exit_price,
-                    "PnL_Pct": t.pnl_realized_pct,
-                    "PnL_USD": pnl_dollars,
-                    "Reason": t.exit_reason
+                    "TradeSeq": trade_seq,
+                    "TradeType": trade_type,
+                    "EntryTime": datetime.fromtimestamp(t.entry_ts, tz=timezone.utc).isoformat(),
+                    "ExitTime": exit_dt.isoformat(),
+                    "ExitDate": date_str,
+                    "EntryPrice": f"{t.entry_price:.6f}",
+                    "ExitPrice": f"{t.exit_price:.6f}",
+                    "PnL_Raw_Pct": f"{t.pnl_raw_pct:.2f}",
+                    "PnL_Realized_Pct": f"{t.pnl_realized_pct:.2f}",
+                    "PnL_USD": f"{pnl_dollars:.2f}",
+                    "ExitReason": t.exit_reason,
+                    "IsLiquidation": t.is_liquidated
                 })
-            total_pnl_usd += net_pnl_usd
+                trade_seq += 1
 
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
         
+        # Count re-entries
+        initial_trades = sum(1 for r in csv_rows if r["TradeSeq"] == 0)
+        reentry_trades = total_trades - initial_trades
+        
         print(f"Total Signals Processed: {len(self.results)}")
         print(f"Total Trades Executed:   {total_trades}")
+        print(f"  - Initial Entries:     {initial_trades}")
+        print(f"  - Re-entries:          {reentry_trades}")
         print(f"Win Rate:                {win_rate:.2f}%")
         print(f"Total PnL (USD):         ${total_pnl_usd:.2f} (Base ${POSITION_SIZE_USD}/trade)")
         print("-" * 80)
@@ -618,15 +639,51 @@ class Backtester:
         print(f"Skipped (No Data):       {self.stats['skipped_no_data']}")
         print("="*80)
         
+        # === DAILY PnL REPORT ===
+        print("\n" + "="*80)
+        print("DAILY PROFIT/LOSS REPORT")
+        print("="*80)
+        print(f"{'Date':<12} | {'Daily PnL':>12} | {'Cumulative':>12}")
+        print("-" * 42)
+        
+        cumulative = 0.0
+        for date_str in sorted(daily_pnl.keys()):
+            daily = daily_pnl[date_str]
+            cumulative += daily
+            sign = "+" if daily >= 0 else ""
+            cum_sign = "+" if cumulative >= 0 else ""
+            print(f"{date_str:<12} | {sign}${daily:>10.2f} | {cum_sign}${cumulative:>10.2f}")
+        
+        print("="*80)
+        
+        # === SAVE CSV ===
         out_file = PROJECT_ROOT / "backtest_trades.csv"
         with open(out_file, "w", newline='') as f:
             writer = csv.DictWriter(f, fieldnames=[
-                "SignalID", "Symbol", "EntryTime", "ExitTime", "Type", 
-                "EntryPrice", "ExitPrice", "PnL_Pct", "PnL_USD", "Reason"
+                "SignalID", "Symbol", "TradeSeq", "TradeType", 
+                "EntryTime", "ExitTime", "ExitDate",
+                "EntryPrice", "ExitPrice", 
+                "PnL_Raw_Pct", "PnL_Realized_Pct", "PnL_USD", 
+                "ExitReason", "IsLiquidation"
             ])
             writer.writeheader()
             writer.writerows(csv_rows)
-        print(f"Detailed trade log saved to: {out_file}")
+        print(f"\nDetailed trade log saved to: {out_file}")
+        
+        # === SAVE DAILY SUMMARY CSV ===
+        daily_file = PROJECT_ROOT / "backtest_daily_summary.csv"
+        with open(daily_file, "w", newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=["Date", "DailyPnL_USD", "CumulativePnL_USD"])
+            writer.writeheader()
+            cumulative = 0.0
+            for date_str in sorted(daily_pnl.keys()):
+                cumulative += daily_pnl[date_str]
+                writer.writerow({
+                    "Date": date_str,
+                    "DailyPnL_USD": f"{daily_pnl[date_str]:.2f}",
+                    "CumulativePnL_USD": f"{cumulative:.2f}"
+                })
+        print(f"Daily summary saved to: {daily_file}")
 
 # ==============================================================================
 # MAIN ENTRY
