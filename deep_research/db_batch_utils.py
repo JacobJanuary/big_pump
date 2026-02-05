@@ -41,7 +41,7 @@ def fetch_bars_batch(conn, signal_ids: List[int]):
         FROM web.agg_trades_1s t
         JOIN web.signal_analysis s ON s.id = t.signal_analysis_id
         WHERE t.signal_analysis_id = ANY(%s)
-          AND t.second_ts >= EXTRACT(EPOCH FROM s.entry_time)::bigint
+          AND t.second_ts >= (EXTRACT(EPOCH FROM s.entry_time)::bigint - 3600)  -- Load 1h history for indicator warmup
           AND t.second_ts <= (EXTRACT(EPOCH FROM s.entry_time)::bigint + 86400)  -- 24 hours to match max_position_hours
         ORDER BY t.signal_analysis_id, t.second_ts
     """
