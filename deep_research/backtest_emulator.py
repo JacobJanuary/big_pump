@@ -448,15 +448,15 @@ class Backtester:
         """Fetch bars for all signals in parallel using threads."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
-        # Chunk logic - larger chunks for fewer DB round-trips
-        chunk_size = 50  # Match optimize_unified.py 
+        # Chunk logic - MATCH optimize_unified.py exactly
+        chunk_size = 10  # Same as optimize_unified.py (was 50)
         chunks = []
         for i in range(0, len(signal_ids), chunk_size):
             # Pass chunk ID for debugging
             chunks.append((i//chunk_size, signal_ids[i:i+chunk_size]))
             
         print(f"[MEMORY] Preloading bars for {len(signal_ids)} signals using {workers} workers...")
-        print(f"[MEMORY] Chunk size: {chunk_size} signals/query.")
+        print(f"[MEMORY] Chunk size: {chunk_size} signals/query (matching optimize_unified.py)")
         
         results_map = {}
         total_bars = 0

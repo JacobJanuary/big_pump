@@ -58,27 +58,25 @@ def fetch_bars_batch(conn, signal_ids: List[int]):
 
 
 def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75600):
-    """Fetch bars following optimize_unified.py approach.
+    """Fetch bars following optimize_unified.py approach EXACTLY.
     
-    Key insight: optimize_unified.py fetches ALL bars for a signal without SQL time filters,
-    as the bars in agg_trades_1s are already pre-aggregated per signal. Time filtering
-    happens in Python simulation, not in SQL.
-    
-    This approach is MUCH faster because it uses a simple index lookup on signal_analysis_id.
+    Key insight from optimize_unified.py:
+    - No buy_volume/sell_volume (not needed for strategy)
+    - Simple query on signal_analysis_id only
+    - chunk_size = 10 (not 50)
     """
     if not signal_ids:
         return {}
 
     result: Dict[int, List[Tuple[int, float, float, float, int, int, float, float]]] = {}
-    chunk_size = 50  # Match optimize_unified.py chunk size
+    chunk_size = 10  # Match optimize_unified.py EXACTLY
     
-    print(f"Fetching bars for {len(signal_ids)} signals...")
+    print(f"Fetching bars for {len(signal_ids)} signals (chunk_size={chunk_size})...")
     
-    # SIMPLIFIED QUERY matching optimize_unified.py (no time filter!)
+    # EXACT query from optimize_unified.py (line 336-341)
     sql = """
         SELECT signal_analysis_id, second_ts, close_price, delta,
-               large_buy_count, large_sell_count,
-               COALESCE(buy_volume, 0), COALESCE(sell_volume, 0)
+               large_buy_count, large_sell_count
         FROM web.agg_trades_1s
         WHERE signal_analysis_id = ANY(%s)
         ORDER BY signal_analysis_id, second_ts
@@ -87,16 +85,19 @@ def fetch_bars_batch_extended(conn, signal_ids: List[int], max_seconds: int = 75
     with conn.cursor() as cur:
         for i in range(0, len(signal_ids), chunk_size):
             chunk = signal_ids[i : i + chunk_size]
-            print(f"   Fetching chunk {i+1}-{min(i+chunk_size, len(signal_ids))}...", end='\r')
+            print(f"   Chunk {i//chunk_size + 1}/{(len(signal_ids) + chunk_size - 1)//chunk_size}...", end='\r')
             
             cur.execute(sql, (chunk,))
             rows = cur.fetchall()
             
-            # Bar tuple: (ts, price, delta, 0.0, large_buy, large_sell, buy_volume, sell_volume)
-            for sid, ts, price, delta, buy_cnt, sell_cnt, buy_vol, sell_vol in rows:
-                result.setdefault(sid, []).append((ts, float(price), float(delta), 0.0, int(buy_cnt), int(sell_cnt), float(buy_vol), float(sell_vol)))
+            # Bar tuple format matching strategy emulator expectations
+            # (ts, price, delta, 0.0, large_buy, large_sell, buy_volume=0, sell_volume=0)
+            for sid, ts, price, delta, buy_cnt, sell_cnt in rows:
+                result.setdefault(sid, []).append(
+                    (ts, float(price), float(delta), 0.0, int(buy_cnt), int(sell_cnt), 0.0, 0.0)
+                )
                 
-    print(f"\n   Data fetch complete. {len(result)} signals have data.")
+    print(f"\n   Fetched {sum(len(v) for v in result.values()):,} bars for {len(result)} signals.")
     return result
 
 # ---------------------------------------------------------------------------
