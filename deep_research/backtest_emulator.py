@@ -427,60 +427,69 @@ class Backtester:
         
         return matched
 
-    @staticmethod
-    def _fetch_chunk_bars(args):
-        """Worker function for ThreadPoolExecutor"""
-        chunk_id, signal_ids = args
-        try:
-            # Create NEW connection for this thread
-            conn = get_db_connection()
-            try:
-                # Use simplified fetch (no time filter, matches optimizer)
-                res = fetch_bars_batch_extended(conn, signal_ids)
-                return res
-            finally:
-                conn.close()
-        except Exception as e:
-            print(f"[ERROR] Worker failed on chunk {chunk_id}: {e}")
-            return {}
-
     def preload_bars_parallel(self, signal_ids: List[int], workers: int = 8) -> Dict[int, List[tuple]]:
-        """Fetch bars for all signals in parallel using threads."""
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        """Load ALL bars for all signals in chunks (PARALLEL).
         
-        # Chunk logic - MATCH optimize_unified.py exactly
-        chunk_size = 10  # Same as optimize_unified.py (was 50)
+        EXACT COPY from optimize_unified.py (lines 304-369) for proven performance.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import threading
+        
+        print(f"[PRELOAD] Loading bars for {len(signal_ids)} signals using {workers} workers...")
+        bars_map: Dict[int, List[tuple]] = {}
+        bars_lock = threading.Lock()
+        chunk_size = 10  # Smaller chunks for better progress visibility
+        total_chunks = (len(signal_ids) + chunk_size - 1) // chunk_size
+        
+        # Split into chunks
         chunks = []
         for i in range(0, len(signal_ids), chunk_size):
-            # Pass chunk ID for debugging
-            chunks.append((i//chunk_size, signal_ids[i:i+chunk_size]))
-            
-        print(f"[MEMORY] Preloading bars for {len(signal_ids)} signals using {workers} workers...")
-        print(f"[MEMORY] Chunk size: {chunk_size} signals/query (matching optimize_unified.py)")
+            chunks.append((i // chunk_size, signal_ids[i:i + chunk_size]))
         
-        results_map = {}
-        total_bars = 0
+        completed = [0]  # Mutable counter for progress
         
+        def load_chunk(args):
+            chunk_idx, chunk = args
+            local_bars = {}
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT signal_analysis_id, second_ts, close_price, delta,
+                                   large_buy_count, large_sell_count
+                            FROM web.agg_trades_1s
+                            WHERE signal_analysis_id = ANY(%s)
+                            ORDER BY signal_analysis_id, second_ts
+                        """, (chunk,))
+                        rows = cur.fetchall()
+                        for row in rows:
+                            sid, ts, price, delta, buy, sell = row
+                            # Extended tuple format for strategy emulator
+                            local_bars.setdefault(sid, []).append(
+                                (ts, float(price), float(delta), 0.0, buy, sell, 0.0, 0.0)
+                            )
+                return (chunk_idx, local_bars, len(rows))
+            except Exception as e:
+                print(f"[PRELOAD] Chunk {chunk_idx} error: {e}")
+                return (chunk_idx, {}, 0)
+        
+        # Parallel execution
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            # Map returns results in order, but we can use as_completed for progress
-            futures = [executor.submit(self._fetch_chunk_bars, arg) for arg in chunks]
-            
-            completed = 0
-            total_chunks = len(futures)
+            futures = [executor.submit(load_chunk, chunk) for chunk in chunks]
             
             for future in as_completed(futures):
-                chunk_res = future.result()
-                if chunk_res:
-                    results_map.update(chunk_res)
-                    for bars in chunk_res.values():
-                        total_bars += len(bars)
+                chunk_idx, local_bars, row_count = future.result()
+                with bars_lock:
+                    for sid, bars in local_bars.items():
+                        bars_map.setdefault(sid, []).extend(bars)
+                    completed[0] += 1
                 
-                completed += 1
-                if completed % 5 == 0 or completed == total_chunks:
-                    print(f"   Loaded: {completed}/{total_chunks} chunks ({len(results_map)} signals, {total_bars:,} bars)...", end='\r')
-                    
-        print(f"\n[MEMORY] Loaded {total_bars:,} bars for {len(results_map)} signals.")
-        return results_map
+                # Progress every 10 chunks or at completion
+                if completed[0] % 10 == 0 or completed[0] == total_chunks:
+                    print(f"[PRELOAD] Progress: {completed[0]}/{total_chunks} chunks ({completed[0]*100//total_chunks}%)", flush=True)
+        
+        print(f"[PRELOAD] Bars loaded for {len(bars_map)} signals")
+        return bars_map
 
     def run(self, limit: int = 0, workers: int = 16):
         import time
