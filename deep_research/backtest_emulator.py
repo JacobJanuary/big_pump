@@ -402,20 +402,23 @@ class Backtester:
     @staticmethod
     def _fetch_chunk_bars(args):
         """Worker function for ThreadPoolExecutor"""
-        signal_ids, max_seconds = args
+        chunk_id, signal_ids, max_seconds = args
         try:
+            # print(f"   [Worker] Chunk {chunk_id}: Starting ({len(signal_ids)} signals)...")
             # Create NEW connection for this thread
             conn = get_db_connection()
             try:
                 # Use extended fetch with larger window
-                return fetch_bars_batch_extended(conn, signal_ids, max_seconds=max_seconds)
+                res = fetch_bars_batch_extended(conn, signal_ids, max_seconds=max_seconds)
+                # print(f"   [Worker] Chunk {chunk_id}: Finished ({sum(len(v) for v in res.values())} bars)")
+                return res
             finally:
                 conn.close()
         except Exception as e:
-            print(f"[ERROR] Worker failed: {e}")
+            print(f"[ERROR] Worker failed on chunk {chunk_id}: {e}")
             return {}
 
-    def preload_bars_parallel(self, signal_ids: List[int], workers: int = 16) -> Dict[int, List[tuple]]:
+    def preload_bars_parallel(self, signal_ids: List[int], workers: int = 8) -> Dict[int, List[tuple]]:
         """Fetch bars for all signals in parallel using threads."""
         from concurrent.futures import ThreadPoolExecutor, as_completed
         
@@ -423,13 +426,16 @@ class Backtester:
         MAX_SECONDS = 172800 
         
         # Chunk logic
-        chunk_size = 50  # 50 signals per DB query
+        # 50 was WAY too large (50 * 172k rows = 8.6M rows per query).
+        # Reduced to 4 signals per chunk (~700k rows/query), which is manageable.
+        chunk_size = 4 
         chunks = []
         for i in range(0, len(signal_ids), chunk_size):
-            chunks.append((signal_ids[i:i+chunk_size], MAX_SECONDS))
+            # Pass chunk ID for debugging
+            chunks.append((i//chunk_size, signal_ids[i:i+chunk_size], MAX_SECONDS))
             
         print(f"[MEMORY] Preloading bars for {len(signal_ids)} signals using {workers} workers...")
-        print(f"[MEMORY] RAM usage will increase significantly (target ~20-30GB for 2000 signals)")
+        print(f"[MEMORY] Chunk size: {chunk_size} signals/query. Target window: 48h.")
         
         results_map = {}
         total_bars = 0
@@ -449,8 +455,8 @@ class Backtester:
                         total_bars += len(bars)
                 
                 completed += 1
-                if completed % 5 == 0 or completed == total_chunks:
-                    print(f"   Usage: {completed}/{total_chunks} chunks loaded ({len(results_map)} signals)...", end='\r')
+                if completed % 10 == 0 or completed == total_chunks:
+                    print(f"   Usage: {completed}/{total_chunks} chunks loaded ({len(results_map)} signals, {total_bars} bars)...", end='\r')
                     
         print(f"\n[MEMORY] Loaded {total_bars:,} bars for {len(results_map)} signals.")
         return results_map
@@ -594,7 +600,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Audited Backtest Emulator")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of signals")
-    parser.add_argument("--workers", type=int, default=16, help="Parallel workers for data loading")
+    parser.add_argument("--workers", type=int, default=8, help="Parallel workers for data loading")
     args = parser.parse_args()
 
     db = get_db_connection()
