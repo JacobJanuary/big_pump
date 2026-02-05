@@ -298,6 +298,7 @@ class StrategyEmulator:
                                     # Note: This affects Duration check for the NEW position.
                                     # But for Re-entry Window check, we still use initial signal start.
                                     position_open_ts = ts 
+                                    last_exit_ts = 0  # Reset like optimizer (line 278)
                         else:
                             # CRITICAL FIX: Update max_price when price rises while waiting for re-entry
                             # This matches optimize_combined_leverage_filtered.py:279-280

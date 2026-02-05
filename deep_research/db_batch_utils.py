@@ -42,7 +42,7 @@ def fetch_bars_batch(conn, signal_ids: List[int]):
         JOIN web.signal_analysis s ON s.id = t.signal_analysis_id
         WHERE t.signal_analysis_id = ANY(%s)
           AND t.second_ts >= EXTRACT(EPOCH FROM s.entry_time)::bigint
-          AND t.second_ts <= (EXTRACT(EPOCH FROM s.entry_time)::bigint + 7200)
+          AND t.second_ts <= (EXTRACT(EPOCH FROM s.entry_time)::bigint + 86400)  -- 24 hours to match max_position_hours
         ORDER BY t.signal_analysis_id, t.second_ts
     """
     with conn.cursor() as cur:
