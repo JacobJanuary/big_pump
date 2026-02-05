@@ -616,8 +616,9 @@ class Backtester:
                 
                 # Print trade details
                 pnl_sign = "+" if t.pnl_realized_pct >= 0 else ""
-                usd_sign = "+" if pnl_dollars >= 0 else ""
-                print(f"{trade_num:<5} {res.symbol:<12} {trade_type:<10} {entry_dt.strftime('%Y-%m-%d %H:%M'):<20} {t.entry_price:<12.4f} {exit_dt.strftime('%Y-%m-%d %H:%M'):<20} {t.exit_price:<12.4f} {duration_str:<10} {pnl_sign}{t.pnl_realized_pct:<9.2f} {usd_sign}${abs(pnl_dollars):<9.2f} {t.exit_reason:<15}")
+                usd_str = f"+${pnl_dollars:.2f}" if pnl_dollars >= 0 else f"-${abs(pnl_dollars):.2f}"
+                print(f"{trade_num:<5} {res.symbol:<12} {trade_type:<10} {entry_dt.strftime('%Y-%m-%d %H:%M'):<20} {t.entry_price:<12.4f} {exit_dt.strftime('%Y-%m-%d %H:%M'):<20} {t.exit_price:<12.4f} {duration_str:<10} {pnl_sign}{t.pnl_realized_pct:<9.2f} {usd_str:<10} {t.exit_reason:<15}")
+
                 
                 csv_rows.append({
                     "SignalID": res.signal_id,
