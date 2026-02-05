@@ -495,7 +495,9 @@ class Backtester:
         print(f"[PRELOAD] Bars loaded for {len(bars_map)} signals")
         return bars_map
 
-    def run(self, limit: int = 0, workers: int = 16):
+    def run(self, limit: int = 0, workers: int = 2):
+        """Run backtest. Default workers=2 to avoid overwhelming DB."""
+
         import time
         t0 = time.time()
         
@@ -634,7 +636,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Audited Backtest Emulator")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of signals")
-    parser.add_argument("--workers", type=int, default=8, help="Parallel workers for data loading")
+    parser.add_argument("--workers", type=int, default=2, help="Parallel workers for data loading (default: 2 to avoid DB overload)")
     args = parser.parse_args()
 
     db = get_db_connection()
