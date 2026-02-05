@@ -360,6 +360,24 @@ class Backtester:
             "errors": 0
         }
 
+# ==============================================================================
+# PARALLEL BACKTESTER
+# ==============================================================================
+
+class Backtester:
+    def __init__(self, db_conn, strategy_file: Path):
+        self.conn = db_conn  # Only used for initial signal fetch in main thread
+        self.config = StrategyConfig(strategy_file)
+        self.active_positions = {} 
+        self.results = []
+        self.stats = {
+            "processed": 0,
+            "skipped_position": 0,
+            "skipped_strategy": 0,
+            "skipped_no_data": 0,
+            "errors": 0
+        }
+
     def fetch_signals(self) -> List[tuple]:
         """Fetch signals using EXACT query from optimize_unified.py"""
         print("[DATA] Fetching signals...")
@@ -379,88 +397,138 @@ class Backtester:
             rows = cur.fetchall()
             
         print(f"[DATA] Fetched {len(rows)} signals.")
-        # Sort by timestamp for Global Position Tracking (Audit 5.1)
-        # Row: 0=id, 1=sym, 2=ts, 3=entry_time
         return sorted(rows, key=lambda x: x[2])
 
-    def run(self, limit: int = 0):
+    @staticmethod
+    def _fetch_chunk_bars(args):
+        """Worker function for ThreadPoolExecutor"""
+        signal_ids, max_seconds = args
+        try:
+            # Create NEW connection for this thread
+            conn = get_db_connection()
+            try:
+                # Use extended fetch with larger window
+                return fetch_bars_batch_extended(conn, signal_ids, max_seconds=max_seconds)
+            finally:
+                conn.close()
+        except Exception as e:
+            print(f"[ERROR] Worker failed: {e}")
+            return {}
+
+    def preload_bars_parallel(self, signal_ids: List[int], workers: int = 16) -> Dict[int, List[tuple]]:
+        """Fetch bars for all signals in parallel using threads."""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        # 48h window (172800s)
+        MAX_SECONDS = 172800 
+        
+        # Chunk logic
+        chunk_size = 50  # 50 signals per DB query
+        chunks = []
+        for i in range(0, len(signal_ids), chunk_size):
+            chunks.append((signal_ids[i:i+chunk_size], MAX_SECONDS))
+            
+        print(f"[MEMORY] Preloading bars for {len(signal_ids)} signals using {workers} workers...")
+        print(f"[MEMORY] RAM usage will increase significantly (target ~20-30GB for 2000 signals)")
+        
+        results_map = {}
+        total_bars = 0
+        
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            # Map returns results in order, but we can use as_completed for progress
+            futures = [executor.submit(self._fetch_chunk_bars, arg) for arg in chunks]
+            
+            completed = 0
+            total_chunks = len(futures)
+            
+            for future in as_completed(futures):
+                chunk_res = future.result()
+                if chunk_res:
+                    results_map.update(chunk_res)
+                    for bars in chunk_res.values():
+                        total_bars += len(bars)
+                
+                completed += 1
+                if completed % 5 == 0 or completed == total_chunks:
+                    print(f"   Usage: {completed}/{total_chunks} chunks loaded ({len(results_map)} signals)...", end='\r')
+                    
+        print(f"\n[MEMORY] Loaded {total_bars:,} bars for {len(results_map)} signals.")
+        return results_map
+
+    def run(self, limit: int = 0, workers: int = 16):
+        import time
+        t0 = time.time()
+        
         signals = self.fetch_signals()
         
         if limit > 0:
-            print(f"[TEST] Limiting to first {limit} signals for verification.")
+            print(f"[TEST] Limiting to first {limit} signals.")
             signals = signals[:limit]
-        
-        # Process in batches to save memory
-        BATCH_SIZE = 100
-        total_signals = len(signals)
-        
-        for i in range(0, total_signals, BATCH_SIZE):
-            batch = signals[i:i+BATCH_SIZE]
-            signal_ids = [r[0] for r in batch]
             
-            # Fetch bars for batch
-            print(f"[Run] Processing batch {i//BATCH_SIZE + 1} ({len(batch)} signals)...")
-            try:
-                # max_seconds=172800 (48h) ensures coverage for max_reentry(24h) + max_hold(24h)
-                # This significantly speeds up data loading compared to fetching generic large windows
-                bars_map = fetch_bars_batch_extended(self.conn, signal_ids, max_seconds=172800)
-            except Exception as e:
-                print(f"[ERROR] Failed to fetch bars for batch: {e}")
-                self.stats["errors"] += len(batch)
-                continue
-
-            for row in batch:
-                self._process_signal(row, bars_map)
-                
-            self.stats["processed"] += len(batch)
+        total_signals = len(signals)
+        signal_ids = [r[0] for r in signals]
+        
+        # 1. PRELOAD EVERYTHING
+        # Using parallel DB fetch
+        bars_map = self.preload_bars_parallel(signal_ids, workers=workers)
+        
+        t1 = time.time()
+        print(f"[PERF] Data load took {t1-t0:.1f}s")
+        
+        # 2. PROCESS SIGNALS
+        # Processing is sequential due to Global Position Tracking (dependency on previous results)
+        # We cannot easily parallelize the strategy execution because trade N depends on trade N-1's exit time for the SAME PAIR.
+        # But we CAN parallelize *across* pairs if we group them? 
+        # Actually, Python execution of 2000 signals on in-memory data should be instant (<10s).
+        # Optimization: Group by pair, run pairs in parallel? 
+        # Let's stick to sequential first, it should be blazing fast with in-memory data.
+        
+        print("[CPU] Running simulations...")
+        
+        for row in signals:
+            self._process_signal(row, bars_map)
+            
+        t2 = time.time()
+        print(f"[PERF] Simulation took {t2-t1:.1f}s")
+        print(f"[PERF] Total time: {t2-t0:.1f}s")
             
         self._generate_report()
 
     def _process_signal(self, row, bars_map):
         sid, sym, ts, entry_time, score, rsi, vol, oi = row
         
-        # 1. Global Position Check (Audit 5.2)
-        # "If signal_timestamp < position_tracker_ts: SKIP SIGNAL"
-        signal_ts_epoch = ts.timestamp()
-        
+        # 1. Global Position Check
         if sym in self.active_positions:
+            # Check if pair is free at this signal's timestamp
             free_at = self.active_positions[sym]
-            if signal_ts_epoch < free_at:
+            if ts.timestamp() < free_at:
                 self.stats["skipped_position"] += 1
                 return
 
-        # 2. Strategy Lookup (Audit 3.2 / 6)
+        # 2. Strategy Lookup
         params, reject_reason = self.config.get_strategy(score, rsi, vol, oi)
         if not params:
-            # print(f"Skipped {sid}: {reject_reason}")
             self.stats["skipped_strategy"] += 1
             return
 
-        # 3. Data Check (Audit 7.3)
+        # 3. Data Check
         bars = bars_map.get(sid, [])
         if len(bars) < 100:
             self.stats["skipped_no_data"] += 1
             return
 
-        # 4. Simulation (Audit 4)
-        # "entry_time: Signal Timestamp + 17 minutes"
-        # Database 'entry_time' column already has this calculation?
-        # Audit 3.1: "entry_time: Signal Timestamp + 17 minutes"
-        # We use the 'entry_time' from DB.
+        # 4. Simulation
         entry_ts_epoch = entry_time.timestamp()
-        
         result = StrategyEmulator.run_simulation(bars, params, entry_ts_epoch)
         
         if result:
-            # Update result metadata
             result = result._replace(signal_id=sid, symbol=sym)
             self.results.append(result)
-            
-            # Update Global Tracker (Audit 5.2)
-            # "Update position_tracker_ts = last_exit_ts of the final trade"
+            # Update Global Tracker
             self.active_positions[sym] = result.final_exit_ts
+            self.stats["processed"] += 1
         else:
-            self.stats["skipped_no_data"] += 1 # Simulation failed (e.g. no bars after entry)
+            self.stats["skipped_no_data"] += 1 
 
     def _generate_report(self):
         print("\n" + "="*80)
@@ -474,11 +542,7 @@ class Backtester:
         csv_rows = []
         
         for res in self.results:
-            # Calculate USD PnL
-            # Audit: "Simulates the trade lifecycle"
-            # We assume fixed capital sizing for reporting
             net_pnl_usd = 0.0
-            
             for t in res.trades:
                 pnl_dollars = POSITION_SIZE_USD * (t.pnl_realized_pct / 100.0)
                 net_pnl_usd += pnl_dollars
@@ -486,7 +550,6 @@ class Backtester:
                 if t.pnl_realized_pct > 0:
                     winning_trades += 1
                 
-                # Add to CSV
                 csv_rows.append({
                     "SignalID": res.signal_id,
                     "Symbol": res.symbol,
@@ -499,12 +562,9 @@ class Backtester:
                     "PnL_USD": pnl_dollars,
                     "Reason": t.exit_reason
                 })
-            
             total_pnl_usd += net_pnl_usd
 
-        # Summary
         win_rate = (winning_trades / total_trades * 100) if total_trades > 0 else 0
-        roi = 0 # Need accurate capital base for ROI, using simplified PnL sum
         
         print(f"Total Signals Processed: {len(self.results)}")
         print(f"Total Trades Executed:   {total_trades}")
@@ -516,7 +576,6 @@ class Backtester:
         print(f"Skipped (No Data):       {self.stats['skipped_no_data']}")
         print("="*80)
         
-        # Save CSV
         out_file = PROJECT_ROOT / "backtest_trades.csv"
         with open(out_file, "w", newline='') as f:
             writer = csv.DictWriter(f, fieldnames=[
@@ -532,21 +591,20 @@ class Backtester:
 # ==============================================================================
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Audited Backtest Emulator")
+    parser.add_argument("--limit", type=int, default=0, help="Limit number of signals")
+    parser.add_argument("--workers", type=int, default=16, help="Parallel workers for data loading")
+    args = parser.parse_args()
+
     db = get_db_connection()
     try:
-        idx_arg = -1
-        limit_val = 0
-        if "--limit" in sys.argv:
-            idx_arg = sys.argv.index("--limit")
-            if idx_arg + 1 < len(sys.argv):
-                limit_val = int(sys.argv[idx_arg+1])
-        
         strategy_path = PROJECT_ROOT / "composite_strategy.json"
         if not strategy_path.exists():
             print(f"Error: {strategy_path} not found.")
             sys.exit(1)
             
         tester = Backtester(db, strategy_path)
-        tester.run(limit=limit_val)
+        tester.run(limit=args.limit, workers=args.workers)
     finally:
         db.close()
