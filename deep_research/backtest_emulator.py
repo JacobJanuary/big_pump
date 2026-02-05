@@ -675,12 +675,11 @@ class Backtester:
         
         print("="*80)
         
-        # === SAVE CSV ===
         out_file = PROJECT_ROOT / "backtest_trades.csv"
         with open(out_file, "w", newline='') as f:
             writer = csv.DictWriter(f, fieldnames=[
                 "SignalID", "Symbol", "TradeSeq", "TradeType", 
-                "EntryTime", "ExitTime", "ExitDate",
+                "EntryTime", "ExitTime", "ExitDate", "DurationSec",
                 "EntryPrice", "ExitPrice", 
                 "PnL_Raw_Pct", "PnL_Realized_Pct", "PnL_USD", 
                 "ExitReason", "IsLiquidation"
