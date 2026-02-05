@@ -298,6 +298,10 @@ class StrategyEmulator:
                                     # Note: This affects Duration check for the NEW position.
                                     # But for Re-entry Window check, we still use initial signal start.
                                     position_open_ts = ts 
+                        else:
+                            # CRITICAL FIX: Update max_price when price rises while waiting for re-entry
+                            # This matches optimize_combined_leverage_filtered.py:279-280
+                            max_price = price
                 else:
                     # Re-entry window closed, and we are not in position.
                     # Nothing more to do.
