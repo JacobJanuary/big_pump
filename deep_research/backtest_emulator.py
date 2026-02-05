@@ -396,8 +396,35 @@ class Backtester:
             cur.execute(query)
             rows = cur.fetchall()
             
-        print(f"[DATA] Fetched {len(rows)} signals.")
-        return sorted(rows, key=lambda x: x[2])
+        print(f"[DATA] Fetched {len(rows)} raw signals.")
+        
+        # Pre-filter: keep only signals that match AT LEAST ONE rule in composite_strategy.json
+        filtered = self._pre_filter_signals(rows)
+        print(f"[DATA] After pre-filter: {len(filtered)} signals match strategy rules.")
+        
+        return sorted(filtered, key=lambda x: x[2])
+    
+    def _pre_filter_signals(self, signals: List[tuple]) -> List[tuple]:
+        """Filter signals to only those matching at least one rule in composite_strategy.json.
+        
+        This dramatically reduces the number of signals we need to fetch bars for.
+        Signal tuple: (id, pair, signal_ts, entry_time, score, rsi, vol_zscore, oi_delta)
+        """
+        matched = []
+        for signal in signals:
+            sid, pair, sig_ts, entry_time, score, rsi, vol_zscore, oi_delta = signal
+            
+            # Check if signal matches ANY rule
+            for rule in self.config.rules:
+                flt = rule["filter"]
+                if (flt["score_min"] <= score < flt["score_max"] and
+                    rsi >= flt["rsi_min"] and
+                    vol_zscore >= flt["vol_min"] and
+                    oi_delta >= flt["oi_min"]):
+                    matched.append(signal)
+                    break  # No need to check other rules once matched
+        
+        return matched
 
     @staticmethod
     def _fetch_chunk_bars(args):
