@@ -416,8 +416,9 @@ class Backtester:
             
             # Check if signal matches ANY rule
             for rule in self.config.rules:
-                flt = rule["filter"]
-                if (flt["score_min"] <= score < flt["score_max"] and
+                r_min, r_max = rule["range"]
+                flt = rule["filter_criteria"]
+                if (r_min <= score < r_max and
                     rsi >= flt["rsi_min"] and
                     vol_zscore >= flt["vol_min"] and
                     oi_delta >= flt["oi_min"]):
