@@ -17,3 +17,4 @@ config.py
 
 # Системные файлы
 .DS_Store
+composite_strategy.json
