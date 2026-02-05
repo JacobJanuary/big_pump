@@ -438,8 +438,10 @@ class Backtester:
         print(f"[PRELOAD] Loading bars for {len(signal_ids)} signals using {workers} workers...")
         bars_map: Dict[int, List[tuple]] = {}
         bars_lock = threading.Lock()
-        chunk_size = 10  # Smaller chunks for better progress visibility
+        chunk_size = 5  # Smaller chunks for FASTER feedback
         total_chunks = (len(signal_ids) + chunk_size - 1) // chunk_size
+        
+        print(f"[PRELOAD] Total chunks: {total_chunks} (chunk_size={chunk_size})")
         
         # Split into chunks
         chunks = []
@@ -452,6 +454,7 @@ class Backtester:
             chunk_idx, chunk = args
             local_bars = {}
             try:
+                print(f"   [W] Chunk {chunk_idx+1}/{total_chunks} starting...", flush=True)
                 with get_db_connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute("""
@@ -468,9 +471,10 @@ class Backtester:
                             local_bars.setdefault(sid, []).append(
                                 (ts, float(price), float(delta), 0.0, buy, sell, 0.0, 0.0)
                             )
+                print(f"   [W] Chunk {chunk_idx+1}/{total_chunks} done: {len(rows):,} rows", flush=True)
                 return (chunk_idx, local_bars, len(rows))
             except Exception as e:
-                print(f"[PRELOAD] Chunk {chunk_idx} error: {e}")
+                print(f"[PRELOAD] Chunk {chunk_idx} error: {e}", flush=True)
                 return (chunk_idx, {}, 0)
         
         # Parallel execution
@@ -485,7 +489,7 @@ class Backtester:
                     completed[0] += 1
                 
                 # Progress every 10 chunks or at completion
-                if completed[0] % 10 == 0 or completed[0] == total_chunks:
+                if completed[0] % 20 == 0 or completed[0] == total_chunks:
                     print(f"[PRELOAD] Progress: {completed[0]}/{total_chunks} chunks ({completed[0]*100//total_chunks}%)", flush=True)
         
         print(f"[PRELOAD] Bars loaded for {len(bars_map)} signals")
