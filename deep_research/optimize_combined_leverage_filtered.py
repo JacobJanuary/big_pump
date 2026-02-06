@@ -183,20 +183,42 @@ def run_strategy_fast(
     cumsum_delta = precomputed['cumsum_delta']
     avg_delta_arr = precomputed['avg_delta_arr']
     entry_idx = precomputed.get('entry_idx', 0)  # NEW: start trading from this index
+    entry_ts_original = precomputed.get('entry_ts', 0) # Original entry_ts from precompute_bars
     
     # Skip if no trading bars after entry point
     if entry_idx >= n:
-        return 0.0, 0
+        return 0.0, 0, 0, 0, 0, 0
     
-    # Trading starts from entry_idx (lookback bars [0:entry_idx] are for delta calculation only)
-    entry_price = bars[entry_idx][1]
-    max_price = entry_price
-    last_exit_ts = 0
-    in_position = True
+    # Track statistics
+    trade_count = 0
+    ts_exits = 0
+    sl_exits = 0
+    timeout_exits = 0
     total_pnl = 0.0
+    
+    # Initialize state
+    ts = 0  # ensure variable exists
+    if entry_ts_original > 0: # If an explicit entry_ts was provided, we start not in position
+        in_position = False
+        entry_price = 0.0
+        max_price = 0.0
+        position_entry_ts = 0
+        last_exit_ts = 0  # 0 means "ready to enter immediately" (subject to cooldown)
+    else:
+        # Legacy/Testing: Assume start ON ENTRY if no explicit entry_ts was given (entry_ts=0)
+        # This means we start at the first bar (entry_idx=0) already in a position.
+        in_position = True
+        entry_price = bars[entry_idx][1]
+        max_price = entry_price
+        position_entry_ts = bars[entry_idx][0]
+        last_exit_ts = 0
+        
+        # Count the INITIAL position
+        trade_count += 1
+
     comm_cost = COMMISSION_PCT * 2 * leverage
     signal_start_ts = bars[entry_idx][0]  # Timestamp of signal start for reentry limit
-    position_entry_ts = signal_start_ts  # Track when current position was opened
+    # position_entry_ts is already set above based on initial state
     
     for idx in range(entry_idx, n):  # NEW: loop starts from entry_idx
         bar = bars[idx]
@@ -215,9 +237,11 @@ def run_strategy_fast(
                 liquidation_threshold = 100.0 / leverage
                 if pnl_from_entry <= -liquidation_threshold:
                     total_pnl += -100.0
+                    sl_exits += 1  # Liquidation is a bad loss
                 else:
                     realized_pnl = max(pnl_from_entry * leverage, -100.0)
                     total_pnl += (realized_pnl - comm_cost)
+                    timeout_exits += 1 # Timed out
                 in_position = False
                 last_exit_ts = ts
                 continue
@@ -228,6 +252,7 @@ def run_strategy_fast(
                 total_pnl += -100.0  # Liquidated = 100% loss (no commission matters)
                 in_position = False
                 last_exit_ts = ts
+                sl_exits += 1
                 continue
             
             # Stop-loss (only triggers if not liquidated first)
@@ -236,6 +261,7 @@ def run_strategy_fast(
                 total_pnl += (realized_pnl - comm_cost)
                 in_position = False
                 last_exit_ts = ts
+                sl_exits += 1
                 continue
             
             # Trailing / momentum exit (using parameterized constants)
@@ -259,6 +285,7 @@ def run_strategy_fast(
                     in_position = False
                     last_exit_ts = ts
                     max_price = price
+                    ts_exits += 1 # Trailing Momentum Exit (Target)
                     continue
         else:
             # Re-entry logic (using parameterized constants)
@@ -276,6 +303,7 @@ def run_strategy_fast(
                             max_price = price
                             position_entry_ts = ts  # Track new position entry time
                             last_exit_ts = 0
+                            trade_count += 1
                 else:
                     max_price = price
     
@@ -287,12 +315,14 @@ def run_strategy_fast(
         liquidation_threshold = 100.0 / leverage
         if pnl <= -liquidation_threshold:
             total_pnl += -100.0
+            sl_exits += 1
         else:
             realized_pnl = max(pnl * leverage, -100.0)  # Cap at -100%
             total_pnl += (realized_pnl - comm_cost)
+            timeout_exits += 1 # End of file timeout
         last_exit_ts = bars[-1][0]
     
-    return total_pnl, last_exit_ts
+    return total_pnl, last_exit_ts, trade_count, ts_exits, sl_exits, timeout_exits
 
 # Backwards compatibility wrapper
 def run_strategy(

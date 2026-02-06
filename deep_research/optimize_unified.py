@@ -521,7 +521,7 @@ def process_single_signal(sig: SignalData) -> Tuple[int, Dict[int, Tuple[float, 
     
     sig_results = {}
     for s_idx, sp in enumerate(PHASE1_STRATEGY_GRID):
-        pnl, last_ts = run_strategy_fast(
+        pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
             precomputed,
             sp["sl_pct"],
             sp["delta_window"],
@@ -534,7 +534,7 @@ def process_single_signal(sig: SignalData) -> Tuple[int, Dict[int, Tuple[float, 
             sp.get("max_reentry_hours", 0) * 3600,  # Convert hours to seconds
             sp.get("max_position_hours", 0) * 3600,  # Convert hours to seconds
         )
-        sig_results[s_idx] = (pnl, last_ts)
+        sig_results[s_idx] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
     
     return (sid, sig_results)
 
@@ -861,7 +861,7 @@ def process_single_signal_sequential(
     
     sig_results = {}
     for s_idx, sp in enumerate(strategy_grid):
-        pnl, last_ts = run_strategy_fast(
+        pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
             precomputed,
             sp["sl_pct"],
             sp["delta_window"],
@@ -874,7 +874,7 @@ def process_single_signal_sequential(
             sp.get("max_reentry_hours", 0) * 3600,  # Convert hours to seconds
             sp.get("max_position_hours", 0) * 3600,  # Convert hours to seconds
         )
-        sig_results[s_idx] = (pnl, last_ts)
+        sig_results[s_idx] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
     
     return (sid, sig_results)
 
@@ -908,7 +908,10 @@ def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple
         by_pair.setdefault(s.pair, []).append(SignalInfo(s.signal_id, s.pair, s.timestamp))
 
     # 3. Sum results from LOOKUP TABLE
-    aggregated: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
+    aggregated_pnl: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
+    aggregated_trades: Dict[int, int] = {i: 0 for i in range(len(strategy_grid))}
+    aggregated_ts_wins: Dict[int, int] = {i: 0 for i in range(len(strategy_grid))}
+    
     total_processed_signals = 0
     
     for pair, pair_signals in by_pair.items():
@@ -929,14 +932,31 @@ def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple
             
             # Add PnL for all strategies
             max_last_ts = position_tracker_ts
-            for s_idx, (pnl, last_ts) in sig_res.items():
-                aggregated[s_idx] += pnl
+            for s_idx, (pnl, last_ts, t_cnt, ts_wins, sl_ex, to_ex) in sig_res.items():
+                aggregated_pnl[s_idx] += pnl
+                aggregated_trades[s_idx] += t_cnt
+                aggregated_ts_wins[s_idx] += ts_wins
+                
                 if last_ts > max_last_ts:
                     max_last_ts = last_ts
                     
             position_tracker_ts = max_last_ts
+            
+    # Compile final results
+    final_results = {}
+    for s_idx in aggregated_pnl:
+        trades = aggregated_trades[s_idx]
+        ts_wins = aggregated_ts_wins[s_idx]
+        win_rate = (ts_wins / trades) if trades > 0 else 0.0
+        
+        final_results[s_idx] = {
+            "total_pnl": aggregated_pnl[s_idx],
+            "win_rate": win_rate,     # The NEW quality metric
+            "total_trades": trades,
+            "ts_wins": ts_wins
+        }
 
-    return filter_cfg, aggregated, total_processed_signals
+    return filter_cfg, final_results, total_processed_signals
 
 # ---------------------------------------------------------------------------
 # Evaluate a single filter configuration (PRELOADED VERSION - no SQL)
@@ -1093,12 +1113,26 @@ def main():
         for task in iterator:
             cfg, agg, count = _evaluate_filter_wrapper_lookup(task)
             if agg:
-                best_sid = max(agg, key=lambda k: agg[k])
+
+                # agg is now Dict[int, Dict[str, float]]
+                # Find best strategy by PnL (or should valid winrate be the key? sticking to PnL for now but displaying stats)
+                # Actually, user wants to filter by winrate, but this script just Outputs them.
+                # Let's still sort by PnL but include WinRate in metrics.
+                best_sid = max(agg, key=lambda k: agg[k]["total_pnl"])
+                best_stats = agg[best_sid]
                 best_params = strategy_grid[best_sid]
+                
                 result_entry = {
                     "filter": cfg,
                     "strategy": best_params,
-                    "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid, "signal_count": count},
+                    "metrics": {
+                        "total_pnl": best_stats["total_pnl"],
+                        "win_rate": best_stats["win_rate"], # NEW METRIC
+                        "total_trades": best_stats["total_trades"],
+                        "ts_wins": best_stats["ts_wins"],
+                        "strategy_id": best_sid,
+                        "signal_count": count
+                    },
                 }
                 
                 # Stream to JSONL immediately (no memory accumulation)
@@ -1150,12 +1184,21 @@ def main():
 
                 for cfg, agg, count in iterator:
                     if agg:
-                        best_sid = max(agg, key=lambda k: agg[k])
+                        # agg is Dict[int, Dict[str, float]] with keys: total_pnl, win_rate, total_trades, ts_wins
+                        best_sid = max(agg, key=lambda k: agg[k]["total_pnl"])
+                        best_stats = agg[best_sid]
                         best_params = strategy_grid[best_sid]
                         result_entry = {
                             "filter": cfg,
                             "strategy": best_params,
-                            "metrics": {"total_pnl": agg[best_sid], "strategy_id": best_sid, "signal_count": count},
+                            "metrics": {
+                                "total_pnl": best_stats["total_pnl"],
+                                "win_rate": best_stats["win_rate"],
+                                "total_trades": best_stats["total_trades"],
+                                "ts_wins": best_stats["ts_wins"],
+                                "strategy_id": best_sid,
+                                "signal_count": count
+                            },
                         }
                         
                         # Stream to JSONL immediately (no memory accumulation)
