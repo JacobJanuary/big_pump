@@ -370,16 +370,19 @@ class Backtester:
 # ==============================================================================
 
 class Backtester:
-    def __init__(self, db_conn, strategy_file: Path):
+    def __init__(self, db_conn, strategy_file: Path, daily_loss_cap: float = 0):
         self.conn = db_conn  # Only used for initial signal fetch in main thread
         self.config = StrategyConfig(strategy_file)
         self.active_positions = {} 
         self.results = []
+        self.daily_loss_cap = daily_loss_cap  # 0 = disabled
+        self.daily_pnl = {}  # {date_str: cumulative_pnl_usd}
         self.stats = {
             "processed": 0,
             "skipped_position": 0,
             "skipped_strategy": 0,
             "skipped_no_data": 0,
+            "skipped_daily_cap": 0,
             "errors": 0
         }
 
@@ -544,6 +547,14 @@ class Backtester:
     def _process_signal(self, row, bars_map):
         sid, sym, ts, entry_time, score, rsi, vol, oi = row
         
+        # 0. Daily Loss Cap Check
+        if self.daily_loss_cap > 0:
+            signal_date = ts.strftime('%Y-%m-%d')
+            day_pnl = self.daily_pnl.get(signal_date, 0)
+            if day_pnl < -self.daily_loss_cap:
+                self.stats["skipped_daily_cap"] += 1
+                return
+
         # 1. Global Position Check
         if sym in self.active_positions:
             # Check if pair is free at this signal's timestamp
@@ -574,6 +585,12 @@ class Backtester:
             # Update Global Tracker
             self.active_positions[sym] = result.final_exit_ts
             self.stats["processed"] += 1
+            # Update daily PnL tracker (for daily loss cap)
+            if self.daily_loss_cap > 0:
+                for trade in result.trades:
+                    trade_date = datetime.fromtimestamp(trade.exit_ts).strftime('%Y-%m-%d')
+                    pnl_usd = POSITION_SIZE_USD * (trade.pnl_realized_pct / 100.0)
+                    self.daily_pnl[trade_date] = self.daily_pnl.get(trade_date, 0) + pnl_usd
         else:
             self.stats["skipped_no_data"] += 1 
 
@@ -662,6 +679,8 @@ class Backtester:
         print(f"Skipped (Position Busy): {self.stats['skipped_position']}")
         print(f"Skipped (Strategy Filt): {self.stats['skipped_strategy']}")
         print(f"Skipped (No Data):       {self.stats['skipped_no_data']}")
+        if self.daily_loss_cap > 0:
+            print(f"Skipped (Daily Cap):     {self.stats['skipped_daily_cap']}")
         print("="*80)
         
         # === DAILY PnL REPORT ===
@@ -718,7 +737,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audited Backtest Emulator")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of signals")
     parser.add_argument("--workers", type=int, default=2, help="Parallel workers for data loading (default: 2 to avoid DB overload)")
+    parser.add_argument("--daily-cap", type=float, default=0, help="Daily loss cap in USD (0=disabled). After cumulative daily losses exceed this, skip new signals.")
     args = parser.parse_args()
+
+    if args.daily_cap > 0:
+        print(f"[CONFIG] Daily loss cap: ${args.daily_cap:.0f}")
 
     db = get_db_connection()
     try:
@@ -727,7 +750,7 @@ if __name__ == "__main__":
             print(f"Error: {strategy_path} not found.")
             sys.exit(1)
             
-        tester = Backtester(db, strategy_path)
+        tester = Backtester(db, strategy_path, daily_loss_cap=args.daily_cap)
         tester.run(limit=args.limit, workers=args.workers)
     finally:
         db.close()

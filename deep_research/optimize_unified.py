@@ -145,6 +145,117 @@ def load_lookup_table() -> Optional[Dict[int, Dict[int, Tuple[float, int]]]]:
         print(f"[RECOVERY] Error loading lookup table: {e}")
         return None
 
+
+# ---------------------------------------------------------------------------
+# Precomputed bars cache (save/load for rapid grid iteration)
+# ---------------------------------------------------------------------------
+
+def save_precomputed_bars(
+    signals: List,
+    bars_cache: Dict[int, List[tuple]],
+    output_path: Path,
+    preload_workers: int = 8,
+    batch_size: int = 200
+):
+    """Save precomputed bar data to disk for reuse across grid runs.
+    
+    For each signal: loads bars + runs precompute_bars() → saves to pickle.
+    This captures the expensive DB-loading step (~18h) so that subsequent
+    runs with different strategy grids can skip it entirely.
+    
+    Output format: {signal_id: precomputed_dict} where precomputed_dict
+    contains 'bars', 'n', 'entry_idx', 'cumsum_delta', 'avg_delta_arr'.
+    """
+    print(f"\n{'='*70}")
+    print(f"SAVE-BARS MODE: Caching precomputed bars to {output_path}")
+    print(f"{'='*70}")
+    print(f"  Signals: {len(signals)}")
+    print(f"  This will take ~18 hours (DB loading) but only needs to run ONCE.")
+    print(f"  After this, use --load-bars to skip DB and iterate grids in ~30 min.")
+    print(f"{'='*70}\n")
+    
+    precomputed_cache: Dict[int, Dict] = {}
+    skipped = 0
+    start_time = datetime.now()
+    
+    # Process in batches to manage memory
+    num_batches = (len(signals) + batch_size - 1) // batch_size
+    
+    for batch_idx in range(num_batches):
+        batch_start = batch_idx * batch_size
+        batch_signals = signals[batch_start:batch_start + batch_size]
+        batch_sids = [s.signal_id for s in batch_signals]
+        
+        print(f"\n[BATCH {batch_idx+1}/{num_batches}] Loading {len(batch_signals)} signals from DB...")
+        batch_bars = preload_all_bars(batch_sids, preload_workers=preload_workers)
+        
+        for sig in batch_signals:
+            bars = batch_bars.get(sig.signal_id, [])
+            if len(bars) < 100:
+                skipped += 1
+                continue
+            
+            entry_ts = int(sig.entry_time.timestamp())
+            pc = precompute_bars(bars, entry_ts)
+            if pc:
+                precomputed_cache[sig.signal_id] = pc
+            else:
+                skipped += 1
+        
+        # Free batch memory
+        del batch_bars
+        gc.collect()
+        
+        elapsed = (datetime.now() - start_time).total_seconds()
+        processed = len(precomputed_cache)
+        speed = (batch_idx + 1) / elapsed * 60 if elapsed > 0 else 0
+        remaining_batches = num_batches - batch_idx - 1
+        eta = remaining_batches / speed if speed > 0 else 0
+        print(f"[BATCH {batch_idx+1}] ✓ Cached: {processed}, Skipped: {skipped} | "
+              f"{speed:.1f} batches/min | ETA: {eta:.0f}min")
+        
+        # Save checkpoint every 5 batches
+        if (batch_idx + 1) % 5 == 0 or batch_idx == num_batches - 1:
+            temp_path = output_path.with_suffix('.tmp')
+            with open(temp_path, "wb") as f:
+                pickle.dump(precomputed_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
+            temp_path.rename(output_path)
+            size_mb = output_path.stat().st_size / 1024 / 1024
+            print(f"[CHECKPOINT] Saved {len(precomputed_cache)} signals ({size_mb:.0f}MB) to {output_path}")
+    
+    elapsed = (datetime.now() - start_time).total_seconds()
+    size_mb = output_path.stat().st_size / 1024 / 1024
+    print(f"\n{'='*70}")
+    print(f"✅ SAVE-BARS COMPLETE!")
+    print(f"  Cached: {len(precomputed_cache)} signals")
+    print(f"  Skipped: {skipped}")
+    print(f"  File: {output_path} ({size_mb:.0f}MB)")
+    print(f"  Time: {elapsed/60:.1f} min")
+    print(f"  Now run with --load-bars {output_path} to skip DB loading!")
+    print(f"{'='*70}\n")
+
+
+def load_precomputed_bars(input_path: Path) -> Optional[Dict[int, Dict]]:
+    """Load precomputed bar data from pickle.
+    
+    Returns: {signal_id: precomputed_dict} or None if file doesn't exist.
+    """
+    if not input_path.exists():
+        print(f"[ERROR] Bars cache not found: {input_path}")
+        return None
+    
+    print(f"[LOAD-BARS] Loading precomputed bars from {input_path}...")
+    import time
+    t0 = time.time()
+    
+    with open(input_path, "rb") as f:
+        cache = pickle.load(f)
+    
+    t1 = time.time()
+    size_mb = input_path.stat().st_size / 1024 / 1024
+    print(f"[LOAD-BARS] ✅ Loaded {len(cache)} signals ({size_mb:.0f}MB) in {t1-t0:.1f}s")
+    return cache
+
 # ---------------------------------------------------------------------------
 # Helper data structures
 # ---------------------------------------------------------------------------
@@ -187,46 +298,44 @@ def generate_filter_grid() -> List[Dict]:
 # Strategy grid generation (EXPANDED with BASE_* parameterization)
 # ---------------------------------------------------------------------------
 def generate_strategy_grid() -> List[Dict]:
-    """Generate expanded strategy grid with parameterized BASE_* constants.
+    """Generate strategy grid with continuous ACT×CB trailing-stop search.
     
-    Four trailing exit profiles:
-    1. SCALPING:     activation=0.4%, callback=0.2% (early exit, from scripts_v2)
-    2. BALANCED:     activation=4.0%, callback=2.0% (middle ground)
-    3. MODERATE:     activation=7.0%, callback=3.0% (between balanced and conservative)
-    4. CONSERVATIVE: activation=10.0%, callback=4.0% (hold longer)
+    Trailing exit grid (activation × callback):
+    - activation: 1% to 10% (step 1%)
+    - callback: 1% to 10% (step 1%)  
+    - Constraint: callback <= activation (55 valid pairs)
     
     Grid size calculation:
-    - leverage: 2 options
-    - sl_pct: 6 options  
-    - delta_window: 10 options
-    - threshold_mult: 5 options
-    - activation/callback pairs: 4 options
-    - base_cooldown: 3 options
+    - leverage: 1 option [10]
+    - sl_pct: 5 options [3,4,5,7,10]
+    - delta_window: 8 options
+    - threshold_mult: 1 option [1.0]
+    - activation × callback: 55 valid pairs (cb <= act)
+    - base_cooldown: 3 options [60, 300, 600]
     - max_reentry_hours: 4 options [4, 8, 12, 24]
     - max_position_hours: 5 options [2, 4, 6, 12, 24]
     
-    Total: 1 * 5 * 8 * 1 * 4 * 3 * 4 * 5 = 9,600 combinations (was 77,760)
+    Total: 1 × 5 × 8 × 1 × 55 × 3 × 4 × 5 = 132,000 combinations
     """
     leverage_opts = [10]  # 5 never wins, removed
-    delta_window_opts = [5, 30, 60, 120, 300, 600, 1800, 3600]  # 10 never wins, removed
-    threshold_opts = [1.0]  # 2.0, 3.0 never win, removed
+    delta_window_opts = [5, 30, 60, 120, 300, 600, 1800, 3600]
+    threshold_opts = [1.0]
     sl_by_leverage = {
         5: [3, 4, 5, 7, 10, 15],
         10: [3, 4, 5, 7, 10],  # No 15 - liquidation happens at 10% price drop
     }
     
-    # Four trailing exit profiles (activation, callback) pairs
-    trailing_profiles = [
-        (0.4, 0.2),   # SCALPING: from scripts_v2, aggressive early exit
-        (4.0, 2.0),   # BALANCED: middle ground
-        (7.0, 3.0),   # MODERATE: between balanced and conservative
-        (10.0, 4.0),  # CONSERVATIVE: hold longer
-    ]
+    # Continuous ACT×CB grid: activation 1-10%, callback 1-10%, cb <= act
+    trailing_profiles = []
+    for act in range(1, 11):  # 1% to 10%
+        for cb in range(1, 11):  # 1% to 10%
+            if cb <= act:  # callback must be <= activation
+                trailing_profiles.append((float(act), float(cb)))
     
     base_reentry_drop = 5.0  # Fixed
     base_cooldown_opts = [60, 300, 600]
-    max_reentry_hours_opts = [4, 8, 12, 24]  # Hours limit for re-entry window
-    max_position_hours_opts = [2, 4, 6, 12, 24]  # Hours limit for position lifetime
+    max_reentry_hours_opts = [4, 8, 12, 24]
+    max_position_hours_opts = [2, 4, 6, 12, 24]
     
     grid = []
     for lev in leverage_opts:
@@ -986,6 +1095,8 @@ def main():
     parser.add_argument("--preload-workers", type=int, default=8, help="Number of DB connections for preload (default 8)")
     parser.add_argument("--batched", action="store_true", help="Use memory-efficient batch processing (recommended)")
     parser.add_argument("--batch-size", type=int, default=200, help="Signals per batch when --batched (default 200)")
+    parser.add_argument("--save-bars", type=str, default="", help="Save precomputed bars to pickle file (run once, ~18h). Example: --save-bars bars_cache.pkl")
+    parser.add_argument("--load-bars", type=str, default="", help="Load precomputed bars from pickle (skip DB, ~30min). Example: --load-bars bars_cache.pkl")
     args = parser.parse_args()
 
     global MAX_WORKERS, MIN_SIGNALS_FOR_EVAL
@@ -1010,68 +1121,139 @@ def main():
     print("PHASE 1: Preloading & Precomputing Strategy Results")
     print("="*70)
     
-    # 1. Load Signals
+    # 1. Load Signals (always needed — small, fast)
     all_signals = preload_all_signals()
     if not all_signals:
         print("ERROR: No signals loaded. Exiting.")
         return
     
-    # 4. PRECOMPUTE ALL STRATEGIES (Lookup Table Generation)
-    # Check for saved lookup_table first (Phase 2 crash recovery)
-    lookup_table = load_lookup_table()
-    if lookup_table:
-        print(f"[RECOVERY] Using saved lookup table - skipping Phase 1!")
-        print(f"[RECOVERY] This saves ~10 hours of computation!")
-        # Still need signals_with_bars for Phase 2
-        signals_with_bars = [s for s in all_signals if s.signal_id in lookup_table]
-    elif args.batched:
-        # BATCHED MODE: Memory-efficient, loads bars per batch
-        print(f"\n[MODE] Using BATCHED processing (--batched)")
-        print(f"[MODE] Batch size: {args.batch_size}, Workers: {MAX_WORKERS}\n")
-        
-        lookup_table = precompute_all_strategies_batched(
+    # ---- SAVE-BARS MODE: Cache precomputed bars to disk, then exit ----
+    if args.save_bars:
+        save_path = Path(args.save_bars)
+        save_precomputed_bars(
             all_signals,
-            strategy_grid,
-            num_workers=MAX_WORKERS,
-            batch_size=args.batch_size,
+            bars_cache={},  # Not used — save_precomputed_bars loads its own
+            output_path=save_path,
             preload_workers=args.preload_workers,
-            resume=True
+            batch_size=args.batch_size,
         )
-        # In batched mode, signals_with_bars = signals that have results
-        signals_with_bars = [s for s in all_signals if s.signal_id in lookup_table]
-    else:
-        # ORIGINAL MODE: Load all bars upfront (requires lots of RAM)
-        print(f"\n[MODE] Using ORIGINAL processing (all bars in memory)")
-        print(f"[MODE] Consider --batched if running out of memory\n")
-        
-        # 2. Load Bars
-        all_signal_ids = [s.signal_id for s in all_signals]
-        bars_cache = preload_all_bars(all_signal_ids, preload_workers=args.preload_workers)
-        
-        # 3. Filter signals with sufficient bars
-        signals_with_bars = [s for s in all_signals if s.signal_id in bars_cache and len(bars_cache[s.signal_id]) >= 100]
-        print(f"[PRELOAD] Signals with sufficient bars (>=100): {len(signals_with_bars)}")
-        
-        # Log score distribution to understand data
-        score_dist = {}
-        for s in signals_with_bars:
-            bucket = (s.score // 50) * 50
-            score_dist[bucket] = score_dist.get(bucket, 0) + 1
-        print("[PRELOAD] Score distribution:")
-        for score in sorted(score_dist.keys()):
-            print(f"  {score}-{score+49}: {score_dist[score]} signals")
-        
-        if not signals_with_bars:
-            print("No signals with sufficient data.")
-            return
-
-        # This runs 540 strategies for every signal once.
-        lookup_table = precompute_all_strategies(signals_with_bars, bars_cache, strategy_grid, num_workers=MAX_WORKERS)
+        print(f"\n[DONE] Bars cached to {save_path}. Now run:")
+        print(f"  python3 {sys.argv[0]} --load-bars {save_path} --batched --workers {MAX_WORKERS}")
+        return
     
-        # Clean up bars_cache to free memory (we only need the lookup table now!)
-        del bars_cache
+    # ---- LOAD-BARS MODE: Skip DB, run strategies from cached bars ----
+    if args.load_bars:
+        load_path = Path(args.load_bars)
+        precomputed_cache = load_precomputed_bars(load_path)
+        if not precomputed_cache:
+            print("ERROR: Could not load bars cache. Exiting.")
+            return
+        
+        signals_with_bars = [s for s in all_signals if s.signal_id in precomputed_cache]
+        print(f"[LOAD-BARS] {len(signals_with_bars)} signals have cached bars")
+        
+        # Build lookup table: run all strategies on each signal's precomputed bars
+        print(f"\n[LOAD-BARS] Running {len(strategy_grid):,} strategies × {len(signals_with_bars)} signals...")
+        start_time = datetime.now()
+        
+        lookup_table: Dict[int, Dict[int, Tuple[float, int]]] = {}
+        
+        for sig_idx, sig in enumerate(signals_with_bars):
+            pc = precomputed_cache[sig.signal_id]
+            sig_results = {}
+            for s_idx, sp in enumerate(strategy_grid):
+                pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
+                    pc,
+                    sp["sl_pct"],
+                    sp["delta_window"],
+                    sp["threshold_mult"],
+                    sp["leverage"],
+                    sp.get("base_activation", 10.0),
+                    sp.get("base_callback", 4.0),
+                    sp.get("base_reentry_drop", 5.0),
+                    sp.get("base_cooldown", 300),
+                    sp.get("max_reentry_hours", 0) * 3600,
+                    sp.get("max_position_hours", 0) * 3600,
+                )
+                sig_results[s_idx] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
+            
+            lookup_table[sig.signal_id] = sig_results
+            
+            if (sig_idx + 1) % 25 == 0 or (sig_idx + 1) == len(signals_with_bars):
+                elapsed = (datetime.now() - start_time).total_seconds()
+                speed = (sig_idx + 1) / elapsed if elapsed > 0 else 0
+                eta = (len(signals_with_bars) - sig_idx - 1) / speed if speed > 0 else 0
+                iters = (sig_idx + 1) * len(strategy_grid)
+                print(f"  [{sig_idx+1}/{len(signals_with_bars)}] "
+                      f"{speed:.1f} sig/s | {iters/1000:.0f}k iters | "
+                      f"ETA: {eta/60:.1f}min", flush=True)
+        
+        elapsed = (datetime.now() - start_time).total_seconds()
+        total_iters = len(signals_with_bars) * len(strategy_grid)
+        print(f"\n[LOAD-BARS] ✅ Phase 1 complete! {len(lookup_table)} signals × {len(strategy_grid):,} strategies")
+        print(f"[LOAD-BARS] {total_iters/1000:.0f}k iterations in {elapsed/60:.1f}min ({total_iters/elapsed/1000:.0f}k iter/s)")
+        
+        # Save lookup table for crash recovery
+        CHECKPOINT_DIR.mkdir(exist_ok=True)
+        lookup_file = CHECKPOINT_DIR / "phase1_lookup_table.pkl"
+        with open(lookup_file, "wb") as f:
+            pickle.dump(lookup_table, f, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"[SAFETY] Saved lookup table to {lookup_file}")
+        
+        # Free precomputed cache
+        del precomputed_cache
         gc.collect()
-        print("[MEMORY] Cleared bars cache. Ready for optimization.")
+    
+    # ---- STANDARD MODES (no --save-bars / --load-bars) ----
+    else:
+        # Check for saved lookup_table first (Phase 2 crash recovery)
+        lookup_table = load_lookup_table()
+        if lookup_table:
+            print(f"[RECOVERY] Using saved lookup table - skipping Phase 1!")
+            print(f"[RECOVERY] This saves ~10 hours of computation!")
+            signals_with_bars = [s for s in all_signals if s.signal_id in lookup_table]
+        elif args.batched:
+            # BATCHED MODE: Memory-efficient, loads bars per batch
+            print(f"\n[MODE] Using BATCHED processing (--batched)")
+            print(f"[MODE] Batch size: {args.batch_size}, Workers: {MAX_WORKERS}\n")
+            
+            lookup_table = precompute_all_strategies_batched(
+                all_signals,
+                strategy_grid,
+                num_workers=MAX_WORKERS,
+                batch_size=args.batch_size,
+                preload_workers=args.preload_workers,
+                resume=True
+            )
+            signals_with_bars = [s for s in all_signals if s.signal_id in lookup_table]
+        else:
+            # ORIGINAL MODE: Load all bars upfront (requires lots of RAM)
+            print(f"\n[MODE] Using ORIGINAL processing (all bars in memory)")
+            print(f"[MODE] Consider --batched if running out of memory\n")
+            
+            all_signal_ids = [s.signal_id for s in all_signals]
+            bars_cache = preload_all_bars(all_signal_ids, preload_workers=args.preload_workers)
+            
+            signals_with_bars = [s for s in all_signals if s.signal_id in bars_cache and len(bars_cache[s.signal_id]) >= 100]
+            print(f"[PRELOAD] Signals with sufficient bars (>=100): {len(signals_with_bars)}")
+            
+            score_dist = {}
+            for s in signals_with_bars:
+                bucket = (s.score // 50) * 50
+                score_dist[bucket] = score_dist.get(bucket, 0) + 1
+            print("[PRELOAD] Score distribution:")
+            for score in sorted(score_dist.keys()):
+                print(f"  {score}-{score+49}: {score_dist[score]} signals")
+            
+            if not signals_with_bars:
+                print("No signals with sufficient data.")
+                return
+
+            lookup_table = precompute_all_strategies(signals_with_bars, bars_cache, strategy_grid, num_workers=MAX_WORKERS)
+        
+            del bars_cache
+            gc.collect()
+            print("[MEMORY] Cleared bars cache. Ready for optimization.")
     
     crash_log("Phase 1 complete.")
 
