@@ -55,12 +55,15 @@ def load_bars_for_signal(signal_id: int) -> List[tuple]:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT ts, price, delta
-                    FROM web.signal_bars
-                    WHERE signal_id = %s
-                    ORDER BY ts
+                    SELECT second_ts, close_price, delta,
+                           0.0, large_buy_count, large_sell_count
+                    FROM web.agg_trades_1s
+                    WHERE signal_analysis_id = %s
+                    ORDER BY second_ts
                 """, (signal_id,))
-                return cur.fetchall()
+                rows = cur.fetchall()
+                return [(ts, float(price), float(delta), 0.0, buy, sell)
+                        for ts, price, delta, _, buy, sell in rows]
     except Exception as e:
         print(f"  [WARN] Failed to load bars for signal {signal_id}: {e}")
         return []
