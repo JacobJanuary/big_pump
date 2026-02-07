@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-enrich_results.py — Post-processing script to add win_rate metrics
-to an existing optimization_results.jsonl WITHOUT re-running the full 24h Phase 1.
+enrich_results.py — Memory-efficient post-processor to add win_rate to existing JSONL.
 
-Strategy:
-1. Read existing JSONL → extract unique (filter_cfg, strategy_id) combos
-2. Load ALL signals from DB (same as optimize_unified.py)
-3. Load bars for ALL signals (same preload_all_bars)
-4. For each unique combo: filter signals → simulate → compute win_rate
-5. Write enriched JSONL with win_rate, total_trades, ts_wins
+Architecture (low-memory):
+  Phase A: Read JSONL → extract 524 unique strategy IDs
+  Phase B: Load signals metadata from DB (small: ~2000 rows)
+  Phase C: For EACH signal (one at a time):
+           - Load bars from DB (single query)
+           - Precompute
+           - Run ONLY the 524 needed strategies
+           - Store compact results: {signal_id: {strategy_id: (pnl, last_ts, trades, ts_wins, sl, to)}}
+           - Free bars immediately
+  Phase D: For each JSONL line:
+           - Filter signals matching the filter config
+           - Aggregate stats from the lookup table
+           - Write enriched line
 
-This is O(unique_combos * matched_signals) instead of O(9600 * all_signals).
-With 524 unique strategies and ~2000 signals, this runs in ~1-2 hours, not 24.
+Peak memory: ~10MB (one signal's bars) + ~50MB (lookup table) = ~60MB total.
 """
 
 import json
@@ -31,9 +36,8 @@ sys.path.append(str(current_dir.parent / "scripts_v2"))
 from pump_analysis_lib import get_db_connection
 from optimize_combined_leverage_filtered import precompute_bars, run_strategy_fast
 from optimize_unified import (
-    preload_all_signals, 
-    preload_all_bars, 
-    SignalData, 
+    preload_all_signals,
+    SignalData,
     SignalInfo,
     generate_strategy_grid,
 )
@@ -43,26 +47,41 @@ from optimize_unified import (
 # ---------------------------------------------------------------------------
 INPUT_JSONL = Path("optimization_results.jsonl")
 OUTPUT_JSONL = Path("optimization_results_enriched.jsonl")
-PRELOAD_WORKERS = 8
+
+
+def load_bars_for_signal(signal_id: int) -> List[tuple]:
+    """Load bars for a SINGLE signal from DB. Minimal memory footprint."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT ts, price, delta
+                    FROM web.signal_bars
+                    WHERE signal_id = %s
+                    ORDER BY ts
+                """, (signal_id,))
+                return cur.fetchall()
+    except Exception as e:
+        print(f"  [WARN] Failed to load bars for signal {signal_id}: {e}")
+        return []
 
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Enrich optimization results with win_rate metric")
+    parser = argparse.ArgumentParser(description="Enrich optimization results with win_rate (memory-efficient)")
     parser.add_argument("--input", type=str, default=str(INPUT_JSONL), help="Input JSONL file")
     parser.add_argument("--output", type=str, default=str(OUTPUT_JSONL), help="Output enriched JSONL file")
-    parser.add_argument("--preload-workers", type=int, default=PRELOAD_WORKERS, help="DB workers for bar loading")
-    parser.add_argument("--limit", type=int, default=0, help="Limit number of lines to process (0=all)")
+    parser.add_argument("--limit", type=int, default=0, help="Limit JSONL lines to process (0=all)")
     args = parser.parse_args()
 
     input_file = Path(args.input)
     output_file = Path(args.output)
 
     # =========================================================================
-    # STEP 1: Read existing JSONL and extract unique combos
+    # PHASE A: Read JSONL → extract unique strategy IDs
     # =========================================================================
     print(f"\n{'='*70}")
-    print(f"[STEP 1] Reading existing results from {input_file}")
+    print(f"PHASE A: Reading {input_file}")
     print(f"{'='*70}")
 
     results = []
@@ -72,21 +91,18 @@ def main():
                 break
             results.append(json.loads(line.strip()))
 
-    print(f"  Loaded {len(results):,} result entries")
-
-    # Extract unique strategy IDs and their params
     strategy_grid = generate_strategy_grid()
-    unique_strategy_ids = set()
-    for r in results:
-        unique_strategy_ids.add(r["metrics"]["strategy_id"])
+    unique_sids = set(r["metrics"]["strategy_id"] for r in results)
+    print(f"  {len(results):,} result entries, {len(unique_sids)} unique strategies")
 
-    print(f"  Unique strategy IDs: {len(unique_strategy_ids)}")
+    # Build strategy params lookup for the needed strategies only
+    strategy_params = {sid: strategy_grid[sid] for sid in unique_sids}
 
     # =========================================================================
-    # STEP 2: Load signals and bars
+    # PHASE B: Load signal metadata (small — just IDs, scores, timestamps)
     # =========================================================================
     print(f"\n{'='*70}")
-    print(f"[STEP 2] Loading signals and bars from database")
+    print(f"PHASE B: Loading signal metadata from DB")
     print(f"{'='*70}")
 
     all_signals = preload_all_signals()
@@ -94,77 +110,105 @@ def main():
         print("ERROR: No signals loaded. Exiting.")
         return
 
-    # Build signal lookup by ID
-    signal_by_id: Dict[int, SignalData] = {s.signal_id: s for s in all_signals}
-
-    # Load bars for ALL signals
-    all_sids = [s.signal_id for s in all_signals]
-    print(f"\n  Loading bars for {len(all_sids)} signals...")
-    bars_cache = preload_all_bars(all_sids, preload_workers=args.preload_workers)
-    print(f"  Bars loaded for {len(bars_cache)} signals")
+    print(f"  {len(all_signals)} signals loaded (metadata only, no bars yet)")
 
     # =========================================================================
-    # STEP 3: Precompute bars for all signals (once)
+    # PHASE C: Process signals ONE AT A TIME → build lookup table
     # =========================================================================
     print(f"\n{'='*70}")
-    print(f"[STEP 3] Precomputing bar data for all signals")
+    print(f"PHASE C: Running {len(unique_sids)} strategies across {len(all_signals)} signals")
+    print(f"  Memory mode: ONE signal's bars in memory at a time")
     print(f"{'='*70}")
 
-    precomputed_cache: Dict[int, dict] = {}
+    # lookup[signal_id][strategy_id] = (pnl, last_ts, trades, ts_wins, sl, to)
+    lookup: Dict[int, Dict[int, Tuple]] = {}
     skipped = 0
-    for sig in all_signals:
-        bars = bars_cache.get(sig.signal_id, [])
+    start_time = datetime.now()
+
+    for sig_idx, sig in enumerate(all_signals):
+        # 1. Load bars for THIS signal only
+        bars = load_bars_for_signal(sig.signal_id)
         if len(bars) < 100:
             skipped += 1
             continue
+
+        # 2. Precompute
         entry_ts = int(sig.entry_time.timestamp())
         pc = precompute_bars(bars, entry_ts)
-        if pc:
-            precomputed_cache[sig.signal_id] = pc
+        if not pc:
+            skipped += 1
+            del bars
+            continue
 
-    print(f"  Precomputed: {len(precomputed_cache)} signals ({skipped} skipped)")
+        # 3. Run ONLY the needed strategies (524, not 9600)
+        sig_results = {}
+        for sid, sp in strategy_params.items():
+            pnl, last_ts, t_cnt, ts_w, sl_ex, to_ex = run_strategy_fast(
+                pc,
+                sp["sl_pct"],
+                sp["delta_window"],
+                sp["threshold_mult"],
+                sp["leverage"],
+                sp.get("base_activation", 10.0),
+                sp.get("base_callback", 4.0),
+                sp.get("base_reentry_drop", 5.0),
+                sp.get("base_cooldown", 300),
+                sp.get("max_reentry_hours", 0) * 3600,
+                sp.get("max_position_hours", 0) * 3600,
+            )
+            sig_results[sid] = (pnl, last_ts, t_cnt, ts_w, sl_ex, to_ex)
 
-    # Free bars cache — we only need precomputed from now
-    del bars_cache
-    gc.collect()
+        lookup[sig.signal_id] = sig_results
+
+        # 4. Free bars immediately
+        del bars, pc
+        if (sig_idx + 1) % 50 == 0:
+            gc.collect()
+
+        # Progress
+        if (sig_idx + 1) % 100 == 0 or (sig_idx + 1) == len(all_signals):
+            elapsed = (datetime.now() - start_time).total_seconds()
+            speed = (sig_idx + 1) / elapsed if elapsed > 0 else 0
+            eta = (len(all_signals) - sig_idx - 1) / speed if speed > 0 else 0
+            print(f"  [{sig_idx+1:>5}/{len(all_signals)}] "
+                  f"{speed:.1f} sig/s | ETA: {eta/60:.1f}m | "
+                  f"lookup: {len(lookup)} entries | skipped: {skipped}", flush=True)
+
+    elapsed_c = (datetime.now() - start_time).total_seconds()
+    print(f"\n  Phase C done in {elapsed_c:.0f}s ({elapsed_c/60:.1f}m)")
+    print(f"  Lookup: {len(lookup)} signals × {len(unique_sids)} strategies")
+    print(f"  Skipped: {skipped}")
 
     # =========================================================================
-    # STEP 4: For each result line, simulate the strategy and compute win_rate
+    # PHASE D: Enrich JSONL using lookup table
     # =========================================================================
     print(f"\n{'='*70}")
-    print(f"[STEP 4] Enriching {len(results):,} results with win_rate")
+    print(f"PHASE D: Enriching {len(results):,} JSONL lines")
     print(f"{'='*70}")
 
-    # Pre-build signal index by (pair, score_range, filters) for fast filtering
-    # Actually, we'll just filter in-memory each time (same as optimize_unified)
-
-    enriched_count = 0
-    start_time = datetime.now()
+    start_d = datetime.now()
 
     with open(output_file, "w", encoding="utf-8") as out_f:
         for idx, result in enumerate(results):
             filter_cfg = result["filter"]
             strategy_id = result["metrics"]["strategy_id"]
-            sp = strategy_grid[strategy_id]
 
-            # Filter signals matching this filter config
             score_min = filter_cfg["score_min"]
             score_max = filter_cfg["score_max"]
             rsi_min = filter_cfg["rsi_min"]
             vol_min = filter_cfg["vol_min"]
             oi_min = filter_cfg["oi_min"]
 
-            matched_signals = []
-            for s in all_signals:
-                if (score_min <= s.score < score_max and
-                    s.rsi >= rsi_min and
-                    s.vol_zscore >= vol_min and
-                    s.oi_delta >= oi_min):
-                    matched_signals.append(s)
+            # Filter signals
+            matched = [s for s in all_signals
+                       if score_min <= s.score < score_max
+                       and s.rsi >= rsi_min
+                       and s.vol_zscore >= vol_min
+                       and s.oi_delta >= oi_min]
 
-            # Group by pair for sequential position tracking
+            # Group by pair for position tracking
             by_pair: Dict[str, List[SignalData]] = defaultdict(list)
-            for s in matched_signals:
+            for s in matched:
                 by_pair[s.pair].append(s)
 
             total_trades = 0
@@ -174,31 +218,16 @@ def main():
 
             for pair, pair_signals in by_pair.items():
                 position_tracker_ts = 0
-                sorted_sigs = sorted(pair_signals, key=lambda x: x.timestamp)
-
-                for sig in sorted_sigs:
+                for sig in sorted(pair_signals, key=lambda x: x.timestamp):
                     sig_ts = int(sig.timestamp.timestamp())
                     if sig_ts < position_tracker_ts:
                         continue
 
-                    pc = precomputed_cache.get(sig.signal_id)
-                    if not pc:
+                    sig_res = lookup.get(sig.signal_id)
+                    if not sig_res or strategy_id not in sig_res:
                         continue
 
-                    pnl, last_ts, t_cnt, ts_w, sl_ex, to_ex = run_strategy_fast(
-                        pc,
-                        sp["sl_pct"],
-                        sp["delta_window"],
-                        sp["threshold_mult"],
-                        sp["leverage"],
-                        sp.get("base_activation", 10.0),
-                        sp.get("base_callback", 4.0),
-                        sp.get("base_reentry_drop", 5.0),
-                        sp.get("base_cooldown", 300),
-                        sp.get("max_reentry_hours", 0) * 3600,
-                        sp.get("max_position_hours", 0) * 3600,
-                    )
-
+                    pnl, last_ts, t_cnt, ts_w, sl_ex, to_ex = sig_res[strategy_id]
                     total_trades += t_cnt
                     ts_wins += ts_w
                     sl_exits_total += sl_ex
@@ -209,7 +238,6 @@ def main():
 
             win_rate = (ts_wins / total_trades) if total_trades > 0 else 0.0
 
-            # Enrich the result
             result["metrics"]["win_rate"] = round(win_rate, 4)
             result["metrics"]["total_trades"] = total_trades
             result["metrics"]["ts_wins"] = ts_wins
@@ -217,39 +245,35 @@ def main():
             result["metrics"]["timeout_exits"] = timeout_exits_total
 
             out_f.write(json.dumps(result) + "\n")
-            enriched_count += 1
 
-            # Progress
-            if (idx + 1) % 500 == 0 or (idx + 1) == len(results):
-                elapsed = (datetime.now() - start_time).total_seconds()
-                speed = (idx + 1) / elapsed if elapsed > 0 else 0
-                remaining = len(results) - idx - 1
-                eta = remaining / speed if speed > 0 else 0
-                print(f"  [{idx+1:>6}/{len(results)}] "
-                      f"{speed:.1f} results/s | "
-                      f"ETA: {eta/60:.1f}m | "
-                      f"Last win_rate: {win_rate:.2%}", flush=True)
+            if (idx + 1) % 5000 == 0:
+                elapsed = (datetime.now() - start_d).total_seconds()
+                print(f"  [{idx+1:>6}/{len(results)}] {(idx+1)/elapsed:.0f} lines/s", flush=True)
 
-    elapsed = (datetime.now() - start_time).total_seconds()
+    elapsed_d = (datetime.now() - start_d).total_seconds()
+    print(f"\n  Phase D done in {elapsed_d:.1f}s")
+
+    # =========================================================================
+    # Summary
+    # =========================================================================
+    total_time = (datetime.now() - start_time).total_seconds()
     print(f"\n{'='*70}")
-    print(f"[DONE] Enriched {enriched_count:,} results in {elapsed:.1f}s ({elapsed/60:.1f}m)")
+    print(f"DONE in {total_time/60:.1f}m total")
     print(f"  Output: {output_file}")
     print(f"{'='*70}")
 
-    # Quick stats
-    print(f"\n[STATS] Top 10 by win_rate (with PnL > 100):")
-    top_results = sorted(
+    # Top results
+    print(f"\nTop 10 by win_rate (PnL > 100):")
+    top = sorted(
         [r for r in results if r["metrics"]["total_pnl"] > 100],
-        key=lambda x: x["metrics"]["win_rate"],
-        reverse=True
+        key=lambda x: x["metrics"]["win_rate"], reverse=True
     )[:10]
-    for i, r in enumerate(top_results):
+    for i, r in enumerate(top):
         m = r["metrics"]
         s = r["strategy"]
-        print(f"  {i+1}. WR={m['win_rate']:.1%} | PnL={m['total_pnl']:.0f}% | "
-              f"Trades={m['total_trades']} | TS_wins={m['ts_wins']} | "
-              f"Act={s['base_activation']} | CB={s['base_callback']} | "
-              f"SL={s['sl_pct']} | PosH={s['max_position_hours']}")
+        print(f"  {i+1}. WR={m['win_rate']:.1%} PnL={m['total_pnl']:.0f}% "
+              f"Trades={m['total_trades']} TS={m['ts_wins']} "
+              f"Act={s['base_activation']} SL={s['sl_pct']} PosH={s['max_position_hours']}")
 
 
 if __name__ == "__main__":
