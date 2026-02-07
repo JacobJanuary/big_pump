@@ -22,6 +22,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Dict, Tuple, NamedTuple, Optional
 import multiprocessing as mp
+import numpy as np
 
 # Ensure deep_research is FIRST in sys.path for imports (to use optimized run_strategy)
 import sys
@@ -159,37 +160,50 @@ def save_precomputed_bars(
 ):
     """Save precomputed bar data to disk for reuse across grid runs.
     
-    For each signal: loads bars + runs precompute_bars() → saves to pickle.
-    This captures the expensive DB-loading step (~18h) so that subsequent
-    runs with different strategy grids can skip it entirely.
+    MEMORY-SAFE: Saves each batch to a separate pickle file in a directory,
+    clearing memory after each batch. No accumulation in RAM.
     
-    Output format: {signal_id: precomputed_dict} where precomputed_dict
-    contains 'bars', 'n', 'entry_idx', 'cumsum_delta', 'avg_delta_arr'.
+    Output: directory with batch_001.pkl, batch_002.pkl, ...
+    Each file: {signal_id: precomputed_dict}
     """
+    # Use output_path as directory (e.g. bars_cache/)
+    cache_dir = output_path
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    
     print(f"\n{'='*70}")
-    print(f"SAVE-BARS MODE: Caching precomputed bars to {output_path}")
+    print(f"SAVE-BARS MODE: Caching precomputed bars to {cache_dir}/")
     print(f"{'='*70}")
     print(f"  Signals: {len(signals)}")
-    print(f"  This will take ~18 hours (DB loading) but only needs to run ONCE.")
-    print(f"  After this, use --load-bars to skip DB and iterate grids in ~30 min.")
+    print(f"  Each batch saved to separate file (no RAM accumulation)")
+    print(f"  After this, use --load-bars {cache_dir} to skip DB loading!")
     print(f"{'='*70}\n")
     
-    precomputed_cache: Dict[int, Dict] = {}
+    total_cached = 0
     skipped = 0
     start_time = datetime.now()
-    
-    # Process in batches to manage memory
     num_batches = (len(signals) + batch_size - 1) // batch_size
     
     for batch_idx in range(num_batches):
         batch_start = batch_idx * batch_size
         batch_signals = signals[batch_start:batch_start + batch_size]
         batch_sids = [s.signal_id for s in batch_signals]
+        batch_file = cache_dir / f"batch_{batch_idx+1:03d}.pkl"
+        
+        # Skip already saved batches (resume support)
+        if batch_file.exists():
+            # Quick check: load and count
+            with open(batch_file, "rb") as f:
+                existing = pickle.load(f)
+            total_cached += len(existing)
+            del existing
+            print(f"[BATCH {batch_idx+1}/{num_batches}] ✓ Already saved, skipping ({total_cached} total)", flush=True)
+            continue
         
         print(f"\n[BATCH {batch_idx+1}/{num_batches}] Loading {len(batch_signals)} signals from DB...", flush=True)
         batch_bars = preload_all_bars(batch_sids, preload_workers=preload_workers)
         print(f"[BATCH {batch_idx+1}] Bars loaded. Precomputing {len(batch_signals)} signals...", flush=True)
         
+        batch_cache: Dict[int, Dict] = {}
         for sig_i, sig in enumerate(batch_signals):
             bars = batch_bars.get(sig.signal_id, [])
             if len(bars) < 100:
@@ -199,76 +213,64 @@ def save_precomputed_bars(
             entry_ts = int(sig.entry_time.timestamp())
             pc = precompute_bars(bars, entry_ts)
             if pc:
-                precomputed_cache[sig.signal_id] = pc
+                batch_cache[sig.signal_id] = pc
             else:
                 skipped += 1
             
-            # Per-signal progress every 10 signals
             if (sig_i + 1) % 10 == 0:
-                total_done = len(precomputed_cache) + skipped
+                total_done = total_cached + len(batch_cache) + skipped
                 elapsed = (datetime.now() - start_time).total_seconds()
-                overall_speed = total_done / elapsed if elapsed > 0 else 0
+                speed = total_done / elapsed if elapsed > 0 else 0
                 remaining = len(signals) - total_done
-                eta_sec = remaining / overall_speed if overall_speed > 0 else 0
+                eta = remaining / speed / 60 if speed > 0 else 0
                 print(f"  [{sig_i+1}/{len(batch_signals)}] "
-                      f"cached={len(precomputed_cache)} skip={skipped} | "
-                      f"{overall_speed:.1f} sig/s | "
-                      f"total {total_done}/{len(signals)} | "
-                      f"ETA: {eta_sec/60:.1f}min", flush=True)
+                      f"batch={len(batch_cache)} | total={total_done}/{len(signals)} | "
+                      f"{speed:.1f} sig/s | ETA: {eta:.1f}min", flush=True)
         
-        # Free batch memory
-        del batch_bars
+        # Save this batch to its own file
+        temp_path = batch_file.with_suffix('.tmp')
+        with open(temp_path, "wb") as f:
+            pickle.dump(batch_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
+        temp_path.rename(batch_file)
+        size_mb = batch_file.stat().st_size / 1024 / 1024
+        total_cached += len(batch_cache)
+        
+        print(f"[BATCH {batch_idx+1}] ✓ Saved {len(batch_cache)} signals ({size_mb:.0f}MB) to {batch_file.name}", flush=True)
+        print(f"[PROGRESS] Total cached: {total_cached}, Skipped: {skipped}", flush=True)
+        
+        # Free ALL batch memory immediately
+        del batch_bars, batch_cache
         gc.collect()
-        
-        elapsed = (datetime.now() - start_time).total_seconds()
-        processed = len(precomputed_cache)
-        speed = (batch_idx + 1) / elapsed * 60 if elapsed > 0 else 0
-        remaining_batches = num_batches - batch_idx - 1
-        eta = remaining_batches / speed if speed > 0 else 0
-        print(f"[BATCH {batch_idx+1}] ✓ Cached: {processed}, Skipped: {skipped} | "
-              f"{speed:.1f} batches/min | ETA: {eta:.0f}min", flush=True)
-        
-        # Save checkpoint every 3 batches (more frequent)
-        if (batch_idx + 1) % 3 == 0 or batch_idx == num_batches - 1:
-            temp_path = output_path.with_suffix('.tmp')
-            with open(temp_path, "wb") as f:
-                pickle.dump(precomputed_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
-            temp_path.rename(output_path)
-            size_mb = output_path.stat().st_size / 1024 / 1024
-            print(f"[CHECKPOINT] Saved {len(precomputed_cache)} signals ({size_mb:.0f}MB) to {output_path}", flush=True)
     
     elapsed = (datetime.now() - start_time).total_seconds()
-    size_mb = output_path.stat().st_size / 1024 / 1024
     print(f"\n{'='*70}")
     print(f"✅ SAVE-BARS COMPLETE!")
-    print(f"  Cached: {len(precomputed_cache)} signals")
+    print(f"  Cached: {total_cached} signals in {num_batches} batch files")
     print(f"  Skipped: {skipped}")
-    print(f"  File: {output_path} ({size_mb:.0f}MB)")
+    print(f"  Directory: {cache_dir}/")
     print(f"  Time: {elapsed/60:.1f} min")
-    print(f"  Now run with --load-bars {output_path} to skip DB loading!")
+    print(f"  Now run with --load-bars {cache_dir} to skip DB loading!")
     print(f"{'='*70}\n")
 
 
-def load_precomputed_bars(input_path: Path) -> Optional[Dict[int, Dict]]:
-    """Load precomputed bar data from pickle.
+def load_precomputed_bars(input_path: Path) -> Optional[List[Path]]:
+    """Find precomputed bar batch files.
     
-    Returns: {signal_id: precomputed_dict} or None if file doesn't exist.
+    Returns: sorted list of batch pickle file paths, or None if not found.
     """
-    if not input_path.exists():
-        print(f"[ERROR] Bars cache not found: {input_path}")
+    cache_dir = input_path
+    if not cache_dir.exists() or not cache_dir.is_dir():
+        print(f"[ERROR] Bars cache directory not found: {cache_dir}")
         return None
     
-    print(f"[LOAD-BARS] Loading precomputed bars from {input_path}...")
-    import time
-    t0 = time.time()
+    batch_files = sorted(cache_dir.glob("batch_*.pkl"))
+    if not batch_files:
+        print(f"[ERROR] No batch files found in {cache_dir}")
+        return None
     
-    with open(input_path, "rb") as f:
-        cache = pickle.load(f)
-    
-    t1 = time.time()
-    size_mb = input_path.stat().st_size / 1024 / 1024
-    print(f"[LOAD-BARS] ✅ Loaded {len(cache)} signals ({size_mb:.0f}MB) in {t1-t0:.1f}s")
-    return cache
+    total_size = sum(f.stat().st_size for f in batch_files) / 1024 / 1024
+    print(f"[LOAD-BARS] ✅ Found {len(batch_files)} batch files ({total_size:.0f}MB total)")
+    return batch_files
 
 # ---------------------------------------------------------------------------
 # Helper data structures
@@ -642,7 +644,8 @@ def process_single_signal(sig: SignalData) -> Tuple[int, Dict[int, Tuple[float, 
     if not precomputed:
         return (sid, None)
     
-    sig_results = {}
+    n = len(PHASE1_STRATEGY_GRID)
+    sig_results = np.zeros((n, 6), dtype=np.float32)
     for s_idx, sp in enumerate(PHASE1_STRATEGY_GRID):
         pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
             precomputed,
@@ -654,8 +657,8 @@ def process_single_signal(sig: SignalData) -> Tuple[int, Dict[int, Tuple[float, 
             sp.get("base_callback", 4.0),
             sp.get("base_reentry_drop", 5.0),
             sp.get("base_cooldown", 300),
-            sp.get("max_reentry_hours", 0) * 3600,  # Convert hours to seconds
-            sp.get("max_position_hours", 0) * 3600,  # Convert hours to seconds
+            sp.get("max_reentry_hours", 0) * 3600,
+            sp.get("max_position_hours", 0) * 3600,
         )
         sig_results[s_idx] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
     
@@ -982,7 +985,8 @@ def process_single_signal_sequential(
     if not precomputed:
         return (sid, None)
     
-    sig_results = {}
+    n = len(strategy_grid)
+    sig_results = np.zeros((n, 6), dtype=np.float32)
     for s_idx, sp in enumerate(strategy_grid):
         pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
             precomputed,
@@ -994,8 +998,8 @@ def process_single_signal_sequential(
             sp.get("base_callback", 4.0),
             sp.get("base_reentry_drop", 5.0),
             sp.get("base_cooldown", 300),
-            sp.get("max_reentry_hours", 0) * 3600,  # Convert hours to seconds
-            sp.get("max_position_hours", 0) * 3600,  # Convert hours to seconds
+            sp.get("max_reentry_hours", 0) * 3600,
+            sp.get("max_position_hours", 0) * 3600,
         )
         sig_results[s_idx] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
     
@@ -1030,10 +1034,11 @@ def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple
     for s in matched_signals:
         by_pair.setdefault(s.pair, []).append(SignalInfo(s.signal_id, s.pair, s.timestamp))
 
-    # 3. Sum results from LOOKUP TABLE
-    aggregated_pnl: Dict[int, float] = {i: 0.0 for i in range(len(strategy_grid))}
-    aggregated_trades: Dict[int, int] = {i: 0 for i in range(len(strategy_grid))}
-    aggregated_ts_wins: Dict[int, int] = {i: 0 for i in range(len(strategy_grid))}
+    # 3. Sum results from LOOKUP TABLE (numpy vectorized)
+    n_strategies = len(strategy_grid)
+    aggregated_pnl = np.zeros(n_strategies, dtype=np.float64)
+    aggregated_trades = np.zeros(n_strategies, dtype=np.int32)
+    aggregated_ts_wins = np.zeros(n_strategies, dtype=np.int32)
     
     total_processed_signals = 0
     
@@ -1048,33 +1053,29 @@ def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple
                 
             # Lookup results
             sig_res = WORKER_RESULTS.get(sig.signal_id)
-            if not sig_res:
+            if sig_res is None:
                 continue
                 
             total_processed_signals += 1
             
-            # Add PnL for all strategies
-            max_last_ts = position_tracker_ts
-            for s_idx, (pnl, last_ts, t_cnt, ts_wins, sl_ex, to_ex) in sig_res.items():
-                aggregated_pnl[s_idx] += pnl
-                aggregated_trades[s_idx] += t_cnt
-                aggregated_ts_wins[s_idx] += ts_wins
-                
-                if last_ts > max_last_ts:
-                    max_last_ts = last_ts
-                    
-            position_tracker_ts = max_last_ts
+            # Vectorized add (numpy) — columns: pnl=0, last_ts=1, t_cnt=2, ts_wins=3
+            aggregated_pnl += sig_res[:, 0]
+            aggregated_trades += sig_res[:, 2].astype(np.int32)
+            aggregated_ts_wins += sig_res[:, 3].astype(np.int32)
+            
+            max_last_ts = float(sig_res[:, 1].max())
+            position_tracker_ts = max(position_tracker_ts, int(max_last_ts))
             
     # Compile final results
     final_results = {}
-    for s_idx in aggregated_pnl:
-        trades = aggregated_trades[s_idx]
-        ts_wins = aggregated_ts_wins[s_idx]
+    for s_idx in range(n_strategies):
+        trades = int(aggregated_trades[s_idx])
+        ts_wins = int(aggregated_ts_wins[s_idx])
         win_rate = (ts_wins / trades) if trades > 0 else 0.0
         
         final_results[s_idx] = {
-            "total_pnl": aggregated_pnl[s_idx],
-            "win_rate": win_rate,     # The NEW quality metric
+            "total_pnl": float(aggregated_pnl[s_idx]),
+            "win_rate": win_rate,
             "total_trades": trades,
             "ts_wins": ts_wins
         }
@@ -1158,65 +1159,71 @@ def main():
     # ---- LOAD-BARS MODE: Skip DB, run strategies from cached bars ----
     if args.load_bars:
         load_path = Path(args.load_bars)
-        precomputed_cache = load_precomputed_bars(load_path)
-        if not precomputed_cache:
+        batch_files = load_precomputed_bars(load_path)
+        if not batch_files:
             print("ERROR: Could not load bars cache. Exiting.")
             return
         
-        signals_with_bars = [s for s in all_signals if s.signal_id in precomputed_cache]
-        print(f"[LOAD-BARS] {len(signals_with_bars)} signals have cached bars")
-        
-        # Build lookup table: run all strategies on each signal's precomputed bars
-        print(f"\n[LOAD-BARS] Running {len(strategy_grid):,} strategies × {len(signals_with_bars)} signals...")
+        # Build lookup table batch-by-batch (memory safe)
+        n_strategies = len(strategy_grid)
+        lookup_table: Dict[int, np.ndarray] = {}
+        signals_with_bars = []
         start_time = datetime.now()
+        total_signals_done = 0
         
-        lookup_table: Dict[int, Dict[int, Tuple[float, int]]] = {}
+        for bf_idx, batch_file in enumerate(batch_files):
+            print(f"\n[LOAD-BARS] Loading {batch_file.name}...", flush=True)
+            with open(batch_file, "rb") as f:
+                batch_cache = pickle.load(f)
+            print(f"[LOAD-BARS] {len(batch_cache)} signals. Running {n_strategies:,} strategies each...", flush=True)
+            
+            batch_sids = list(batch_cache.keys())
+            for sig_i, sid in enumerate(batch_sids):
+                pc = batch_cache[sid]
+                sig_results = np.zeros((n_strategies, 6), dtype=np.float32)
+                
+                for s_idx, sp in enumerate(strategy_grid):
+                    pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
+                        pc,
+                        sp["sl_pct"],
+                        sp["delta_window"],
+                        sp["threshold_mult"],
+                        sp["leverage"],
+                        sp.get("base_activation", 10.0),
+                        sp.get("base_callback", 4.0),
+                        sp.get("base_reentry_drop", 5.0),
+                        sp.get("base_cooldown", 300),
+                        sp.get("max_reentry_hours", 0) * 3600,
+                        sp.get("max_position_hours", 0) * 3600,
+                    )
+                    sig_results[s_idx] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
+                
+                lookup_table[sid] = sig_results
+                total_signals_done += 1
+                
+                if (sig_i + 1) % 5 == 0 or (sig_i + 1) == len(batch_sids):
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    speed = total_signals_done / elapsed if elapsed > 0 else 0
+                    iters = total_signals_done * n_strategies
+                    mem_gb = total_signals_done * n_strategies * 6 * 4 / 1024**3
+                    print(f"  [batch {bf_idx+1}/{len(batch_files)} sig {sig_i+1}/{len(batch_sids)}] "
+                          f"{speed:.1f} sig/s | {iters/1000:.0f}k iters | "
+                          f"~{mem_gb:.1f}GB RAM | ETA: {(len(lookup_table) and (2080 - total_signals_done) / speed / 60) if speed > 0 else 0:.1f}min", flush=True)
+            
+            # Free batch bars immediately
+            del batch_cache
+            gc.collect()
         
-        for sig_idx, sig in enumerate(signals_with_bars):
-            pc = precomputed_cache[sig.signal_id]
-            sig_results = {}
-            for s_idx, sp in enumerate(strategy_grid):
-                pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
-                    pc,
-                    sp["sl_pct"],
-                    sp["delta_window"],
-                    sp["threshold_mult"],
-                    sp["leverage"],
-                    sp.get("base_activation", 10.0),
-                    sp.get("base_callback", 4.0),
-                    sp.get("base_reentry_drop", 5.0),
-                    sp.get("base_cooldown", 300),
-                    sp.get("max_reentry_hours", 0) * 3600,
-                    sp.get("max_position_hours", 0) * 3600,
-                )
-                sig_results[s_idx] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
-            
-            lookup_table[sig.signal_id] = sig_results
-            
-            if (sig_idx + 1) % 5 == 0 or (sig_idx + 1) == len(signals_with_bars):
-                elapsed = (datetime.now() - start_time).total_seconds()
-                speed = (sig_idx + 1) / elapsed if elapsed > 0 else 0
-                eta = (len(signals_with_bars) - sig_idx - 1) / speed if speed > 0 else 0
-                iters = (sig_idx + 1) * len(strategy_grid)
-                print(f"  [{sig_idx+1}/{len(signals_with_bars)}] "
-                      f"{speed:.1f} sig/s | {iters/1000:.0f}k iters | "
-                      f"ETA: {eta/60:.1f}min", flush=True)
+        # Match signals
+        signals_with_bars = [s for s in all_signals if s.signal_id in lookup_table]
         
         elapsed = (datetime.now() - start_time).total_seconds()
-        total_iters = len(signals_with_bars) * len(strategy_grid)
-        print(f"\n[LOAD-BARS] ✅ Phase 1 complete! {len(lookup_table)} signals × {len(strategy_grid):,} strategies")
-        print(f"[LOAD-BARS] {total_iters/1000:.0f}k iterations in {elapsed/60:.1f}min ({total_iters/elapsed/1000:.0f}k iter/s)")
-        
-        # Save lookup table for crash recovery
-        CHECKPOINT_DIR.mkdir(exist_ok=True)
-        lookup_file = CHECKPOINT_DIR / "phase1_lookup_table.pkl"
-        with open(lookup_file, "wb") as f:
-            pickle.dump(lookup_table, f, protocol=pickle.HIGHEST_PROTOCOL)
-        print(f"[SAFETY] Saved lookup table to {lookup_file}")
-        
-        # Free precomputed cache
-        del precomputed_cache
-        gc.collect()
+        total_iters = len(lookup_table) * n_strategies
+        mem_gb = len(lookup_table) * n_strategies * 6 * 4 / 1024**3
+        print(f"\n[LOAD-BARS] ✅ Phase 1 complete!")
+        print(f"  {len(lookup_table)} signals × {n_strategies:,} strategies")
+        print(f"  {total_iters/1e6:.1f}M iterations in {elapsed/60:.1f}min")
+        print(f"  Lookup table: ~{mem_gb:.1f}GB RAM (numpy float32)")
     
     # ---- STANDARD MODES (no --save-bars / --load-bars) ----
     else:
