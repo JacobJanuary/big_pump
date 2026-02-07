@@ -186,10 +186,11 @@ def save_precomputed_bars(
         batch_signals = signals[batch_start:batch_start + batch_size]
         batch_sids = [s.signal_id for s in batch_signals]
         
-        print(f"\n[BATCH {batch_idx+1}/{num_batches}] Loading {len(batch_signals)} signals from DB...")
+        print(f"\n[BATCH {batch_idx+1}/{num_batches}] Loading {len(batch_signals)} signals from DB...", flush=True)
         batch_bars = preload_all_bars(batch_sids, preload_workers=preload_workers)
+        print(f"[BATCH {batch_idx+1}] Bars loaded. Precomputing {len(batch_signals)} signals...", flush=True)
         
-        for sig in batch_signals:
+        for sig_i, sig in enumerate(batch_signals):
             bars = batch_bars.get(sig.signal_id, [])
             if len(bars) < 100:
                 skipped += 1
@@ -201,6 +202,19 @@ def save_precomputed_bars(
                 precomputed_cache[sig.signal_id] = pc
             else:
                 skipped += 1
+            
+            # Per-signal progress every 10 signals
+            if (sig_i + 1) % 10 == 0:
+                total_done = len(precomputed_cache) + skipped
+                elapsed = (datetime.now() - start_time).total_seconds()
+                overall_speed = total_done / elapsed if elapsed > 0 else 0
+                remaining = len(signals) - total_done
+                eta_sec = remaining / overall_speed if overall_speed > 0 else 0
+                print(f"  [{sig_i+1}/{len(batch_signals)}] "
+                      f"cached={len(precomputed_cache)} skip={skipped} | "
+                      f"{overall_speed:.1f} sig/s | "
+                      f"total {total_done}/{len(signals)} | "
+                      f"ETA: {eta_sec/60:.1f}min", flush=True)
         
         # Free batch memory
         del batch_bars
@@ -212,16 +226,16 @@ def save_precomputed_bars(
         remaining_batches = num_batches - batch_idx - 1
         eta = remaining_batches / speed if speed > 0 else 0
         print(f"[BATCH {batch_idx+1}] ✓ Cached: {processed}, Skipped: {skipped} | "
-              f"{speed:.1f} batches/min | ETA: {eta:.0f}min")
+              f"{speed:.1f} batches/min | ETA: {eta:.0f}min", flush=True)
         
-        # Save checkpoint every 5 batches
-        if (batch_idx + 1) % 5 == 0 or batch_idx == num_batches - 1:
+        # Save checkpoint every 3 batches (more frequent)
+        if (batch_idx + 1) % 3 == 0 or batch_idx == num_batches - 1:
             temp_path = output_path.with_suffix('.tmp')
             with open(temp_path, "wb") as f:
                 pickle.dump(precomputed_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
             temp_path.rename(output_path)
             size_mb = output_path.stat().st_size / 1024 / 1024
-            print(f"[CHECKPOINT] Saved {len(precomputed_cache)} signals ({size_mb:.0f}MB) to {output_path}")
+            print(f"[CHECKPOINT] Saved {len(precomputed_cache)} signals ({size_mb:.0f}MB) to {output_path}", flush=True)
     
     elapsed = (datetime.now() - start_time).total_seconds()
     size_mb = output_path.stat().st_size / 1024 / 1024
@@ -1179,7 +1193,7 @@ def main():
             
             lookup_table[sig.signal_id] = sig_results
             
-            if (sig_idx + 1) % 25 == 0 or (sig_idx + 1) == len(signals_with_bars):
+            if (sig_idx + 1) % 5 == 0 or (sig_idx + 1) == len(signals_with_bars):
                 elapsed = (datetime.now() - start_time).total_seconds()
                 speed = (sig_idx + 1) / elapsed if elapsed > 0 else 0
                 eta = (len(signals_with_bars) - sig_idx - 1) / speed if speed > 0 else 0
