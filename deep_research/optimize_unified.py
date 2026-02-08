@@ -378,6 +378,15 @@ def generate_strategy_grid() -> List[Dict]:
                                 })
     return grid
 
+def _grid_to_tuples(grid: List[Dict]) -> List[tuple]:
+    """Convert strategy grid dicts to tuples for 2-3x faster inner loop access."""
+    return [
+        (sp["sl_pct"], sp["delta_window"], sp["threshold_mult"], sp["leverage"],
+         sp["base_activation"], sp["base_callback"], sp["base_reentry_drop"],
+         sp["base_cooldown"], sp["max_reentry_hours"] * 3600, sp["max_position_hours"] * 3600)
+        for sp in grid
+    ]
+
 # ---------------------------------------------------------------------------
 # PRELOAD ALL DATA ONCE (eliminates SQL in optimization loop)
 # ---------------------------------------------------------------------------
@@ -619,30 +628,20 @@ def init_worker_lookup(signals: List[SignalData], results: Dict[int, Dict[int, T
 # ---------------------------------------------------------------------------
 # LOAD-BARS parallel worker infrastructure
 # ---------------------------------------------------------------------------
-LOADBARS_GRID: List[Dict] = []
+LOADBARS_GRID: List[tuple] = []  # tuples for fast inner loop
 LOADBARS_PC: Dict[int, Dict] = {}
-
-def init_loadbars_worker(strategy_grid: List[Dict], precomputed_cache: Dict[int, Dict]):
-    """Initialize load-bars worker with shared read-only data."""
-    global LOADBARS_GRID, LOADBARS_PC
-    LOADBARS_GRID = strategy_grid
-    LOADBARS_PC = precomputed_cache
 
 def loadbars_process_signal(sid: int) -> Tuple[int, Optional[np.ndarray]]:
     """Worker: run all strategies on one precomputed signal, return numpy array."""
     pc = LOADBARS_PC.get(sid)
     if pc is None:
         return (sid, None)
-    n = len(LOADBARS_GRID)
+    grid = LOADBARS_GRID
+    n = len(grid)
     results = np.zeros((n, 6), dtype=np.float32)
-    for i, sp in enumerate(LOADBARS_GRID):
-        pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
-            pc, sp["sl_pct"], sp["delta_window"], sp["threshold_mult"], sp["leverage"],
-            sp.get("base_activation", 10.0), sp.get("base_callback", 4.0),
-            sp.get("base_reentry_drop", 5.0), sp.get("base_cooldown", 300),
-            sp.get("max_reentry_hours", 0) * 3600, sp.get("max_position_hours", 0) * 3600,
-        )
-        results[i] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
+    for i in range(n):
+        sl, dw, tm, lev, act, cb, rd, cool, re_s, pos_s = grid[i]
+        results[i] = run_strategy_fast(pc, sl, dw, tm, lev, act, cb, rd, cool, re_s, pos_s)
     return (sid, results)
 
 
@@ -674,23 +673,12 @@ def process_single_signal(sig: SignalData) -> Tuple[int, Dict[int, Tuple[float, 
     if not precomputed:
         return (sid, None)
     
-    n = len(PHASE1_STRATEGY_GRID)
+    grid = PHASE1_STRATEGY_GRID
+    n = len(grid)
     sig_results = np.zeros((n, 6), dtype=np.float32)
-    for s_idx, sp in enumerate(PHASE1_STRATEGY_GRID):
-        pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
-            precomputed,
-            sp["sl_pct"],
-            sp["delta_window"],
-            sp["threshold_mult"],
-            sp["leverage"],
-            sp.get("base_activation", 10.0),
-            sp.get("base_callback", 4.0),
-            sp.get("base_reentry_drop", 5.0),
-            sp.get("base_cooldown", 300),
-            sp.get("max_reentry_hours", 0) * 3600,
-            sp.get("max_position_hours", 0) * 3600,
-        )
-        sig_results[s_idx] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
+    for i in range(n):
+        sl, dw, tm, lev, act, cb, rd, cool, re_s, pos_s = grid[i]
+        sig_results[i] = run_strategy_fast(precomputed, sl, dw, tm, lev, act, cb, rd, cool, re_s, pos_s)
     
     return (sid, sig_results)
 
@@ -1017,21 +1005,10 @@ def process_single_signal_sequential(
     
     n = len(strategy_grid)
     sig_results = np.zeros((n, 6), dtype=np.float32)
-    for s_idx, sp in enumerate(strategy_grid):
-        pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
-            precomputed,
-            sp["sl_pct"],
-            sp["delta_window"],
-            sp["threshold_mult"],
-            sp["leverage"],
-            sp.get("base_activation", 10.0),
-            sp.get("base_callback", 4.0),
-            sp.get("base_reentry_drop", 5.0),
-            sp.get("base_cooldown", 300),
-            sp.get("max_reentry_hours", 0) * 3600,
-            sp.get("max_position_hours", 0) * 3600,
-        )
-        sig_results[s_idx] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
+    for i in range(n):
+        sp = strategy_grid[i]
+        sl, dw, tm, lev, act, cb, rd, cool, re_s, pos_s = sp
+        sig_results[i] = run_strategy_fast(precomputed, sl, dw, tm, lev, act, cb, rd, cool, re_s, pos_s)
     
     return (sid, sig_results)
 
@@ -1052,65 +1029,62 @@ def _print_phase1_progress(processed: int, total: int, skipped: int, start_time,
           f"{iter_speed/1000:>6.1f}k iter/s | "
           f"ETA: {eta_min:>4.1f}m", flush=True)
 
-def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List[Dict]) -> Tuple[Dict, Dict[int, float], int]:
-    """Phase 2: Evaluate filter using LOOKUP TABLE (No calculation)."""
-    # 1. Filter signals (InMemory)
+def evaluate_filter_lookup(filter_cfg: Dict, strategy_grid: List) -> Tuple[Dict, Dict, int]:
+    """Phase 2: Evaluate filter using LOOKUP TABLE. Returns only BEST strategy."""
     matched_signals = filter_signals_in_memory(WORKER_SIGNALS, filter_cfg)
     if len(matched_signals) < MIN_SIGNALS_FOR_EVAL:
         return filter_cfg, {}, 0
 
-    # 2. Group by pair
     by_pair: Dict[str, List[SignalInfo]] = {}
     for s in matched_signals:
         by_pair.setdefault(s.pair, []).append(SignalInfo(s.signal_id, s.pair, s.timestamp))
 
-    # 3. Sum results from LOOKUP TABLE (numpy vectorized)
     n_strategies = len(strategy_grid)
-    aggregated_pnl = np.zeros(n_strategies, dtype=np.float64)
-    aggregated_trades = np.zeros(n_strategies, dtype=np.int32)
-    aggregated_ts_wins = np.zeros(n_strategies, dtype=np.int32)
+    agg_pnl = np.zeros(n_strategies, dtype=np.float64)
+    agg_trades = np.zeros(n_strategies, dtype=np.int32)
+    agg_ts_wins = np.zeros(n_strategies, dtype=np.int32)
+    agg_sl = np.zeros(n_strategies, dtype=np.int32)
+    agg_to = np.zeros(n_strategies, dtype=np.int32)
     
-    total_processed_signals = 0
+    total_processed = 0
     
     for pair, pair_signals in by_pair.items():
-        # Sequential check for pair position tracking
         position_tracker_ts = 0
         sorted_signals = sorted(pair_signals, key=lambda x: x.timestamp)
         
         for sig in sorted_signals:
             if int(sig.timestamp.timestamp()) < position_tracker_ts:
                 continue
-                
-            # Lookup results
             sig_res = WORKER_RESULTS.get(sig.signal_id)
             if sig_res is None:
                 continue
-                
-            total_processed_signals += 1
-            
-            # Vectorized add (numpy) — columns: pnl=0, last_ts=1, t_cnt=2, ts_wins=3
-            aggregated_pnl += sig_res[:, 0]
-            aggregated_trades += sig_res[:, 2].astype(np.int32)
-            aggregated_ts_wins += sig_res[:, 3].astype(np.int32)
-            
-            max_last_ts = float(sig_res[:, 1].max())
-            position_tracker_ts = max(position_tracker_ts, int(max_last_ts))
-            
-    # Compile final results
-    final_results = {}
-    for s_idx in range(n_strategies):
-        trades = int(aggregated_trades[s_idx])
-        ts_wins = int(aggregated_ts_wins[s_idx])
-        win_rate = (ts_wins / trades) if trades > 0 else 0.0
-        
-        final_results[s_idx] = {
-            "total_pnl": float(aggregated_pnl[s_idx]),
-            "win_rate": win_rate,
+            total_processed += 1
+            agg_pnl += sig_res[:, 0]
+            agg_trades += sig_res[:, 2].astype(np.int32)
+            agg_ts_wins += sig_res[:, 3].astype(np.int32)
+            agg_sl += sig_res[:, 4].astype(np.int32)
+            agg_to += sig_res[:, 5].astype(np.int32)
+            # Use median last_ts for position tracking (not max across all strategies)
+            position_tracker_ts = max(position_tracker_ts, int(np.median(sig_res[:, 1])))
+    
+    if total_processed == 0:
+        return filter_cfg, {}, 0
+    
+    # Return ONLY best strategy (not 64K dict)
+    best_idx = int(agg_pnl.argmax())
+    trades = int(agg_trades[best_idx])
+    ts_wins = int(agg_ts_wins[best_idx])
+    best_result = {
+        best_idx: {
+            "total_pnl": float(agg_pnl[best_idx]),
+            "win_rate": (ts_wins / trades) if trades > 0 else 0.0,
             "total_trades": trades,
-            "ts_wins": ts_wins
+            "ts_wins": ts_wins,
+            "sl_exits": int(agg_sl[best_idx]),
+            "timeout_exits": int(agg_to[best_idx]),
         }
-
-    return filter_cfg, final_results, total_processed_signals
+    }
+    return filter_cfg, best_result, total_processed
 
 # ---------------------------------------------------------------------------
 # Evaluate a single filter configuration (PRELOADED VERSION - no SQL)
@@ -1153,7 +1127,8 @@ def main():
         filter_grid = filter_grid[:args.limit]
         print(f"Limiting filter grid to first {args.limit} configs for testing.")
 
-    strategy_grid = generate_strategy_grid()
+    strategy_grid_dicts = generate_strategy_grid()  # keep dicts for JSON output
+    strategy_grid = _grid_to_tuples(strategy_grid_dicts)  # tuples for fast inner loops
     print(f"Filter grid: {len(filter_grid)} combinations, Strategy grid: {len(strategy_grid)} combinations")
     print(f"Using {MAX_WORKERS} workers for parallel filter processing")
 
@@ -1209,12 +1184,11 @@ def main():
             batch_sids = list(batch_cache.keys())
             print(f"[LOAD-BARS] {len(batch_sids)} signals. Parallelizing across {num_workers} workers...", flush=True)
             
-            # Process batch in parallel using fork-inherited shared memory
-            with mp.Pool(
-                processes=num_workers,
-                initializer=init_loadbars_worker,
-                initargs=(strategy_grid, batch_cache)
-            ) as pool:
+            # FIX: Set globals BEFORE fork — workers inherit via COW (no pickle copy!)
+            global LOADBARS_GRID, LOADBARS_PC
+            LOADBARS_GRID = strategy_grid
+            LOADBARS_PC = batch_cache
+            with mp.Pool(processes=num_workers) as pool:
                 for i, (sid, result) in enumerate(pool.imap_unordered(loadbars_process_signal, batch_sids)):
                     if result is not None:
                         lookup_table[sid] = result
@@ -1343,7 +1317,7 @@ def main():
                 # Let's still sort by PnL but include WinRate in metrics.
                 best_sid = max(agg, key=lambda k: agg[k]["total_pnl"])
                 best_stats = agg[best_sid]
-                best_params = strategy_grid[best_sid]
+                best_params = strategy_grid_dicts[best_sid]
                 
                 result_entry = {
                     "filter": cfg,
@@ -1385,8 +1359,8 @@ def main():
         crash_log(f"Set globals: signals={len(signals_with_bars)}, lookup={len(lookup_table)}")
         print(f"[MEMORY] Set global lookup table ({len(lookup_table)} signals, {len(strategy_grid)} strategies)")
         
-        # Phase 2 uses max 4 workers to prevent OOM (Phase 1 can use more)
-        phase2_workers = min(MAX_WORKERS, 4)
+        # Phase 2 reads lookup_table via fork COW — safe to use all cores
+        phase2_workers = MAX_WORKERS
         
         try:
             # Create Pool WITHOUT initargs - workers inherit globals via fork
@@ -1410,7 +1384,7 @@ def main():
                         # agg is Dict[int, Dict[str, float]] with keys: total_pnl, win_rate, total_trades, ts_wins
                         best_sid = max(agg, key=lambda k: agg[k]["total_pnl"])
                         best_stats = agg[best_sid]
-                        best_params = strategy_grid[best_sid]
+                        best_params = strategy_grid_dicts[best_sid]
                         result_entry = {
                             "filter": cfg,
                             "strategy": best_params,
