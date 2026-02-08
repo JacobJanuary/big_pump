@@ -617,7 +617,35 @@ def init_worker_lookup(signals: List[SignalData], results: Dict[int, Dict[int, T
     WORKER_RESULTS = results
 
 # ---------------------------------------------------------------------------
-# PHASE 1: Parallel Precomputation
+# LOAD-BARS parallel worker infrastructure
+# ---------------------------------------------------------------------------
+LOADBARS_GRID: List[Dict] = []
+LOADBARS_PC: Dict[int, Dict] = {}
+
+def init_loadbars_worker(strategy_grid: List[Dict], precomputed_cache: Dict[int, Dict]):
+    """Initialize load-bars worker with shared read-only data."""
+    global LOADBARS_GRID, LOADBARS_PC
+    LOADBARS_GRID = strategy_grid
+    LOADBARS_PC = precomputed_cache
+
+def loadbars_process_signal(sid: int) -> Tuple[int, Optional[np.ndarray]]:
+    """Worker: run all strategies on one precomputed signal, return numpy array."""
+    pc = LOADBARS_PC.get(sid)
+    if pc is None:
+        return (sid, None)
+    n = len(LOADBARS_GRID)
+    results = np.zeros((n, 6), dtype=np.float32)
+    for i, sp in enumerate(LOADBARS_GRID):
+        pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
+            pc, sp["sl_pct"], sp["delta_window"], sp["threshold_mult"], sp["leverage"],
+            sp.get("base_activation", 10.0), sp.get("base_callback", 4.0),
+            sp.get("base_reentry_drop", 5.0), sp.get("base_cooldown", 300),
+            sp.get("max_reentry_hours", 0) * 3600, sp.get("max_position_hours", 0) * 3600,
+        )
+        results[i] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
+    return (sid, results)
+
+
 # ---------------------------------------------------------------------------
 # Shared data for Phase 1 workers
 PHASE1_BARS_CACHE: Dict[int, List[tuple]] = {}
@@ -1166,51 +1194,41 @@ def main():
             print("ERROR: Could not load bars cache. Exiting.")
             return
         
-        # Build lookup table batch-by-batch (memory safe)
         n_strategies = len(strategy_grid)
+        num_workers = min(MAX_WORKERS, mp.cpu_count())
         lookup_table: Dict[int, np.ndarray] = {}
-        signals_with_bars = []
         start_time = datetime.now()
         total_signals_done = 0
+        
+        print(f"\n[LOAD-BARS] Processing with {num_workers} workers, {n_strategies:,} strategies per signal")
         
         for bf_idx, batch_file in enumerate(batch_files):
             print(f"\n[LOAD-BARS] Loading {batch_file.name}...", flush=True)
             with open(batch_file, "rb") as f:
                 batch_cache = pickle.load(f)
-            print(f"[LOAD-BARS] {len(batch_cache)} signals. Running {n_strategies:,} strategies each...", flush=True)
-            
             batch_sids = list(batch_cache.keys())
-            for sig_i, sid in enumerate(batch_sids):
-                pc = batch_cache[sid]
-                sig_results = np.zeros((n_strategies, 6), dtype=np.float32)
-                
-                for s_idx, sp in enumerate(strategy_grid):
-                    pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits = run_strategy_fast(
-                        pc,
-                        sp["sl_pct"],
-                        sp["delta_window"],
-                        sp["threshold_mult"],
-                        sp["leverage"],
-                        sp.get("base_activation", 10.0),
-                        sp.get("base_callback", 4.0),
-                        sp.get("base_reentry_drop", 5.0),
-                        sp.get("base_cooldown", 300),
-                        sp.get("max_reentry_hours", 0) * 3600,
-                        sp.get("max_position_hours", 0) * 3600,
-                    )
-                    sig_results[s_idx] = (pnl, last_ts, trades_cnt, ts_exits, sl_exits, to_exits)
-                
-                lookup_table[sid] = sig_results
-                total_signals_done += 1
-                
-                if (sig_i + 1) % 5 == 0 or (sig_i + 1) == len(batch_sids):
-                    elapsed = (datetime.now() - start_time).total_seconds()
-                    speed = total_signals_done / elapsed if elapsed > 0 else 0
-                    iters = total_signals_done * n_strategies
-                    mem_gb = total_signals_done * n_strategies * 6 * 4 / 1024**3
-                    print(f"  [batch {bf_idx+1}/{len(batch_files)} sig {sig_i+1}/{len(batch_sids)}] "
-                          f"{speed:.1f} sig/s | {iters/1000:.0f}k iters | "
-                          f"~{mem_gb:.1f}GB RAM | ETA: {(len(lookup_table) and (2080 - total_signals_done) / speed / 60) if speed > 0 else 0:.1f}min", flush=True)
+            print(f"[LOAD-BARS] {len(batch_sids)} signals. Parallelizing across {num_workers} workers...", flush=True)
+            
+            # Process batch in parallel using fork-inherited shared memory
+            with mp.Pool(
+                processes=num_workers,
+                initializer=init_loadbars_worker,
+                initargs=(strategy_grid, batch_cache)
+            ) as pool:
+                for i, (sid, result) in enumerate(pool.imap_unordered(loadbars_process_signal, batch_sids)):
+                    if result is not None:
+                        lookup_table[sid] = result
+                    total_signals_done += 1
+                    
+                    if (i + 1) % 5 == 0 or (i + 1) == len(batch_sids):
+                        elapsed = (datetime.now() - start_time).total_seconds()
+                        speed = total_signals_done / elapsed if elapsed > 0 else 0
+                        remaining = 1962 - total_signals_done  # approximate
+                        eta = remaining / speed / 60 if speed > 0 else 0
+                        mem_gb = total_signals_done * n_strategies * 6 * 4 / 1024**3
+                        print(f"  [batch {bf_idx+1}/{len(batch_files)} sig {i+1}/{len(batch_sids)}] "
+                              f"{speed:.1f} sig/s | {total_signals_done} done | "
+                              f"~{mem_gb:.1f}GB RAM | ETA: {eta:.0f}min", flush=True)
             
             # Free batch bars immediately
             del batch_cache
@@ -1224,7 +1242,7 @@ def main():
         mem_gb = len(lookup_table) * n_strategies * 6 * 4 / 1024**3
         print(f"\n[LOAD-BARS] ✅ Phase 1 complete!")
         print(f"  {len(lookup_table)} signals × {n_strategies:,} strategies")
-        print(f"  {total_iters/1e6:.1f}M iterations in {elapsed/60:.1f}min")
+        print(f"  {total_iters/1e6:.1f}M iterations in {elapsed/60:.1f}min ({total_iters/elapsed:.0f} iter/s)")
         print(f"  Lookup table: ~{mem_gb:.1f}GB RAM (numpy float32)")
     
     # ---- STANDARD MODES (no --save-bars / --load-bars) ----
