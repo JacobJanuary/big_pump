@@ -314,66 +314,68 @@ def generate_filter_grid() -> List[Dict]:
 # Strategy grid generation (EXPANDED with BASE_* parameterization)
 # ---------------------------------------------------------------------------
 def generate_strategy_grid() -> List[Dict]:
-    """Generate strategy grid with continuous ACT×CB trailing-stop search.
+    """Generate strategy grid with R:R >= 1:2 constraint for pump trading.
     
-    Trailing exit grid (activation × callback):
-    - activation: 1% to 10% (step 1%)
-    - callback: 1% to 10% (step 1%)  
-    - Constraint: callback <= activation (55 valid pairs)
+    Key constraints (enforced mathematically):
+    1. activation >= 2 × sl_pct  (R:R >= 1:2)
+    2. callback <= activation / 2  (lock in at least half the move)
     
-    Grid size calculation:
-    - leverage: 1 option [10]
-    - sl_pct: 5 options [3,4,5,7,10]
+    Parameters:
+    - sl_pct:     [3, 5, 7, 10]
+    - activation: [6, 8, 10, 15, 20, 25, 30, 40, 50] %
+    - callback:   [2, 3, 5, 7, 10, 15] %
     - delta_window: 8 options
-    - threshold_mult: 1 option [1.0]
-    - activation × callback: 55 valid pairs (cb <= act)
-    - base_cooldown: 3 options [60, 300, 600]
-    - max_reentry_hours: 4 options [4, 8, 12, 24]
-    - max_position_hours: 5 options [2, 4, 6, 12, 24]
+    - cooldown: 3 options
+    - reentry: 4 options  
+    - position: 5 options
     
-    Total: 1 × 5 × 8 × 1 × 55 × 3 × 4 × 5 = 132,000 combinations
+    Constraint logic per combo:
+      act >= 2*sl  AND  cb <= act/2
+    
+    ~134 valid SL×ACT×CB triplets × 480 other combos = ~64,320 strategies
     """
-    leverage_opts = [10]  # 5 never wins, removed
+    leverage_opts = [10]
+    sl_opts = [3, 5, 7, 10]
+    activation_opts = [6, 8, 10, 15, 20, 25, 30, 40, 50]
+    callback_opts = [2, 3, 5, 7, 10, 15]
     delta_window_opts = [5, 30, 60, 120, 300, 600, 1800, 3600]
     threshold_opts = [1.0]
-    sl_by_leverage = {
-        5: [3, 4, 5, 7, 10, 15],
-        10: [3, 4, 5, 7, 10],  # No 15 - liquidation happens at 10% price drop
-    }
-    
-    # Continuous ACT×CB grid: activation 1-10%, callback 1-10%, cb <= act
-    trailing_profiles = []
-    for act in range(1, 11):  # 1% to 10%
-        for cb in range(1, 11):  # 1% to 10%
-            if cb <= act:  # callback must be <= activation
-                trailing_profiles.append((float(act), float(cb)))
-    
-    base_reentry_drop = 5.0  # Fixed
+    base_reentry_drop = 5.0
     base_cooldown_opts = [60, 300, 600]
     max_reentry_hours_opts = [4, 8, 12, 24]
     max_position_hours_opts = [2, 4, 6, 12, 24]
     
+    # Build valid SL×ACT×CB triplets with R:R >= 1:2
+    sl_act_cb_triplets = []
+    for sl in sl_opts:
+        for act in activation_opts:
+            if act < 2 * sl:  # R:R < 1:2 → skip
+                continue
+            for cb in callback_opts:
+                if cb > act / 2:  # callback eats more than half the move → skip
+                    continue
+                sl_act_cb_triplets.append((sl, float(act), float(cb)))
+    
     grid = []
     for lev in leverage_opts:
-        for sl in sl_by_leverage[lev]:
+        for (sl, act, cb) in sl_act_cb_triplets:
             for win in delta_window_opts:
                 for thresh in threshold_opts:
-                    for (act, cb) in trailing_profiles:
-                        for cool in base_cooldown_opts:
-                            for reentry_h in max_reentry_hours_opts:
-                                for pos_h in max_position_hours_opts:
-                                    grid.append({
-                                        "leverage": lev,
-                                        "sl_pct": sl,
-                                        "delta_window": win,
-                                        "threshold_mult": thresh,
-                                        "base_activation": act,
-                                        "base_callback": cb,
-                                        "base_reentry_drop": base_reentry_drop,
-                                        "base_cooldown": cool,
-                                        "max_reentry_hours": reentry_h,
-                                        "max_position_hours": pos_h,
-                                    })
+                    for cool in base_cooldown_opts:
+                        for reentry_h in max_reentry_hours_opts:
+                            for pos_h in max_position_hours_opts:
+                                grid.append({
+                                    "leverage": lev,
+                                    "sl_pct": sl,
+                                    "delta_window": win,
+                                    "threshold_mult": thresh,
+                                    "base_activation": act,
+                                    "base_callback": cb,
+                                    "base_reentry_drop": base_reentry_drop,
+                                    "base_cooldown": cool,
+                                    "max_reentry_hours": reentry_h,
+                                    "max_position_hours": pos_h,
+                                })
     return grid
 
 # ---------------------------------------------------------------------------
